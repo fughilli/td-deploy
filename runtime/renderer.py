@@ -45,7 +45,10 @@ def _texture(w: int, h: int, data: np.ndarray | None) -> int:
                  (GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR),
                  (GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)):
         GL.glTexParameteri(GL.GL_TEXTURE_2D, k, v)
-    buf = None if data is None else np.ascontiguousarray(data, np.uint8)
+    # Upload bottom-row-first (GL's convention): flip incoming top-down image data
+    # so texel t=0 is the image's bottom row. TD's GLSL TOPs assume this (e.g.
+    # sprite-atlas row math), and readback flips back — net identity for output.
+    buf = None if data is None else np.ascontiguousarray(np.flipud(data), np.uint8)
     GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, w, h, 0,
                     GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, buf)
     return tex
@@ -145,7 +148,8 @@ class Renderer:
             GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
         GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
         raw = GL.glReadPixels(0, 0, sw, sh, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
-        return np.frombuffer(raw, np.uint8).reshape(sh, sw, 4).copy()
+        img = np.frombuffer(raw, np.uint8).reshape(sh, sw, 4)
+        return np.flipud(img).copy()   # GL is bottom-up; restore top-down for output
 
 
 def run(plan: RuntimePlan) -> np.ndarray:
