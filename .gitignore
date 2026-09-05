@@ -15,3 +15,6 @@ __pycache__/
 
 # nix/direnv
 .direnv/
+
+# mlir compiler build
+compiler/build/
