@@ -70,8 +70,9 @@ def _set_uniform(prog: int, name: str, kind: str, val) -> None:
 
 
 class Renderer:
-    def __init__(self, plan: RuntimePlan):
+    def __init__(self, plan: RuntimePlan, chops=None):
         self.plan = plan
+        self.chops = chops          # ChopStore for op('..')['..'] param exprs (OSC/MIDI)
         egl_context.make_current()
         self.vao = GL.glGenVertexArrays(1)
         GL.glBindVertexArray(self.vao)
@@ -147,7 +148,7 @@ class Renderer:
                 for name, (kind, val) in st.uniforms.items():
                     _set_uniform(prog, name, kind, val)
                 for name, spec in st.time_uniforms.items():
-                    v = eval_expr(spec["expr"], t, frame) * spec.get("mul", 1.0)
+                    v = eval_expr(spec["expr"], t, frame, chops=self.chops) * spec.get("mul", 1.0)
                     _set_uniform(prog, name, "float", v)
                 GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)
 
@@ -167,6 +168,6 @@ class Renderer:
         return np.flipud(img).copy()   # GL is bottom-up; restore top-down for output
 
 
-def run(plan: RuntimePlan) -> np.ndarray:
+def run(plan: RuntimePlan, chops=None) -> np.ndarray:
     """One-shot render at t=0 (host reference / conformance)."""
-    return Renderer(plan).render(0.0, 0)
+    return Renderer(plan, chops=chops).render(0.0, 0)

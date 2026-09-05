@@ -158,10 +158,18 @@ def main() -> int:
     print(f"[plan] target={plan.target}, {len(plan.steps)} steps"
           + (" (contains GL-only glsl_top)" if plan.has_gl_only_ops() else ""))
 
+    # I/O services (OSC/MIDI in) -> live values for op('..')['..'] param exprs
+    from runtime.services import ChopStore, ServiceManager, collect_services
+    store = ChopStore()
+    specs = collect_services(g)
+    if specs:
+        print(f"[services] {specs}")
+        ServiceManager(specs, store).start()
+
     if args.stream:
         from runtime.stream_server import serve
         print(f"[stream] starting realtime render loop for {inp}")
-        serve(plan, port=args.port, fps=args.fps)
+        serve(plan, port=args.port, fps=args.fps, chops=store)
         return 0
 
     import numpy as np

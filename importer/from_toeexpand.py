@@ -285,7 +285,22 @@ def import_dir(dirroot: str) -> ImportResult:
             id=path, op=(kernel or "passthrough"), family="TOP",
             params=params, inputs=[Port(node=s) for s in top_ins])
 
-    g = Graph(output=sink, nodes=nodes)
+    # Collect I/O CHOP services (OSC/MIDI In) — they live outside the TOP render
+    # DAG but feed parameter expressions like op('oscin1')['ch'].
+    services = []
+    for p, op in ops.items():
+        if op.family == "CHOP" and op.optype in ("oscin", "midiin"):
+            name = p.split("/")[-1]
+            if op.optype == "oscin":
+                services.append({"type": "oscin", "name": name,
+                                 "port": int(float(op.params.get("port", "7000").split()[0]))
+                                 if op.params.get("port") else 7000})
+            else:
+                services.append({"type": "midiin", "name": name,
+                                 "device": op.params.get("device")})
+            coverage.append(f"service: {op.optype} {name} -> {services[-1]}")
+
+    g = Graph(output=sink, nodes=nodes, services=services)
     g.validate()
 
     supported = sum(1 for n in nodes.values() if n.op != "passthrough" or True)

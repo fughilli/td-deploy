@@ -25,14 +25,28 @@ _SAFE = {
 }
 
 
-def eval_expr(expr, t: float, frame: int, default: float = 0.0) -> float:
+class _ChopAccessor:
+    """Backs `op('name')['chan']` in parameter expressions, reading live values
+    from a ChopStore (OSC/MIDI). Returns 0.0 when unset / no store."""
+    def __init__(self, store, name):
+        self._store, self._name = store, name
+
+    def __getitem__(self, chan):
+        if self._store is None:
+            return 0.0
+        return self._store.get_chan(self._name, str(chan), 0.0)
+
+
+def eval_expr(expr, t: float, frame: int, default: float = 0.0, chops=None) -> float:
     if isinstance(expr, (int, float)):
         return float(expr)
     s = str(expr).strip().strip('"').strip("'")
     if s == "":
         return default
+    ns = {**_SAFE, "absTime": _AbsTime(t, frame),
+          "op": lambda name: _ChopAccessor(chops, name)}
     try:
-        return float(eval(s, {"__builtins__": {}}, {**_SAFE, "absTime": _AbsTime(t, frame)}))
+        return float(eval(s, {"__builtins__": {}}, ns))
     except Exception:
         try:
             return float(s)
@@ -52,8 +66,10 @@ def value_or_expr(raw: str, default: float) -> object:
         end = s.find('"', q + 1)
         if end != -1:
             return s[q + 1:end]
-    tok = s.split()[0] if s.split() else ""
+    toks = s.split()
+    tok = toks[0] if toks else ""
     try:
         return float(tok)
     except Exception:
-        return default
+        # not numeric and not TD-quoted -> treat the whole string as an expression
+        return s if s else default

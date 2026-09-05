@@ -33,8 +33,8 @@ class _Shared:
         self.fps = 0.0
 
 
-def _render_loop(plan: RuntimePlan, shared: _Shared, fps_cap: float, quality: int):
-    renderer = Renderer(plan)                 # context becomes current in THIS thread
+def _render_loop(plan: RuntimePlan, shared: _Shared, fps_cap: float, quality: int, chops):
+    renderer = Renderer(plan, chops=chops)    # context becomes current in THIS thread
     t0 = time.monotonic()
     last = t0
     frame = 0
@@ -137,9 +137,9 @@ def make_handler(shared: _Shared):
 
 
 def serve(plan: RuntimePlan, host: str = "0.0.0.0", port: int = 8788,
-          fps: float = 30.0, quality: int = 80) -> None:
+          fps: float = 30.0, quality: int = 80, chops=None) -> None:
     shared = _Shared()
-    threading.Thread(target=_render_loop, args=(plan, shared, fps, quality),
+    threading.Thread(target=_render_loop, args=(plan, shared, fps, quality, chops),
                      daemon=True).start()
     httpd = ThreadingHTTPServer((host, port), make_handler(shared))
     print(f"[stream] live MJPEG on http://{host}:{port}/  (fps cap {fps}, {plan.target})")

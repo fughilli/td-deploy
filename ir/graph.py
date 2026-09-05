@@ -68,6 +68,7 @@ class Graph:
     output: str                             # id of the sink node
     nodes: dict[str, Node] = field(default_factory=dict)
     version: str = "0.1"
+    services: list = field(default_factory=list)  # I/O service specs (OSC/MIDI in)
 
     # -- (de)serialization -----------------------------------------------------
     @staticmethod
@@ -79,7 +80,8 @@ class Graph:
             if n.id in nodes:
                 raise ValueError(f"duplicate node id {n.id!r}")
             nodes[n.id] = n
-        g = Graph(output=obj["output"], nodes=nodes, version=obj.get("version", "0.1"))
+        g = Graph(output=obj["output"], nodes=nodes, version=obj.get("version", "0.1"),
+                  services=list(obj.get("services", [])))
         g.validate()
         return g
 
