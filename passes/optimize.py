@@ -30,24 +30,27 @@ def dead_node_elim(g: Graph, report: list[str]) -> None:
         report.append("dead_node_elim: nothing to drop")
 
 
-def infer_format(g: Graph, report: list[str]) -> None:
-    """Assign node.out_type = {w,h,fmt}. Sources declare it; others inherit input 0."""
+def infer_format(g: Graph, report: list[str], out_res: int = 256) -> None:
+    """Assign node.out_type = {w,h,fmt}. image_in keeps its native size; crop
+    rescales to the project output resolution `out_res`; other ops inherit input 0."""
     for nid in g.topo_order():
         n = g.nodes[nid]
         if n.op == "image_in":
-            w = int(n.params.get("w", 512))
-            h = int(n.params.get("h", 512))
-            fmt = n.params.get("fmt", "rgba8")
-            n.out_type = {"w": w, "h": h, "fmt": fmt}
+            w = int(n.params.get("w", out_res))
+            h = int(n.params.get("h", out_res))
+            n.out_type = {"w": w, "h": h, "fmt": n.params.get("fmt", "rgba8")}
+        elif n.op == "crop":
+            fmt = g.nodes[n.inputs[0].node].out_type["fmt"] if n.inputs else "rgba8"
+            n.out_type = {"w": out_res, "h": out_res, "fmt": fmt}
         elif n.inputs:
             src = g.nodes[n.inputs[0].node]
             if src.out_type is None:
                 raise ValueError(f"{nid}: input {src.id} has no inferred type")
-            n.out_type = dict(src.out_type)  # size/format-preserving ops (M1)
+            n.out_type = dict(src.out_type)
         else:
             raise ValueError(f"{nid}: op {n.op!r} has no inputs and declares no format")
     report.append("infer_format: " + ", ".join(
-        f"{nid}={n.out_type['w']}x{n.out_type['h']}:{n.out_type['fmt']}"
+        f"{nid.split('/')[-1]}={n.out_type['w']}x{n.out_type['h']}"
         for nid, n in g.nodes.items()))
 
 
@@ -71,11 +74,9 @@ def constant_fold(g: Graph, report: list[str]) -> None:
                 f"{2*radius+1} weights (baked)")
 
 
-PIPELINE = [dead_node_elim, infer_format, constant_fold]
-
-
-def optimize(g: Graph) -> list[str]:
+def optimize(g: Graph, out_res: int = 256) -> list[str]:
     report: list[str] = []
-    for p in PIPELINE:
-        p(g, report)
+    dead_node_elim(g, report)
+    infer_format(g, report, out_res=out_res)
+    constant_fold(g, report)
     return report

@@ -21,8 +21,17 @@ from ir.graph import Graph
 from lowering import shaders
 from runtime.expr import value_or_expr
 
-# ops that are identity on input 0 (crop is a stub pending a real kernel)
-PASSTHROUGH_OPS = {"passthrough", "in", "out", "null", "out_display", "crop"}
+# ops that are identity on input 0
+PASSTHROUGH_OPS = {"passthrough", "in", "out", "null", "out_display"}
+
+
+def _crop_edge(params, name, unit_name, size, default):
+    raw = params.get(name)
+    if raw is None:
+        return default
+    v = float(value_or_expr(raw, default))
+    unit = str(params.get(unit_name, "pixels"))
+    return v / size if unit.startswith("pix") else v
 
 
 @dataclass
@@ -48,7 +57,8 @@ class RuntimePlan:
     target: str
 
     def has_gl_only_ops(self) -> bool:
-        return any(s.op == "glsl_top" for s in self.steps)
+        # ops with no CPU reference kernel (GL is the oracle for these)
+        return any(s.op in ("glsl_top", "crop", "transform") for s in self.steps)
 
 
 def _lower_node(g: Graph, nid: str, target: str) -> Step:
@@ -78,6 +88,19 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
                     vertex=shaders.vertex_td(target),
                     fragment=shaders.td_glsl_top(target, len(inputs), src),
                     sampler_array="sTD2DInputs", uniforms=uniforms,
+                    params=dict(n.params))
+
+    if n.op == "crop":
+        it = g.nodes[inputs[0]].out_type if inputs else {"w": 1, "h": 1}
+        iw, ih = float(it["w"]), float(it["h"])
+        left = _crop_edge(n.params, "cropleft", "cropleftunit", iw, 0.0)
+        right = _crop_edge(n.params, "cropright", "croprightunit", iw, 1.0)
+        bottom = _crop_edge(n.params, "cropbottom", "cropbottomunit", ih, 0.0)
+        top = _crop_edge(n.params, "croptop", "croptopunit", ih, 1.0)
+        return Step(nid, n.op, "shader", ot, inputs=inputs,
+                    vertex=shaders.vertex(target),
+                    fragment=shaders.crop_top(target),
+                    uniforms={"uCropRect": ("vec4", [left, right, bottom, top])},
                     params=dict(n.params))
 
     if n.op == "transform":

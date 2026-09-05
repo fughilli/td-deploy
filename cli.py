@@ -62,20 +62,30 @@ def _fetch_host_assets(g: Graph, host: str, assetdir: str) -> None:
     bridge /readfile, rewriting node paths. Silent fallback (testcard) on any
     failure — e.g. a bridge that predates /readfile."""
     os.makedirs(assetdir, exist_ok=True)
+    from PIL import Image
     for n in g.nodes.values():
         p = n.params.get("path") if n.op == "image_in" else None
-        if not p or os.path.isfile(p):
+        if not p:
             continue
+        local = p
+        if not os.path.isfile(p):
+            try:
+                url = f"http://{host}/readfile?path={urllib.parse.quote(p)}"
+                data = _http_get_bytes(url)
+                local = os.path.join(assetdir, os.path.basename(p))
+                with open(local, "wb") as fh:
+                    fh.write(data)
+                n.params["path"] = local
+                print(f"[asset] fetched {p} -> {local} ({len(data)}B)")
+            except Exception as e:  # noqa: BLE001
+                print(f"[asset] could not fetch {p} ({e}); using testcard substitute")
+                continue
+        # record native size so the source keeps its real resolution (crop needs it)
         try:
-            url = f"http://{host}/readfile?path={urllib.parse.quote(p)}"
-            data = _http_get_bytes(url)
-            local = os.path.join(assetdir, os.path.basename(p))
-            with open(local, "wb") as fh:
-                fh.write(data)
-            n.params["path"] = local
-            print(f"[asset] fetched {p} -> {local} ({len(data)}B)")
-        except Exception as e:  # noqa: BLE001
-            print(f"[asset] could not fetch {p} ({e}); using testcard substitute")
+            w, h = Image.open(local).size
+            n.params["w"], n.params["h"] = int(w), int(h)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _load_graph(path: str, host: str, keep: str | None) -> tuple[Graph, list[str]]:
@@ -88,7 +98,6 @@ def _load_graph(path: str, host: str, keep: str | None) -> tuple[Graph, list[str
         dirroot = _expand_via_bridge(path, host, workdir)
         print(f"[import] {dirroot}")
         res = import_dir(dirroot)
-        _fetch_host_assets(res.graph, host, os.path.join(workdir, "_assets"))
         print("[coverage]")
         for c in res.coverage:
             print("  " + c)
@@ -108,7 +117,10 @@ def main() -> int:
     ap.add_argument("--stream", action="store_true", help="serve a live MJPEG stream")
     ap.add_argument("--port", type=int, default=8788, help="stream port")
     ap.add_argument("--fps", type=float, default=30.0, help="stream fps cap")
-    ap.add_argument("--res", type=int, default=None, help="override source resolution (square)")
+    ap.add_argument("--res", type=int, default=256, help="project output resolution (square)")
+    ap.add_argument("--set-file", action="append", default=[], metavar="NODE=PATH",
+                    help="override an image_in file (e.g. content that the .tox left empty); "
+                         "PATH may be a host path fetched via the bridge")
     args = ap.parse_args()
 
     inp = args.input
@@ -119,14 +131,23 @@ def main() -> int:
     os.makedirs(args.out, exist_ok=True)
 
     g, _cov = _load_graph(inp, args.host, args.keep_expanded)
-    if args.res:
-        for n in g.nodes.values():
-            if n.op == "image_in":
-                n.params["w"] = n.params["h"] = args.res
+
+    # apply --set-file overrides (match by full id or trailing name), then fetch assets
+    for spec in args.set_file:
+        node, _, fpath = spec.partition("=")
+        matches = [nid for nid in g.nodes if nid == node or nid.endswith("/" + node)]
+        if not matches:
+            print(f"[set-file] no node matches {node!r}; nodes: {list(g.nodes)}")
+        for nid in matches:
+            g.nodes[nid].op = "image_in"
+            g.nodes[nid].params["path"] = fpath
+            print(f"[set-file] {nid} <- {fpath}")
+    _fetch_host_assets(g, args.host,
+                       (args.keep_expanded or tempfile.gettempdir()) + "/toxc_assets")
     print(f"[ir] {len(g.nodes)} nodes, output={g.output!r}")
 
     print("[passes]")
-    for line in optimize(g):
+    for line in optimize(g, out_res=args.res):
         print("  " + line)
 
     plan = lower(g, target=args.target)
