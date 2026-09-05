@@ -2,6 +2,24 @@
 
 Newest first. See `docs/design/tox-to-pi.md` for the full design.
 
+## 2026-09-05 (3) — Realtime stream to a browser window + time/transform
+
+**Live video path.** `bazel run //:toxc -- <project.tox> --stream` renders on a
+wall-clock timebase and serves MJPEG; exposed to the Mac as a claude-container named
+service (`overlay.json {"services":{"toxc":8788}}`) →
+`http://toxc.$CLAUDE_SERVICE_INSTANCE.claude.localhost/` (instance = td-deploy). Verified
+both halves (local curl + mux `OK 8788`); ~30 fps at 512×512 on llvmpipe.
+
+**Dynamic path landed** (the per-frame state the design flagged): `runtime/expr.py` (safe
+`absTime.seconds` evaluator), `transform` op implemented (rotate/translate/scale about
+pivot) with `Step.time_uniforms` evaluated each frame → the ascii output visibly rotates
+(`rotate = absTime.seconds*10`). `runtime/renderer.py` = persistent GL renderer (compile/
+upload once, redraw per frame); `backend_gl.run` now delegates to it (one GL code path).
+`runtime/stream_server.py` = dedicated render thread (owns GL context) + ThreadingHTTP
+serving latest JPEG (multi-viewer safe).
+
+Still stub: `crop` (passthrough). Non-animated sources uploaded once (no video decode yet).
+
 ## 2026-09-05 (2) — Importer + full `.tox`→pixels + `bazel run`
 
 **Real TouchDesigner project runs natively, no TD in the loop.** `bazel run //:toxc

@@ -40,6 +40,18 @@ nix/dev.sh python3 -m runtime.run graphs/blur_demo.json --backend both --out out
 # -> out/gl.png, out/cpu.png, out/diff8x.png  + a GL-vs-CPU LSB report
 ```
 
+## Live realtime preview (stream to a browser window)
+
+```sh
+bazel run //:toxc -- /workspace/ascii_project.toe --stream --port 8788 --fps 30
+# or:  nix/dev.sh python3 -m cli <project.tox> --stream
+```
+Serves an MJPEG stream on a wall-clock timebase (animated params like a Transform's
+`rotate = absTime.seconds*10` move live). In claude-container it's exposed as a named
+service (`.claude-container-overlay/overlay.json` -> `{"services":{"toxc":8788}}`); open
+`http://toxc.$CLAUDE_SERVICE_INSTANCE.claude.localhost/` on the host. Routes: `/` viewer,
+`/stream` MJPEG, `/frame.jpg`, `/stats`. Use `--res 256` to trade resolution for fps.
+
 ## Run the host bridge (on the Mac, where TouchDesigner is installed)
 
 ```sh

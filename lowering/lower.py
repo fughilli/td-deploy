@@ -15,12 +15,14 @@ CPU reference uses `op`+`params`. GL-only ops (glsl_top) have no CPU kernel.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from ir.graph import Graph
 from lowering import shaders
+from runtime.expr import value_or_expr
 
-# ops that are identity on input 0 (M1: crop/transform are stubs pending kernels)
-PASSTHROUGH_OPS = {"passthrough", "in", "out", "null", "out_display", "crop", "transform"}
+# ops that are identity on input 0 (crop is a stub pending a real kernel)
+PASSTHROUGH_OPS = {"passthrough", "in", "out", "null", "out_display", "crop"}
 
 
 @dataclass
@@ -34,6 +36,8 @@ class Step:
     fragment: str | None = None
     sampler_array: str | None = None    # e.g. "sTD2DInputs" (else bind tex0,tex1,..)
     uniforms: dict = field(default_factory=dict)   # exact-GLSL-name -> (type, value)
+    # per-frame uniforms: name -> {"expr": <literal|expr str>, "mul": float}
+    time_uniforms: dict = field(default_factory=dict)
     params: dict = field(default_factory=dict)
 
 
@@ -74,6 +78,19 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
                     vertex=shaders.vertex_td(target),
                     fragment=shaders.td_glsl_top(target, len(inputs), src),
                     sampler_array="sTD2DInputs", uniforms=uniforms,
+                    params=dict(n.params))
+
+    if n.op == "transform":
+        rot = value_or_expr(n.params.get("rotate"), 0.0)   # degrees (literal or expr)
+        tx = float(value_or_expr(n.params.get("tx"), 0.0))
+        ty = float(value_or_expr(n.params.get("ty"), 0.0))
+        sx = float(value_or_expr(n.params.get("scalex"), 1.0))
+        sy = float(value_or_expr(n.params.get("scaley"), 1.0))
+        return Step(nid, n.op, "shader", ot, inputs=inputs,
+                    vertex=shaders.vertex(target),
+                    fragment=shaders.transform_top(target),
+                    uniforms={"uTranslate": ("vec2", [tx, ty]), "uScale": ("vec2", [sx, sy])},
+                    time_uniforms={"uRotate": {"expr": rot, "mul": math.pi / 180.0}},
                     params=dict(n.params))
 
     if n.op in PASSTHROUGH_OPS:

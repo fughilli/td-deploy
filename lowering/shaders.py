@@ -91,6 +91,27 @@ void main() {{
 """
 
 
+def transform_top(target: str) -> str:
+    """Transform TOP: translate/rotate/scale about a pivot. Samples the input at
+    the inverse-transformed UV (clamp-to-edge outside)."""
+    return _header(target, "fragment") + """
+in vec2 vUV;
+out vec4 fragColor;
+uniform sampler2D tex0;
+uniform float uRotate;      // radians
+uniform vec2 uTranslate;    // in uv units
+uniform vec2 uScale;
+void main() {
+    vec2 c = vec2(0.5);
+    vec2 p = vUV - c - uTranslate;
+    float s = sin(-uRotate), co = cos(-uRotate);
+    p = mat2(co, -s, s, co) * p;
+    p /= uScale;
+    fragColor = texture(tex0, p + c);
+}
+"""
+
+
 # Trivial passthrough (used by the sink to sample its input into the readback FBO).
 def passthrough(target: str) -> str:
     return _header(target, "fragment") + """

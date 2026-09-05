@@ -1,6 +1,7 @@
 # build/run artifacts
 out/
 out_*/
+out_*
 result
 result-*
 

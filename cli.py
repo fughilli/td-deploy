@@ -105,6 +105,10 @@ def main() -> int:
     ap.add_argument("--out", default="out")
     ap.add_argument("--cwd", default=None, help="resolve a relative input against this dir")
     ap.add_argument("--keep-expanded", default=None, help="keep expansion in this dir")
+    ap.add_argument("--stream", action="store_true", help="serve a live MJPEG stream")
+    ap.add_argument("--port", type=int, default=8788, help="stream port")
+    ap.add_argument("--fps", type=float, default=30.0, help="stream fps cap")
+    ap.add_argument("--res", type=int, default=None, help="override source resolution (square)")
     args = ap.parse_args()
 
     inp = args.input
@@ -115,6 +119,10 @@ def main() -> int:
     os.makedirs(args.out, exist_ok=True)
 
     g, _cov = _load_graph(inp, args.host, args.keep_expanded)
+    if args.res:
+        for n in g.nodes.values():
+            if n.op == "image_in":
+                n.params["w"] = n.params["h"] = args.res
     print(f"[ir] {len(g.nodes)} nodes, output={g.output!r}")
 
     print("[passes]")
@@ -124,6 +132,12 @@ def main() -> int:
     plan = lower(g, target=args.target)
     print(f"[plan] target={plan.target}, {len(plan.steps)} steps"
           + (" (contains GL-only glsl_top)" if plan.has_gl_only_ops() else ""))
+
+    if args.stream:
+        from runtime.stream_server import serve
+        print(f"[stream] starting realtime render loop for {inp}")
+        serve(plan, port=args.port, fps=args.fps)
+        return 0
 
     import numpy as np
     from PIL import Image
