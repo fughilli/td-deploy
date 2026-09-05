@@ -125,6 +125,9 @@ def main() -> int:
     ap.add_argument("--set-file", action="append", default=[], metavar="NODE=PATH",
                     help="override an image_in file (e.g. content that the .tox left empty); "
                          "PATH may be a host path fetched via the bridge")
+    ap.add_argument("--emit-artifact", default=None, metavar="DIR",
+                    help="compile to a native-runtime artifact directory (schedule.json + "
+                         "shaders + assets + exprs.mlir) instead of rendering")
     args = ap.parse_args()
 
     inp = args.input
@@ -165,6 +168,14 @@ def main() -> int:
     if specs:
         print(f"[services] {specs}")
         ServiceManager(specs, store).start()
+
+    if args.emit_artifact:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "compiler"))
+        from emit_artifact import emit
+        info = emit(plan, g, args.emit_artifact)
+        print(f"[artifact] wrote {args.emit_artifact}: {info}")
+        print(f"[artifact] next: compiler/build_exprs.sh {args.emit_artifact}  (compiles exprs.mlir)")
+        return 0
 
     if args.stream:
         from runtime.stream_server import serve
