@@ -42,15 +42,27 @@ nix/dev.sh python3 -m runtime.run graphs/blur_demo.json --backend both --out out
 
 ## Live realtime preview (stream to a browser window)
 
+**Model: the container renders, the Mac views.** The GL render path is Linux-only
+(EGL-surfaceless + Mesa) — the same path the Pi uses (V3D/GLES), so the container
+preview is Pi-faithful. Rendering on macOS is intentionally unsupported (you'll get a
+clear error, not a crash); view the stream instead.
+
+Start (or restart) the stream **inside the container**:
 ```sh
-bazel run //:toxc -- /workspace/ascii_project.toe --stream --port 8788 --fps 30
-# or:  nix/dev.sh python3 -m cli <project.tox> --stream
+tools/stream.sh /workspace/ascii_project.toe          # convenience: kills old, starts new
+# equivalently: nix/dev.sh python3 -m cli <project.tox> --stream --port 8788 [--fps N --res N]
 ```
-Serves an MJPEG stream on a wall-clock timebase (animated params like a Transform's
-`rotate = absTime.seconds*10` move live). In claude-container it's exposed as a named
-service (`.claude-container-overlay/overlay.json` -> `{"services":{"toxc":8788}}`); open
-`http://toxc.$CLAUDE_SERVICE_INSTANCE.claude.localhost/` on the host. Routes: `/` viewer,
-`/stream` MJPEG, `/frame.jpg`, `/stats`. Use `--res 256` to trade resolution for fps.
+View on the **Mac** (nothing to run there):
+```
+http://toxc.$CLAUDE_SERVICE_INSTANCE.claude.localhost/     (fallback: ...:8484/)
+```
+It's MJPEG on a wall-clock timebase, so animated params (e.g. a Transform's
+`rotate = absTime.seconds*10`) move live. Routes: `/` viewer, `/stream`, `/frame.jpg`,
+`/stats`. `--res 256` trades resolution for fps. After you re-export a `.tox`, re-run
+`tools/stream.sh <path>` (or just ask the agent to reload) — no reload endpoint yet.
+
+Exposed via a claude-container named service
+(`.claude-container-overlay/overlay.json` -> `{"services":{"toxc":8788}}`).
 
 ## Run the host bridge (on the Mac, where TouchDesigner is installed)
 

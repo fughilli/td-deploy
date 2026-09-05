@@ -8,6 +8,16 @@ rest of the GL backend is unchanged.
 """
 from __future__ import annotations
 import os
+import sys
+
+if not sys.platform.startswith("linux"):
+    raise RuntimeError(
+        "toxc's GL render path is Linux-only (EGL surfaceless + Mesa, mirroring the "
+        "Pi's V3D/GLES). On macOS, don't render locally — render in the Linux "
+        "container and open the live stream URL in your browser (see README: "
+        "'Live realtime preview'). Ask the agent to (re)start the stream. "
+        f"(host platform: {sys.platform!r})")
+
 os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
 from OpenGL import EGL
