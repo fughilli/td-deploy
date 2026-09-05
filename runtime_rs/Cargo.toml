@@ -1,0 +1,17 @@
+[package]
+name = "toxc-runtime"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "toxc-runtime"
+path = "src/main.rs"
+
+[dependencies]
+khronos-egl = { version = "6", features = ["dynamic"] }
+libloading = "0.8"
+glow = "0.14"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.release]
+opt-level = 3
