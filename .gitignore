@@ -1,0 +1,16 @@
+# build/run artifacts
+out/
+out_*/
+result
+result-*
+
+# bazel
+bazel-*
+/.bazel/
+
+# python
+__pycache__/
+*.pyc
+
+# nix/direnv
+.direnv/

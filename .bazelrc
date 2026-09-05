@@ -1,0 +1,6 @@
+# Bundled JDK SIGILLs at startup on this aarch64 container without this.
+startup --host_jvm_args=-XX:UseSVE=0
+
+# Keep the pipeline's Nix/GL work out of Bazel's sandbox: toxc's run target
+# shells into the pinned Nix env (nix/dev.sh) which needs the host /nix + network.
+build --spawn_strategy=local

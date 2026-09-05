@@ -1,0 +1,9 @@
+TOP:crop
+tile 250 200 130 90
+flags =  current on viewer 1 parlanguage 0
+inputs
+{
+0 	moviefilein1
+}
+color 0.67 0.67 0.67 
+end

@@ -1,0 +1,6 @@
+DAT:text
+tile 775 -200 130 90
+flags =  viewer 1 showDocked off parlanguage 0
+color 0.55 0.55 0.55 
+dock glsl2
+end

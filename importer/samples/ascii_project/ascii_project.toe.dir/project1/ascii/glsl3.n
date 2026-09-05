@@ -1,0 +1,12 @@
+TOP:glsl
+tile 650 -150 130 72
+flags =  picked on viewer 1 parlanguage 0
+inputs
+{
+0 	glsl2
+1 	moviefilein1
+2 	in1
+}
+color 0.55 0.55 0.55 
+view -1 3 0 -0 1 4 0 1 0 0 0
+end

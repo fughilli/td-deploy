@@ -1,0 +1,9 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+# The whole shebang: `bazel run //:toxc -- <project.tox|.toe|graph.json> [opts]`
+# Expands via the Mac host bridge, imports to IR, optimizes, lowers, runs on GL.
+sh_binary(
+    name = "toxc",
+    srcs = ["tools/toxc_run.sh"],
+    visibility = ["//visibility:public"],
+)

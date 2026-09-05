@@ -1,0 +1,7 @@
+DAT:text
+tile 650 -300 130 90
+flags =  picked on viewer 1 parlanguage 0
+color 0.55 0.55 0.55 
+dock glsl3
+view -1 8 0 1 1 1 0 -22.3267 0 0 1 1 0
+end

@@ -1,0 +1,5 @@
+module(name = "toxc", version = "0.1.0")
+
+# Only need sh_binary for the run wrapper; the heavy toolchain (python + Mesa GL)
+# is provided hermetically by Nix via nix/dev.nix (see tools/toxc_run.sh).
+bazel_dep(name = "rules_shell", version = "0.8.0")
