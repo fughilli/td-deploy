@@ -8,10 +8,11 @@ move. Output frames are read back as numpy RGBA. Used by the MJPEG stream server
 `run()` wraps it for a single frame (host reference / conformance).
 """
 from __future__ import annotations
+import os
 import numpy as np
 from OpenGL import GL
 
-from runtime import egl_context, sources
+from runtime import egl_context, sources, video
 from runtime.expr import eval_expr
 from lowering.lower import RuntimePlan
 
@@ -78,13 +79,21 @@ class Renderer:
         self.tex: dict[str, int] = {}
         self.fbo: dict[str, int] = {}
         self.size: dict[str, tuple[int, int]] = {}
+        self.videos: dict[str, video.VideoSource] = {}
         for st in plan.steps:
             w, h = st.target["w"], st.target["h"]
             if st.kind == "source":
-                img = sources.load(st.params)
-                if (img.shape[1], img.shape[0]) != (w, h):
-                    w, h = img.shape[1], img.shape[0]
-                self.tex[st.node_id] = _texture(w, h, (img * 255.0 + 0.5).astype(np.uint8))
+                path = st.params.get("path")
+                if video.is_video(path) and path and os.path.isfile(path):
+                    vs = video.VideoSource(path)
+                    self.videos[st.node_id] = vs
+                    w, h = vs.width, vs.height
+                    self.tex[st.node_id] = _texture(w, h, vs.frame_at(0.0))
+                else:
+                    img = sources.load(st.params)
+                    if (img.shape[1], img.shape[0]) != (w, h):
+                        w, h = img.shape[1], img.shape[0]
+                    self.tex[st.node_id] = _texture(w, h, (img * 255.0 + 0.5).astype(np.uint8))
                 self.size[st.node_id] = (w, h)
             elif st.kind == "shader":
                 self.prog[st.node_id] = _program(st.vertex, st.fragment)
@@ -98,6 +107,12 @@ class Renderer:
                 self.size[st.node_id] = (w, h)
 
     def render(self, t: float, frame: int = 0) -> np.ndarray:
+        # advance any video sources to the frame for this time
+        for nid, vs in self.videos.items():
+            data = np.ascontiguousarray(np.flipud(vs.frame_at(t)), np.uint8)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, self.tex[nid])
+            GL.glTexSubImage2D(GL.GL_TEXTURE_2D, 0, 0, 0, vs.width, vs.height,
+                               GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, data)
         for st in self.plan.steps:
             if st.kind == "passthrough":
                 src = st.inputs[0] if st.inputs else None

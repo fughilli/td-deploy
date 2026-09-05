@@ -12,7 +12,7 @@ let
   pkgs = (builtins.getFlake "nixpkgs").legacyPackages.${builtins.currentSystem};
   lib = pkgs.lib;
   isLinux = pkgs.stdenv.isLinux;
-  py = pkgs.python3.withPackages (ps: with ps; [ numpy pillow pyopengl ]);
+  py = pkgs.python3.withPackages (ps: with ps; [ numpy pillow pyopengl av ]);
   glLibs = lib.optionals isLinux [ pkgs.libGL pkgs.mesa pkgs.libdrm ];
 in
 pkgs.mkShell {

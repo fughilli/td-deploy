@@ -82,7 +82,11 @@ def _fetch_host_assets(g: Graph, host: str, assetdir: str) -> None:
                 continue
         # record native size so the source keeps its real resolution (crop needs it)
         try:
-            w, h = Image.open(local).size
+            from runtime import video
+            if video.is_video(local):
+                w, h = video.probe_size(local)
+            else:
+                w, h = Image.open(local).size
             n.params["w"], n.params["h"] = int(w), int(h)
         except Exception:  # noqa: BLE001
             pass
