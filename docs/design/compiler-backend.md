@@ -61,9 +61,9 @@ arithmetic).
 
 ## Phased plan
 - **M0 ✅ toolchain gate** — working MLIR/LLVM 18 (nixos-24.11) + rustc 1.82.
-- **M0.5 dialect spine** — out-of-tree `tox` dialect (TableGen + C++) → `toxc-opt` round-trips a
+- **M0.5 ✅ dialect spine** (DONE) — out-of-tree `tox` dialect (TableGen + C++) → `toxc-opt` round-trips a
   `.mlir` with `tox` ops. *(in progress)*
-- **M1 expr transpile** — expr AST → `arith`/`math` → LLVM `.o`; Rust runtime calls it; Python
+- **M1 ✅ expr transpile** (DONE) — expr AST → `arith`/`math` → LLVM `.o`; Rust runtime calls it; Python
   fallback path. Verify against the reference evaluator.
 - **M2 TOP lowering** — `tox` TOP ops → SPIR-V; Rust runtime (EGL/GLES) runs the ascii graph
   natively, diffed against the Python reference (conformance).

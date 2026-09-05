@@ -6,7 +6,7 @@ let
 in
 pkgs.mkShell {
   packages = [
-    pkgs.cmake pkgs.ninja pkgs.lld
+    pkgs.cmake pkgs.ninja pkgs.lld pkgs.python3
     llvm.clang llvm.mlir llvm.llvm.dev
   ];
   shellHook = ''
