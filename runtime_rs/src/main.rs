@@ -1,18 +1,20 @@
-// toxc native runtime (M2). Headless EGL-surfaceless GL via Rust (khronos-egl +
+// toxc native runtime (M2/M4). Headless EGL-surfaceless GL via Rust (khronos-egl +
 // glow). Loads a compiled artifact (schedule.json + shaders + assets + native
-// param-expr .so) and renders it — no Python in the loop. On the Pi the same code
-// targets the V3D with GLES instead of llvmpipe.
-//
-//   toxc-runtime probe
-//   toxc-runtime run <artifact_dir> <out.png> [t_seconds]
+// param-expr .so + services) and renders it — no Python in the loop. Modes:
+//   probe                         print the GL context
+//   run   <dir> <out.png> [t] [wait_ms]     one-shot render (conformance)
+//   stream <dir> [port] [fps]     live MJPEG (native), with OSC input
+// On the Pi the same code targets the V3D with GLES; a DRM/KMS sink replaces the
+// network stream for HDMI (added with the device).
 use glow::HasContext;
 use khronos_egl as egl;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::net::UdpSocket;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const PLATFORM_SURFACELESS_MESA: egl::Enum = 0x31DD;
 const CTX_OPENGL_PROFILE_MASK: egl::Int = 0x30FD;
@@ -73,13 +75,10 @@ struct TimeUniform {
     inputs: Vec<String>,
     #[serde(default = "one")]
     mul: f64,
-    #[serde(default)]
-    interpreted: Option<String>,
 }
 fn one() -> f64 {
     1.0
 }
-
 #[derive(Deserialize)]
 struct ServiceSpec {
     #[serde(rename = "type")]
@@ -180,7 +179,6 @@ fn start_osc(name: String, port: u16, store: Chops) {
 }
 
 fn chop_value(store: &Chops, input: &str) -> f64 {
-    // input like "chop_<op>_<chan>"
     if let Some(rest) = input.strip_prefix("chop_") {
         let mut it = rest.splitn(2, '_');
         let op = it.next().unwrap_or("");
@@ -190,7 +188,7 @@ fn chop_value(store: &Chops, input: &str) -> f64 {
     0.0
 }
 
-// ---------------- GL setup ----------------
+// ---------------- GL helpers ----------------
 fn make_gl() -> (egl::DynamicInstance<egl::EGL1_5>, egl::Display, glow::Context) {
     let egl = unsafe { egl::DynamicInstance::<egl::EGL1_5>::load_required() }.expect("libEGL");
     let display = unsafe {
@@ -279,159 +277,258 @@ fn farr(v: &serde_json::Value) -> Vec<f32> {
     v.as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect()
 }
 
-unsafe fn call_expr(lib: &libloading::Library, name: &str, args: &[f64]) -> f64 {
-    let sym = std::ffi::CString::new(name).unwrap();
-    match args.len() {
-        0 => { let f: libloading::Symbol<unsafe extern "C" fn() -> f64> = lib.get(sym.as_bytes_with_nul()).unwrap(); f() }
-        1 => { let f: libloading::Symbol<unsafe extern "C" fn(f64) -> f64> = lib.get(sym.as_bytes_with_nul()).unwrap(); f(args[0]) }
-        2 => { let f: libloading::Symbol<unsafe extern "C" fn(f64, f64) -> f64> = lib.get(sym.as_bytes_with_nul()).unwrap(); f(args[0], args[1]) }
-        3 => { let f: libloading::Symbol<unsafe extern "C" fn(f64, f64, f64) -> f64> = lib.get(sym.as_bytes_with_nul()).unwrap(); f(args[0], args[1], args[2]) }
-        _ => { let f: libloading::Symbol<unsafe extern "C" fn(f64, f64, f64, f64) -> f64> = lib.get(sym.as_bytes_with_nul()).unwrap(); f(args[0], args[1], args[2], args[3]) }
+unsafe fn call_expr(lib: &libloading::Library, name: &str, a: &[f64]) -> f64 {
+    let s = std::ffi::CString::new(name).unwrap();
+    let n = s.as_bytes_with_nul();
+    match a.len() {
+        0 => { let f: libloading::Symbol<unsafe extern "C" fn() -> f64> = lib.get(n).unwrap(); f() }
+        1 => { let f: libloading::Symbol<unsafe extern "C" fn(f64) -> f64> = lib.get(n).unwrap(); f(a[0]) }
+        2 => { let f: libloading::Symbol<unsafe extern "C" fn(f64, f64) -> f64> = lib.get(n).unwrap(); f(a[0], a[1]) }
+        3 => { let f: libloading::Symbol<unsafe extern "C" fn(f64, f64, f64) -> f64> = lib.get(n).unwrap(); f(a[0], a[1], a[2]) }
+        _ => { let f: libloading::Symbol<unsafe extern "C" fn(f64, f64, f64, f64) -> f64> = lib.get(n).unwrap(); f(a[0], a[1], a[2], a[3]) }
+    }
+}
+
+// ---------------- renderer ----------------
+struct Renderer<'a> {
+    gl: &'a glow::Context,
+    dir: String,
+    sched: Schedule,
+    exprs: Option<libloading::Library>,
+    store: Chops,
+    tex: HashMap<String, glow::Texture>,
+    fbo: HashMap<String, glow::Framebuffer>,
+    prog: HashMap<String, glow::Program>,
+    size: HashMap<String, (i32, i32)>,
+}
+
+impl<'a> Renderer<'a> {
+    fn new(gl: &'a glow::Context, dir: &str) -> Self {
+        let sched: Schedule =
+            serde_json::from_reader(std::fs::File::open(format!("{dir}/schedule.json")).unwrap()).unwrap();
+        let exprs = sched.exprs_lib.as_ref().map(|p| unsafe {
+            libloading::Library::new(format!("{dir}/{p}")).expect("load exprs lib")
+        });
+        let store: Chops = Arc::new(Mutex::new(HashMap::new()));
+        if let Ok(txt) = std::fs::read_to_string(format!("{dir}/services.json")) {
+            if let Ok(specs) = serde_json::from_str::<Vec<ServiceSpec>>(&txt) {
+                for s in specs {
+                    if s.ty == "oscin" {
+                        start_osc(s.name, s.port, store.clone());
+                    }
+                }
+            }
+        }
+        let mut r = Renderer {
+            gl, dir: dir.to_string(), sched, exprs, store,
+            tex: HashMap::new(), fbo: HashMap::new(), prog: HashMap::new(), size: HashMap::new(),
+        };
+        r.setup();
+        r
+    }
+
+    fn setup(&mut self) {
+        let gl = self.gl;
+        unsafe {
+            let vao = gl.create_vertex_array().unwrap();
+            gl.bind_vertex_array(Some(vao));
+        }
+        for st in &self.sched.steps {
+            if st.kind == "source" {
+                let src = st.source.as_ref().unwrap();
+                let (data, w, h) = if src.ty == "image" {
+                    let im = image::open(format!("{}/{}", self.dir, src.path.as_ref().unwrap()))
+                        .unwrap().to_rgba8();
+                    let (w, h) = (im.width() as usize, im.height() as usize);
+                    (im.into_raw(), w, h)
+                } else {
+                    let (w, h) = (src.w.max(1) as usize, src.h.max(1) as usize);
+                    (testcard(w, h), w, h)
+                };
+                let t = make_tex(gl, w as i32, h as i32, Some(&flip_vert(&data, w, h)));
+                self.tex.insert(st.id.clone(), t);
+                self.size.insert(st.id.clone(), (w as i32, h as i32));
+            } else if st.kind == "shader" {
+                let vs = compile(gl, glow::VERTEX_SHADER,
+                    &std::fs::read_to_string(format!("{}/{}", self.dir, st.vert.as_ref().unwrap())).unwrap());
+                let fs = compile(gl, glow::FRAGMENT_SHADER,
+                    &std::fs::read_to_string(format!("{}/{}", self.dir, st.frag.as_ref().unwrap())).unwrap());
+                unsafe {
+                    let p = gl.create_program().unwrap();
+                    gl.attach_shader(p, vs);
+                    gl.attach_shader(p, fs);
+                    gl.link_program(p);
+                    assert!(gl.get_program_link_status(p), "link: {}", gl.get_program_info_log(p));
+                    let ot = make_tex(gl, st.w, st.h, None);
+                    let f = gl.create_framebuffer().unwrap();
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f));
+                    gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(ot), 0);
+                    self.prog.insert(st.id.clone(), p);
+                    self.tex.insert(st.id.clone(), ot);
+                    self.fbo.insert(st.id.clone(), f);
+                    self.size.insert(st.id.clone(), (st.w, st.h));
+                }
+            }
+        }
+    }
+
+    fn render(&mut self, t: f64) -> (Vec<u8>, i32, i32) {
+        let gl = self.gl;
+        for st in &self.sched.steps {
+            if st.kind == "passthrough" {
+                if let Some(src) = st.inputs.first() {
+                    let (a, b) = (self.tex[src], self.size[src]);
+                    self.tex.insert(st.id.clone(), a);
+                    self.size.insert(st.id.clone(), b);
+                }
+            } else if st.kind == "shader" {
+                unsafe {
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo[&st.id]));
+                    gl.viewport(0, 0, st.w, st.h);
+                    let p = self.prog[&st.id];
+                    gl.use_program(Some(p));
+                    for (i, src) in st.inputs.iter().enumerate() {
+                        gl.active_texture(glow::TEXTURE0 + i as u32);
+                        gl.bind_texture(glow::TEXTURE_2D, Some(self.tex[src]));
+                    }
+                    if let Some(arr) = &st.sampler_array {
+                        let loc = gl.get_uniform_location(p, &format!("{arr}[0]"))
+                            .or_else(|| gl.get_uniform_location(p, arr));
+                        if let Some(l) = loc {
+                            let units: Vec<i32> = (0..st.inputs.len() as i32).collect();
+                            gl.uniform_1_i32_slice(Some(&l), &units);
+                        }
+                    } else {
+                        for i in 0..st.inputs.len() {
+                            if let Some(l) = gl.get_uniform_location(p, &format!("tex{i}")) {
+                                gl.uniform_1_i32(Some(&l), i as i32);
+                            }
+                        }
+                    }
+                    for (name, u) in &st.uniforms {
+                        if let Some(l) = gl.get_uniform_location(p, name) {
+                            match u.ty.as_str() {
+                                "vec2" => { let a = farr(&u.value); gl.uniform_2_f32(Some(&l), a[0], a[1]); }
+                                "vec4" => { let a = farr(&u.value); gl.uniform_4_f32(Some(&l), a[0], a[1], a[2], a[3]); }
+                                "float" => gl.uniform_1_f32(Some(&l), u.value.as_f64().unwrap() as f32),
+                                "int" => gl.uniform_1_i32(Some(&l), u.value.as_i64().unwrap() as i32),
+                                _ => {}
+                            }
+                        }
+                    }
+                    for (name, tu) in &st.time_uniforms {
+                        if let Some(l) = gl.get_uniform_location(p, name) {
+                            let v = if let (Some(func), Some(lib)) = (&tu.func, &self.exprs) {
+                                let args: Vec<f64> = tu.inputs.iter().map(|n| match n.as_str() {
+                                    "t" => t,
+                                    "frame" => (t * 60.0).floor(),
+                                    other => chop_value(&self.store, other),
+                                }).collect();
+                                call_expr(lib, func, &args) * tu.mul
+                            } else {
+                                0.0
+                            };
+                            gl.uniform_1_f32(Some(&l), v as f32);
+                        }
+                    }
+                    gl.draw_arrays(glow::TRIANGLES, 0, 3);
+                }
+            }
+        }
+        let (ow, oh) = self.size[&self.sched.output];
+        let mut raw = vec![0u8; (ow * oh * 4) as usize];
+        unsafe {
+            let f = gl.create_framebuffer().unwrap();
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f));
+            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D,
+                                      Some(self.tex[&self.sched.output]), 0);
+            gl.read_pixels(0, 0, ow, oh, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(&mut raw));
+            gl.delete_framebuffer(f);
+        }
+        (flip_vert(&raw, ow as usize, oh as usize), ow, oh)
     }
 }
 
 fn run(gl: &glow::Context, dir: &str, out: &str, t: f64, wait_ms: u64) {
-    let sched: Schedule =
-        serde_json::from_reader(std::fs::File::open(format!("{dir}/schedule.json")).unwrap()).unwrap();
-    let exprs = sched
-        .exprs_lib
-        .as_ref()
-        .map(|p| unsafe { libloading::Library::new(format!("{dir}/{p}")).expect("load exprs lib") });
-
-    // I/O services (OSC) -> live CHOP store for op('..')['..'] param exprs
-    let store: Chops = Arc::new(Mutex::new(HashMap::new()));
-    if let Ok(txt) = std::fs::read_to_string(format!("{dir}/services.json")) {
-        if let Ok(specs) = serde_json::from_str::<Vec<ServiceSpec>>(&txt) {
-            for s in specs {
-                if s.ty == "oscin" {
-                    start_osc(s.name, s.port, store.clone());
-                }
-            }
-        }
-    }
+    let mut r = Renderer::new(gl, dir);
     if wait_ms > 0 {
-        thread::sleep(Duration::from_millis(wait_ms)); // let external OSC arrive (test/one-shot)
+        thread::sleep(Duration::from_millis(wait_ms));
     }
+    let (buf, w, h) = r.render(t);
+    image::save_buffer(out, &buf, w as u32, h as u32, image::ExtendedColorType::Rgba8).unwrap();
+    println!("[rust] rendered {} @ t={t} -> {out}", r.sched.output);
+}
 
-    let mut tex: HashMap<String, glow::Texture> = HashMap::new();
-    let mut fbo: HashMap<String, glow::Framebuffer> = HashMap::new();
-    let mut prog: HashMap<String, glow::Program> = HashMap::new();
-    let mut size: HashMap<String, (i32, i32)> = HashMap::new();
-    unsafe {
-        let vao = gl.create_vertex_array().unwrap();
-        gl.bind_vertex_array(Some(vao));
+const PAGE: &[u8] = b"<!doctype html><html><body style='margin:0;background:#111;display:flex;\
+align-items:center;justify-content:center;height:100vh'>\
+<img src='/stream' style='max-width:100vw;max-height:100vh;image-rendering:pixelated'></body></html>";
+
+fn serve_http(port: u16, latest: Arc<Mutex<Vec<u8>>>) {
+    let l = TcpListener::bind(("0.0.0.0", port)).expect("bind http");
+    println!("[stream] native MJPEG on http://0.0.0.0:{port}/");
+    for c in l.incoming().flatten() {
+        let latest = latest.clone();
+        thread::spawn(move || handle_conn(c, latest));
     }
+}
 
-    // setup
-    for st in &sched.steps {
-        if st.kind == "source" {
-            let src = st.source.as_ref().unwrap();
-            let (data, w, h) = if src.ty == "image" {
-                let im = image::open(format!("{dir}/{}", src.path.as_ref().unwrap())).unwrap().to_rgba8();
-                let (w, h) = (im.width() as usize, im.height() as usize);
-                (im.into_raw(), w, h)
-            } else {
-                let (w, h) = (src.w.max(1) as usize, src.h.max(1) as usize);
-                (testcard(w, h), w, h)
-            };
-            let t2 = make_tex(gl, w as i32, h as i32, Some(&flip_vert(&data, w, h)));
-            tex.insert(st.id.clone(), t2);
-            size.insert(st.id.clone(), (w as i32, h as i32));
-        } else if st.kind == "shader" {
-            let vs = compile(gl, glow::VERTEX_SHADER, &std::fs::read_to_string(format!("{dir}/{}", st.vert.as_ref().unwrap())).unwrap());
-            let fs = compile(gl, glow::FRAGMENT_SHADER, &std::fs::read_to_string(format!("{dir}/{}", st.frag.as_ref().unwrap())).unwrap());
-            unsafe {
-                let p = gl.create_program().unwrap();
-                gl.attach_shader(p, vs);
-                gl.attach_shader(p, fs);
-                gl.link_program(p);
-                assert!(gl.get_program_link_status(p), "link: {}", gl.get_program_info_log(p));
-                prog.insert(st.id.clone(), p);
-                let ot = make_tex(gl, st.w, st.h, None);
-                let f = gl.create_framebuffer().unwrap();
-                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f));
-                gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(ot), 0);
-                tex.insert(st.id.clone(), ot);
-                fbo.insert(st.id.clone(), f);
-                size.insert(st.id.clone(), (st.w, st.h));
+fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>) {
+    let mut buf = [0u8; 2048];
+    let n = s.read(&mut buf).unwrap_or(0);
+    let req = String::from_utf8_lossy(&buf[..n]);
+    let path = req.split_whitespace().nth(1).unwrap_or("/");
+    if path.starts_with("/stream") {
+        if s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-cache\r\n\r\n").is_err() {
+            return;
+        }
+        loop {
+            let jpg = latest.lock().unwrap().clone();
+            if !jpg.is_empty() {
+                let hdr = format!("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", jpg.len());
+                if s.write_all(hdr.as_bytes()).is_err() || s.write_all(&jpg).is_err() || s.write_all(b"\r\n").is_err() {
+                    return;
+                }
             }
+            thread::sleep(Duration::from_millis(33));
+        }
+    } else if path.starts_with("/frame.jpg") {
+        let jpg = latest.lock().unwrap().clone();
+        let hdr = format!("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", jpg.len());
+        let _ = s.write_all(hdr.as_bytes());
+        let _ = s.write_all(&jpg);
+    } else {
+        let hdr = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n", PAGE.len());
+        let _ = s.write_all(hdr.as_bytes());
+        let _ = s.write_all(PAGE);
+    }
+}
+
+fn stream(gl: &glow::Context, dir: &str, port: u16, fps: f64) {
+    let mut r = Renderer::new(gl, dir);
+    let latest: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let latest = latest.clone();
+        thread::spawn(move || serve_http(port, latest));
+    }
+    let start = Instant::now();
+    let period = Duration::from_secs_f64(1.0 / fps.max(1.0));
+    loop {
+        let t = start.elapsed().as_secs_f64();
+        let (buf, w, h) = r.render(t);
+        let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+        for px in buf.chunks_exact(4) {
+            rgb.extend_from_slice(&px[..3]);
+        }
+        let mut jpg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpg, 80)
+            .encode(&rgb, w as u32, h as u32, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        *latest.lock().unwrap() = jpg;
+        let ft = start.elapsed().as_secs_f64() - t;
+        if let Some(s) = period.checked_sub(Duration::from_secs_f64(ft.max(0.0))) {
+            thread::sleep(s);
         }
     }
-
-    // render frame at time t
-    for st in &sched.steps {
-        if st.kind == "passthrough" {
-            if let Some(src) = st.inputs.first() {
-                let (a, b) = (tex[src], size[src]);
-                tex.insert(st.id.clone(), a);
-                size.insert(st.id.clone(), b);
-            }
-        } else if st.kind == "shader" {
-            unsafe {
-                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo[&st.id]));
-                gl.viewport(0, 0, st.w, st.h);
-                let p = prog[&st.id];
-                gl.use_program(Some(p));
-                for (i, src) in st.inputs.iter().enumerate() {
-                    gl.active_texture(glow::TEXTURE0 + i as u32);
-                    gl.bind_texture(glow::TEXTURE_2D, Some(tex[src]));
-                }
-                if let Some(arr) = &st.sampler_array {
-                    let loc = gl.get_uniform_location(p, &format!("{arr}[0]")).or_else(|| gl.get_uniform_location(p, arr));
-                    if let Some(l) = loc {
-                        let units: Vec<i32> = (0..st.inputs.len() as i32).collect();
-                        gl.uniform_1_i32_slice(Some(&l), &units);
-                    }
-                } else {
-                    for i in 0..st.inputs.len() {
-                        if let Some(l) = gl.get_uniform_location(p, &format!("tex{i}")) {
-                            gl.uniform_1_i32(Some(&l), i as i32);
-                        }
-                    }
-                }
-                for (name, u) in &st.uniforms {
-                    if let Some(l) = gl.get_uniform_location(p, name) {
-                        match u.ty.as_str() {
-                            "vec2" => { let a = farr(&u.value); gl.uniform_2_f32(Some(&l), a[0], a[1]); }
-                            "vec4" => { let a = farr(&u.value); gl.uniform_4_f32(Some(&l), a[0], a[1], a[2], a[3]); }
-                            "float" => gl.uniform_1_f32(Some(&l), u.value.as_f64().unwrap() as f32),
-                            "int" => gl.uniform_1_i32(Some(&l), u.value.as_i64().unwrap() as i32),
-                            _ => {}
-                        }
-                    }
-                }
-                for (name, tu) in &st.time_uniforms {
-                    if let Some(l) = gl.get_uniform_location(p, name) {
-                        let v = if let (Some(func), Some(lib)) = (&tu.func, &exprs) {
-                            let args: Vec<f64> = tu.inputs.iter().map(|n| match n.as_str() {
-                                "t" => t,
-                                "frame" => (t * 60.0).floor(),
-                                other => chop_value(&store, other),
-                            }).collect();
-                            call_expr(lib, func, &args) * tu.mul
-                        } else {
-                            0.0 // interpreted-expr fallback lands here (TODO embed evaluator)
-                        };
-                        gl.uniform_1_f32(Some(&l), v as f32);
-                    }
-                }
-                gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            }
-        }
-    }
-
-    // readback output
-    let (ow, oh) = size[&sched.output];
-    unsafe {
-        let f = gl.create_framebuffer().unwrap();
-        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f));
-        gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex[&sched.output]), 0);
-        let mut raw = vec![0u8; (ow * oh * 4) as usize];
-        gl.read_pixels(0, 0, ow, oh, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(&mut raw));
-        let top = flip_vert(&raw, ow as usize, oh as usize);
-        image::save_buffer(out, &top, ow as u32, oh as u32, image::ExtendedColorType::Rgba8).unwrap();
-    }
-    println!("[rust] rendered {} @ t={t} -> {out}", sched.output);
 }
 
 fn main() {
@@ -444,6 +541,12 @@ fn main() {
             let t = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0.0);
             let wait_ms = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
             run(&gl, dir, out, t, wait_ms);
+        }
+        Some("stream") => {
+            let dir = &args[2];
+            let port = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(8788);
+            let fps = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(30.0);
+            stream(&gl, dir, port, fps);
         }
         _ => unsafe {
             println!("OK GL_RENDERER {}", gl.get_parameter_string(glow::RENDERER));
