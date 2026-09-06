@@ -9,6 +9,10 @@ use glow::HasContext;
 use khronos_egl as egl;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::net::UdpSocket;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 const PLATFORM_SURFACELESS_MESA: egl::Enum = 0x31DD;
 const CTX_OPENGL_PROFILE_MASK: egl::Int = 0x30FD;
@@ -74,6 +78,116 @@ struct TimeUniform {
 }
 fn one() -> f64 {
     1.0
+}
+
+#[derive(Deserialize)]
+struct ServiceSpec {
+    #[serde(rename = "type")]
+    ty: String,
+    name: String,
+    #[serde(default)]
+    port: u16,
+}
+
+// ---------------- I/O services (OSC) + CHOP store ----------------
+type Chops = Arc<Mutex<HashMap<String, HashMap<String, f64>>>>;
+
+fn osc_string(d: &[u8], mut i: usize) -> (String, usize) {
+    let start = i;
+    while i < d.len() && d[i] != 0 {
+        i += 1;
+    }
+    let s = String::from_utf8_lossy(&d[start..i]).into_owned();
+    i += 1;
+    while i % 4 != 0 {
+        i += 1;
+    }
+    (s, i)
+}
+
+fn parse_osc(d: &[u8]) -> Vec<(String, Vec<f64>)> {
+    if d.len() >= 8 && &d[..8] == b"#bundle\0" {
+        let mut out = vec![];
+        let mut i = 16;
+        while i + 4 <= d.len() {
+            let sz = i32::from_be_bytes([d[i], d[i + 1], d[i + 2], d[i + 3]]) as usize;
+            i += 4;
+            if i + sz <= d.len() {
+                out.extend(parse_osc(&d[i..i + sz]));
+            }
+            i += sz;
+        }
+        return out;
+    }
+    if d.is_empty() || d[0] != b'/' {
+        return vec![];
+    }
+    let (addr, mut i) = osc_string(d, 0);
+    if i >= d.len() || d[i] != b',' {
+        return vec![(addr, vec![])];
+    }
+    let (tags, j) = osc_string(d, i);
+    i = j;
+    let mut args = vec![];
+    for t in tags.bytes().skip(1) {
+        match t {
+            b'f' if i + 4 <= d.len() => {
+                args.push(f32::from_be_bytes([d[i], d[i + 1], d[i + 2], d[i + 3]]) as f64);
+                i += 4;
+            }
+            b'i' if i + 4 <= d.len() => {
+                args.push(i32::from_be_bytes([d[i], d[i + 1], d[i + 2], d[i + 3]]) as f64);
+                i += 4;
+            }
+            b'd' if i + 8 <= d.len() => {
+                let mut b = [0u8; 8];
+                b.copy_from_slice(&d[i..i + 8]);
+                args.push(f64::from_be_bytes(b));
+                i += 8;
+            }
+            b'T' => args.push(1.0),
+            b'F' => args.push(0.0),
+            b's' => {
+                let (_, k) = osc_string(d, i);
+                i = k;
+            }
+            _ => {}
+        }
+    }
+    vec![(addr, args)]
+}
+
+fn start_osc(name: String, port: u16, store: Chops) {
+    let sock = UdpSocket::bind(("0.0.0.0", port)).expect("bind osc port");
+    println!("[service] oscin {name} udp:{port}");
+    thread::spawn(move || {
+        let mut buf = [0u8; 65536];
+        while let Ok((n, _)) = sock.recv_from(&mut buf) {
+            for (addr, nums) in parse_osc(&buf[..n]) {
+                let base = addr.trim_start_matches('/').replace('/', "_");
+                let mut m = store.lock().unwrap();
+                let e = m.entry(name.clone()).or_default();
+                if nums.len() == 1 {
+                    e.insert(base, nums[0]);
+                } else {
+                    for (k, v) in nums.iter().enumerate() {
+                        e.insert(format!("{base}{}", k + 1), *v);
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn chop_value(store: &Chops, input: &str) -> f64 {
+    // input like "chop_<op>_<chan>"
+    if let Some(rest) = input.strip_prefix("chop_") {
+        let mut it = rest.splitn(2, '_');
+        let op = it.next().unwrap_or("");
+        let ch = it.next().unwrap_or("");
+        return store.lock().unwrap().get(op).and_then(|m| m.get(ch)).copied().unwrap_or(0.0);
+    }
+    0.0
 }
 
 // ---------------- GL setup ----------------
@@ -176,13 +290,28 @@ unsafe fn call_expr(lib: &libloading::Library, name: &str, args: &[f64]) -> f64 
     }
 }
 
-fn run(gl: &glow::Context, dir: &str, out: &str, t: f64) {
+fn run(gl: &glow::Context, dir: &str, out: &str, t: f64, wait_ms: u64) {
     let sched: Schedule =
         serde_json::from_reader(std::fs::File::open(format!("{dir}/schedule.json")).unwrap()).unwrap();
     let exprs = sched
         .exprs_lib
         .as_ref()
         .map(|p| unsafe { libloading::Library::new(format!("{dir}/{p}")).expect("load exprs lib") });
+
+    // I/O services (OSC) -> live CHOP store for op('..')['..'] param exprs
+    let store: Chops = Arc::new(Mutex::new(HashMap::new()));
+    if let Ok(txt) = std::fs::read_to_string(format!("{dir}/services.json")) {
+        if let Ok(specs) = serde_json::from_str::<Vec<ServiceSpec>>(&txt) {
+            for s in specs {
+                if s.ty == "oscin" {
+                    start_osc(s.name, s.port, store.clone());
+                }
+            }
+        }
+    }
+    if wait_ms > 0 {
+        thread::sleep(Duration::from_millis(wait_ms)); // let external OSC arrive (test/one-shot)
+    }
 
     let mut tex: HashMap<String, glow::Texture> = HashMap::new();
     let mut fbo: HashMap<String, glow::Framebuffer> = HashMap::new();
@@ -277,7 +406,7 @@ fn run(gl: &glow::Context, dir: &str, out: &str, t: f64) {
                             let args: Vec<f64> = tu.inputs.iter().map(|n| match n.as_str() {
                                 "t" => t,
                                 "frame" => (t * 60.0).floor(),
-                                _ => 0.0, // chop channels: wired to services in a later step
+                                other => chop_value(&store, other),
                             }).collect();
                             call_expr(lib, func, &args) * tu.mul
                         } else {
@@ -313,7 +442,8 @@ fn main() {
             let dir = &args[2];
             let out = args.get(3).map(|s| s.as_str()).unwrap_or("out.png");
             let t = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0.0);
-            run(&gl, dir, out, t);
+            let wait_ms = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
+            run(&gl, dir, out, t, wait_ms);
         }
         _ => unsafe {
             println!("OK GL_RENDERER {}", gl.get_parameter_string(glow::RENDERER));

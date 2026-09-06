@@ -22,4 +22,3 @@ compiler/build/
 # rust runtime
 runtime_rs/target/
 runtime_rs/*.png
-runtime_rs/Cargo.lock
