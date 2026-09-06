@@ -188,28 +188,46 @@ fn chop_value(store: &Chops, input: &str) -> f64 {
     0.0
 }
 
+const EGL_OPENGL_ES3_BIT: egl::Int = 0x0000_0040;
+
+fn artifact_is_gles(dir: &str) -> bool {
+    std::fs::read_to_string(format!("{dir}/schedule.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.get("target").and_then(|x| x.as_str()).map(|s| s == "gles"))
+        .unwrap_or(false)
+}
+
 // ---------------- GL helpers ----------------
-fn make_gl() -> (egl::DynamicInstance<egl::EGL1_5>, egl::Display, glow::Context) {
+// gles=true targets GLES 3.1 (the Pi's V3D); false targets desktop GL 3.3 core
+// (host/llvmpipe). Artifact shaders must match (--target gles vs desktop_gl).
+fn make_gl(gles: bool) -> (egl::DynamicInstance<egl::EGL1_5>, egl::Display, glow::Context) {
     let egl = unsafe { egl::DynamicInstance::<egl::EGL1_5>::load_required() }.expect("libEGL");
     let display = unsafe {
         egl.get_platform_display(PLATFORM_SURFACELESS_MESA, egl::DEFAULT_DISPLAY, &[egl::ATTRIB_NONE])
     }
     .expect("get_platform_display");
     egl.initialize(display).expect("initialize");
-    egl.bind_api(egl::OPENGL_API).expect("bind_api");
+    let (api, renderable) = if gles {
+        (egl::OPENGL_ES_API, EGL_OPENGL_ES3_BIT)
+    } else {
+        (egl::OPENGL_API, egl::OPENGL_BIT)
+    };
+    egl.bind_api(api).expect("bind_api");
     let cfg = egl
         .choose_first_config(display, &[
-            egl::SURFACE_TYPE, egl::PBUFFER_BIT, egl::RENDERABLE_TYPE, egl::OPENGL_BIT,
+            egl::SURFACE_TYPE, egl::PBUFFER_BIT, egl::RENDERABLE_TYPE, renderable,
             egl::RED_SIZE, 8, egl::GREEN_SIZE, 8, egl::BLUE_SIZE, 8, egl::NONE,
         ])
         .expect("choose_config")
         .expect("no config");
-    let ctx = egl
-        .create_context(display, cfg, None, &[
-            egl::CONTEXT_MAJOR_VERSION, 3, egl::CONTEXT_MINOR_VERSION, 3,
-            CTX_OPENGL_PROFILE_MASK, CTX_OPENGL_CORE_PROFILE_BIT, egl::NONE,
-        ])
-        .expect("create_context");
+    let ctx_attribs: Vec<egl::Int> = if gles {
+        vec![egl::CONTEXT_MAJOR_VERSION, 3, egl::CONTEXT_MINOR_VERSION, 1, egl::NONE]
+    } else {
+        vec![egl::CONTEXT_MAJOR_VERSION, 3, egl::CONTEXT_MINOR_VERSION, 3,
+             CTX_OPENGL_PROFILE_MASK, CTX_OPENGL_CORE_PROFILE_BIT, egl::NONE]
+    };
+    let ctx = egl.create_context(display, cfg, None, &ctx_attribs).expect("create_context");
     egl.make_current(display, None, None, Some(ctx)).expect("make_current");
     let gl = unsafe {
         glow::Context::from_loader_function(|s| match egl.get_proc_address(s) {
@@ -533,8 +551,10 @@ fn stream(gl: &glow::Context, dir: &str, port: u16, fps: f64) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let (_egl, _dpy, gl) = make_gl();
-    match args.get(1).map(|s| s.as_str()) {
+    let mode = args.get(1).map(|s| s.as_str());
+    let gles = matches!(mode, Some("run") | Some("stream")) && artifact_is_gles(&args[2]);
+    let (_egl, _dpy, gl) = make_gl(gles);
+    match mode {
         Some("run") => {
             let dir = &args[2];
             let out = args.get(3).map(|s| s.as_str()).unwrap_or("out.png");
@@ -549,7 +569,8 @@ fn main() {
             stream(&gl, dir, port, fps);
         }
         _ => unsafe {
-            println!("OK GL_RENDERER {}", gl.get_parameter_string(glow::RENDERER));
+            println!("OK GL_RENDERER {} ({})", gl.get_parameter_string(glow::RENDERER),
+                     if gles { "GLES" } else { "GL" });
         },
     }
 }
