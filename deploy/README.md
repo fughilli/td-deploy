@@ -36,10 +36,17 @@ So `softwareGL = true` forces **Mesa llvmpipe** (CPU): the exact desktop-GL-3.3 
 verified bit-exact in-container. It's CPU-bound (small res / modest fps on the Pi3), but
 functional and needs no shader translation.
 
-Hardware acceleration would require either a **Pi4/Pi5** (V3D, GLES 3.1) plus a
-desktop-GLSL→GLES translation pass (glslang → SPIR-V → SPIRV-Cross; the `--target gles`
-lowering emits ES headers but raw TD shaders still need type-legalization), or rewriting
-to GLES 2.0 for the Pi3's V3D. Tracked as future work.
+**Hardware acceleration on the Pi3 IS achievable** by transpiling the shaders to GLSL ES
+1.00 (GLES 2.0):
+```sh
+compiler/build_shaders_gles.sh ./my_artifact   # -> my_artifact/shaders_gles/
+```
+Pipeline: desktop GLSL → glslang (`-G`) → SPIR-V → `spirv-cross --es --version 100` →
+legalize integer `%` (ES100 lacks it); vertex shaders regenerated as ES2 attribute-based
+fullscreen quads (no `gl_VertexID`). Verified: all ascii shaders compile under Mesa's
+GLSL-ES-1.00 frontend (the same one the VC4 driver uses). Remaining to render on VC4 HW:
+an ES2 render path in the runtime (ES2 context + attribute VBO + load `shaders_gles/`).
+Until that lands, `softwareGL = true` (llvmpipe) is the working default.
 
 ## Output sinks
 - **Network (now):** `stream` mode serves MJPEG over HTTP (this module). Works headless;
