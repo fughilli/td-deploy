@@ -36,17 +36,21 @@ So `softwareGL = true` forces **Mesa llvmpipe** (CPU): the exact desktop-GL-3.3 
 verified bit-exact in-container. It's CPU-bound (small res / modest fps on the Pi3), but
 functional and needs no shader translation.
 
-**Hardware acceleration on the Pi3 IS achievable** by transpiling the shaders to GLSL ES
-1.00 (GLES 2.0):
+**Hardware-accelerated Pi3 (VC4 GLES 2.0) path — WORKING.** Build a GLES2 artifact:
 ```sh
-compiler/build_shaders_gles.sh ./my_artifact   # -> my_artifact/shaders_gles/
+nix/dev.sh python3 -m cli <project.tox> --res 256 --target gles2 --emit-artifact ./art \
+    [--set-file NODE=/host/path]
+compiler/build_exprs.sh        ./art     # native param exprs
+compiler/build_shaders_gles.sh ./art     # shaders/ -> shaders_gles/ (GLSL ES 1.00)
 ```
-Pipeline: desktop GLSL → glslang (`-G`) → SPIR-V → `spirv-cross --es --version 100` →
-legalize integer `%` (ES100 lacks it); vertex shaders regenerated as ES2 attribute-based
-fullscreen quads (no `gl_VertexID`). Verified: all ascii shaders compile under Mesa's
-GLSL-ES-1.00 frontend (the same one the VC4 driver uses). Remaining to render on VC4 HW:
-an ES2 render path in the runtime (ES2 context + attribute VBO + load `shaders_gles/`).
-Until that lands, `softwareGL = true` (llvmpipe) is the working default.
+Translation pipeline: desktop GLSL → glslang (`-G`) → SPIR-V → `spirv-cross --es --version
+100` → legalize integer `%`; vertex shaders regenerated as ES2 attribute-based fullscreen
+quads (no `gl_VertexID`). The runtime sees `target=gles2` and uses an ES2 context + attribute
+VBO + `shaders_gles/`. **Verified in-container: renders bit-exact vs desktop GL under a real
+GLES2 context** (max|Δ|=0) — the same Mesa GLSL-ES-1.00 frontend the Pi3 VC4 driver uses.
+
+For a GLES2 artifact set `services.toxc.softwareGL = false` to use the VC4 GPU. Software
+llvmpipe (`softwareGL = true`, desktop_gl artifact) remains the fallback.
 
 ## Output sinks
 - **Network (now):** `stream` mode serves MJPEG over HTTP (this module). Works headless;
