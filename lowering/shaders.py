@@ -9,7 +9,9 @@ kernels below are authored portably so they need only header swapping.
 """
 from __future__ import annotations
 
-TARGETS = {"desktop_gl", "gles"}
+# "gles2" emits desktop GLSL (330) as the *input* to the ES1.00 translator
+# (compiler/translate_gles.py); the schedule target tells the runtime to use ES2.
+TARGETS = {"desktop_gl", "gles", "gles2"}
 
 
 def _header(target: str, stage: str) -> str:

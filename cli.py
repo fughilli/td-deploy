@@ -114,7 +114,7 @@ def main() -> int:
     ap.add_argument("input", help=".tox/.toe project or toxc IR .json")
     ap.add_argument("--host", default=os.environ.get("TOXC_HOST", "host.docker.internal:8770"))
     ap.add_argument("--backend", choices=["both", "gl", "cpu"], default="both")
-    ap.add_argument("--target", choices=["desktop_gl", "gles"], default="desktop_gl")
+    ap.add_argument("--target", choices=["desktop_gl", "gles", "gles2"], default="desktop_gl")
     ap.add_argument("--out", default="out")
     ap.add_argument("--cwd", default=None, help="resolve a relative input against this dir")
     ap.add_argument("--keep-expanded", default=None, help="keep expansion in this dir")

@@ -26,6 +26,8 @@ struct Schedule {
     output: String,
     steps: Vec<Step>,
     exprs_lib: Option<String>,
+    #[serde(default)]
+    target: String,
 }
 #[derive(Deserialize)]
 struct Step {
@@ -189,29 +191,34 @@ fn chop_value(store: &Chops, input: &str) -> f64 {
 }
 
 const EGL_OPENGL_ES3_BIT: egl::Int = 0x0000_0040;
+const EGL_OPENGL_ES2_BIT: egl::Int = 0x0000_0004;
 
-fn artifact_is_gles(dir: &str) -> bool {
+fn artifact_target(dir: &str) -> String {
     std::fs::read_to_string(format!("{dir}/schedule.json"))
         .ok()
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .and_then(|v| v.get("target").and_then(|x| x.as_str()).map(|s| s == "gles"))
-        .unwrap_or(false)
+        .and_then(|v| v.get("target").and_then(|x| x.as_str()).map(|s| s.to_string()))
+        .unwrap_or_else(|| "desktop_gl".to_string())
 }
 
 // ---------------- GL helpers ----------------
-// gles=true targets GLES 3.1 (the Pi's V3D); false targets desktop GL 3.3 core
-// (host/llvmpipe). Artifact shaders must match (--target gles vs desktop_gl).
-fn make_gl(gles: bool) -> (egl::DynamicInstance<egl::EGL1_5>, egl::Display, glow::Context) {
+// target: "gles2" -> GLES 2.0 (Pi3/VC4), "gles" -> GLES 3.1 (Pi4/5 V3D),
+// else desktop GL 3.3 core (host/llvmpipe). Artifact shaders must match.
+fn make_gl(target: &str) -> (egl::DynamicInstance<egl::EGL1_5>, egl::Display, glow::Context) {
     let egl = unsafe { egl::DynamicInstance::<egl::EGL1_5>::load_required() }.expect("libEGL");
     let display = unsafe {
         egl.get_platform_display(PLATFORM_SURFACELESS_MESA, egl::DEFAULT_DISPLAY, &[egl::ATTRIB_NONE])
     }
     .expect("get_platform_display");
     egl.initialize(display).expect("initialize");
-    let (api, renderable) = if gles {
-        (egl::OPENGL_ES_API, EGL_OPENGL_ES3_BIT)
-    } else {
-        (egl::OPENGL_API, egl::OPENGL_BIT)
+    let (api, renderable, ctx_attribs): (egl::Enum, egl::Int, Vec<egl::Int>) = match target {
+        "gles2" => (egl::OPENGL_ES_API, EGL_OPENGL_ES2_BIT,
+                    vec![egl::CONTEXT_MAJOR_VERSION, 2, egl::NONE]),
+        "gles" => (egl::OPENGL_ES_API, EGL_OPENGL_ES3_BIT,
+                   vec![egl::CONTEXT_MAJOR_VERSION, 3, egl::CONTEXT_MINOR_VERSION, 1, egl::NONE]),
+        _ => (egl::OPENGL_API, egl::OPENGL_BIT,
+              vec![egl::CONTEXT_MAJOR_VERSION, 3, egl::CONTEXT_MINOR_VERSION, 3,
+                   CTX_OPENGL_PROFILE_MASK, CTX_OPENGL_CORE_PROFILE_BIT, egl::NONE]),
     };
     egl.bind_api(api).expect("bind_api");
     let cfg = egl
@@ -221,12 +228,6 @@ fn make_gl(gles: bool) -> (egl::DynamicInstance<egl::EGL1_5>, egl::Display, glow
         ])
         .expect("choose_config")
         .expect("no config");
-    let ctx_attribs: Vec<egl::Int> = if gles {
-        vec![egl::CONTEXT_MAJOR_VERSION, 3, egl::CONTEXT_MINOR_VERSION, 1, egl::NONE]
-    } else {
-        vec![egl::CONTEXT_MAJOR_VERSION, 3, egl::CONTEXT_MINOR_VERSION, 3,
-             CTX_OPENGL_PROFILE_MASK, CTX_OPENGL_CORE_PROFILE_BIT, egl::NONE]
-    };
     let ctx = egl.create_context(display, cfg, None, &ctx_attribs).expect("create_context");
     egl.make_current(display, None, None, Some(ctx)).expect("make_current");
     let gl = unsafe {
@@ -276,7 +277,9 @@ fn compile(gl: &glow::Context, ty: u32, src: &str) -> glow::Shader {
     }
 }
 
-fn make_tex(gl: &glow::Context, w: i32, h: i32, data: Option<&[u8]>) -> glow::Texture {
+fn make_tex(gl: &glow::Context, w: i32, h: i32, data: Option<&[u8]>, gles2: bool) -> glow::Texture {
+    // ES2 uses the unsized internalformat GL_RGBA; desktop/ES3 use sized GL_RGBA8.
+    let internal = if gles2 { glow::RGBA as i32 } else { glow::RGBA8 as i32 };
     unsafe {
         let t = gl.create_texture().unwrap();
         gl.bind_texture(glow::TEXTURE_2D, Some(t));
@@ -286,7 +289,7 @@ fn make_tex(gl: &glow::Context, w: i32, h: i32, data: Option<&[u8]>) -> glow::Te
         ] {
             gl.tex_parameter_i32(glow::TEXTURE_2D, k, v as i32);
         }
-        gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, w, h, 0, glow::RGBA, glow::UNSIGNED_BYTE, data);
+        gl.tex_image_2d(glow::TEXTURE_2D, 0, internal, w, h, 0, glow::RGBA, glow::UNSIGNED_BYTE, data);
         t
     }
 }
@@ -318,6 +321,14 @@ struct Renderer<'a> {
     fbo: HashMap<String, glow::Framebuffer>,
     prog: HashMap<String, glow::Program>,
     size: HashMap<String, (i32, i32)>,
+    gles2: bool,
+    quad: Option<glow::Buffer>,
+}
+
+// Resolve a shader path, redirecting to the translated ES1.00 set on gles2.
+fn resolve_shader(dir: &str, gles2: bool, p: &str) -> String {
+    let p = if gles2 { p.replacen("shaders/", "shaders_gles/", 1) } else { p.to_string() };
+    format!("{dir}/{p}")
 }
 
 impl<'a> Renderer<'a> {
@@ -337,9 +348,11 @@ impl<'a> Renderer<'a> {
                 }
             }
         }
+        let gles2 = sched.target == "gles2";
         let mut r = Renderer {
             gl, dir: dir.to_string(), sched, exprs, store,
             tex: HashMap::new(), fbo: HashMap::new(), prog: HashMap::new(), size: HashMap::new(),
+            gles2, quad: None,
         };
         r.setup();
         r
@@ -348,14 +361,26 @@ impl<'a> Renderer<'a> {
     fn setup(&mut self) {
         let gl = self.gl;
         unsafe {
-            let vao = gl.create_vertex_array().unwrap();
-            gl.bind_vertex_array(Some(vao));
+            if self.gles2 {
+                // ES2 has no gl_VertexID: draw a fullscreen quad from an attribute VBO.
+                let verts: [f32; 12] = [-1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0];
+                let bytes = std::slice::from_raw_parts(verts.as_ptr() as *const u8, 48);
+                let b = gl.create_buffer().unwrap();
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(b));
+                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
+                self.quad = Some(b);
+            } else {
+                let vao = gl.create_vertex_array().unwrap();
+                gl.bind_vertex_array(Some(vao));
+            }
         }
+        let gles2 = self.gles2;
+        let dir = self.dir.clone();
         for st in &self.sched.steps {
             if st.kind == "source" {
                 let src = st.source.as_ref().unwrap();
                 let (data, w, h) = if src.ty == "image" {
-                    let im = image::open(format!("{}/{}", self.dir, src.path.as_ref().unwrap()))
+                    let im = image::open(format!("{}/{}", dir, src.path.as_ref().unwrap()))
                         .unwrap().to_rgba8();
                     let (w, h) = (im.width() as usize, im.height() as usize);
                     (im.into_raw(), w, h)
@@ -363,21 +388,21 @@ impl<'a> Renderer<'a> {
                     let (w, h) = (src.w.max(1) as usize, src.h.max(1) as usize);
                     (testcard(w, h), w, h)
                 };
-                let t = make_tex(gl, w as i32, h as i32, Some(&flip_vert(&data, w, h)));
+                let t = make_tex(gl, w as i32, h as i32, Some(&flip_vert(&data, w, h)), gles2);
                 self.tex.insert(st.id.clone(), t);
                 self.size.insert(st.id.clone(), (w as i32, h as i32));
             } else if st.kind == "shader" {
                 let vs = compile(gl, glow::VERTEX_SHADER,
-                    &std::fs::read_to_string(format!("{}/{}", self.dir, st.vert.as_ref().unwrap())).unwrap());
+                    &std::fs::read_to_string(resolve_shader(&dir, gles2, st.vert.as_ref().unwrap())).unwrap());
                 let fs = compile(gl, glow::FRAGMENT_SHADER,
-                    &std::fs::read_to_string(format!("{}/{}", self.dir, st.frag.as_ref().unwrap())).unwrap());
+                    &std::fs::read_to_string(resolve_shader(&dir, gles2, st.frag.as_ref().unwrap())).unwrap());
                 unsafe {
                     let p = gl.create_program().unwrap();
                     gl.attach_shader(p, vs);
                     gl.attach_shader(p, fs);
                     gl.link_program(p);
                     assert!(gl.get_program_link_status(p), "link: {}", gl.get_program_info_log(p));
-                    let ot = make_tex(gl, st.w, st.h, None);
+                    let ot = make_tex(gl, st.w, st.h, None, gles2);
                     let f = gl.create_framebuffer().unwrap();
                     gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f));
                     gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(ot), 0);
@@ -449,7 +474,16 @@ impl<'a> Renderer<'a> {
                             gl.uniform_1_f32(Some(&l), v as f32);
                         }
                     }
-                    gl.draw_arrays(glow::TRIANGLES, 0, 3);
+                    if self.gles2 {
+                        gl.bind_buffer(glow::ARRAY_BUFFER, self.quad);
+                        if let Some(loc) = gl.get_attrib_location(p, "aPos") {
+                            gl.enable_vertex_attrib_array(loc);
+                            gl.vertex_attrib_pointer_f32(loc, 2, glow::FLOAT, false, 8, 0);
+                        }
+                        gl.draw_arrays(glow::TRIANGLES, 0, 6);
+                    } else {
+                        gl.draw_arrays(glow::TRIANGLES, 0, 3);
+                    }
                 }
             }
         }
@@ -552,8 +586,12 @@ fn stream(gl: &glow::Context, dir: &str, port: u16, fps: f64) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(|s| s.as_str());
-    let gles = matches!(mode, Some("run") | Some("stream")) && artifact_is_gles(&args[2]);
-    let (_egl, _dpy, gl) = make_gl(gles);
+    let target = if matches!(mode, Some("run") | Some("stream")) {
+        artifact_target(&args[2])
+    } else {
+        "desktop_gl".to_string()
+    };
+    let (_egl, _dpy, gl) = make_gl(&target);
     match mode {
         Some("run") => {
             let dir = &args[2];
@@ -569,8 +607,7 @@ fn main() {
             stream(&gl, dir, port, fps);
         }
         _ => unsafe {
-            println!("OK GL_RENDERER {} ({})", gl.get_parameter_string(glow::RENDERER),
-                     if gles { "GLES" } else { "GL" });
+            println!("OK GL_RENDERER {} ({target})", gl.get_parameter_string(glow::RENDERER));
         },
     }
 }
