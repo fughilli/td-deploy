@@ -34,8 +34,8 @@ package(default_visibility = ["//visibility:public"])
 # baked in + /dev/dri access. We run llvmpipe, so desktop_gl.
 toxc_artifact(
     name = "toxc_artifact",
-    src = "//:graphs/blur_demo.json",
-    target = "desktop_gl",
+    prebuilt = glob(["prebuilt/ascii/**"]),
+    prebuilt_strip = "deploy/prebuilt/ascii/",
 )
 
 _BUILD_DATA = [

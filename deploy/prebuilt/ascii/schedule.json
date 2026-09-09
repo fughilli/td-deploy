@@ -1,0 +1,193 @@
+{
+  "output": "project1/null1",
+  "target": "desktop_gl",
+  "steps": [
+    {
+      "id": "project1/ascii/moviefilein1",
+      "op": "image_in",
+      "kind": "source",
+      "w": 88,
+      "h": 132,
+      "inputs": [],
+      "source": {
+        "type": "image",
+        "path": "assets/project1_ascii_moviefilein1.png"
+      }
+    },
+    {
+      "id": "project1/moviefilein1",
+      "op": "image_in",
+      "kind": "source",
+      "w": 256,
+      "h": 256,
+      "inputs": [],
+      "source": {
+        "type": "testcard",
+        "w": 256,
+        "h": 256
+      }
+    },
+    {
+      "id": "project1/crop1",
+      "op": "crop",
+      "kind": "shader",
+      "w": 256,
+      "h": 256,
+      "inputs": [
+        "project1/moviefilein1"
+      ],
+      "vert": "shaders/project1_crop1.vert",
+      "frag": "shaders/project1_crop1.frag",
+      "sampler_array": null,
+      "uniforms": {
+        "uCropRect": {
+          "type": "vec4",
+          "value": [
+            1.2890625,
+            4.1015625,
+            0.0,
+            1.0
+          ]
+        }
+      },
+      "time_uniforms": {}
+    },
+    {
+      "id": "project1/transform1",
+      "op": "transform",
+      "kind": "shader",
+      "w": 256,
+      "h": 256,
+      "inputs": [
+        "project1/crop1"
+      ],
+      "vert": "shaders/project1_transform1.vert",
+      "frag": "shaders/project1_transform1.frag",
+      "sampler_array": null,
+      "uniforms": {
+        "uTranslate": {
+          "type": "vec2",
+          "value": [
+            0.0,
+            0.0
+          ]
+        },
+        "uScale": {
+          "type": "vec2",
+          "value": [
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "time_uniforms": {
+        "uRotate": {
+          "interpreted": "op('speed1')[0] * 1000",
+          "mul": 0.017453292519943295
+        }
+      }
+    },
+    {
+      "id": "project1/ascii/in1",
+      "op": "passthrough",
+      "kind": "passthrough",
+      "w": 256,
+      "h": 256,
+      "inputs": [
+        "project1/transform1"
+      ]
+    },
+    {
+      "id": "project1/ascii/glsl2",
+      "op": "glsl_top",
+      "kind": "shader",
+      "w": 256,
+      "h": 256,
+      "inputs": [
+        "project1/ascii/in1"
+      ],
+      "vert": "shaders/project1_ascii_glsl2.vert",
+      "frag": "shaders/project1_ascii_glsl2.frag",
+      "sampler_array": "sTD2DInputs",
+      "uniforms": {
+        "uTD2DInfos[0].res": {
+          "type": "vec4",
+          "value": [
+            0.00390625,
+            0.00390625,
+            256.0,
+            256.0
+          ]
+        }
+      },
+      "time_uniforms": {}
+    },
+    {
+      "id": "project1/ascii/glsl3",
+      "op": "glsl_top",
+      "kind": "shader",
+      "w": 256,
+      "h": 256,
+      "inputs": [
+        "project1/ascii/glsl2",
+        "project1/ascii/moviefilein1",
+        "project1/ascii/in1"
+      ],
+      "vert": "shaders/project1_ascii_glsl3.vert",
+      "frag": "shaders/project1_ascii_glsl3.frag",
+      "sampler_array": "sTD2DInputs",
+      "uniforms": {
+        "uTD2DInfos[0].res": {
+          "type": "vec4",
+          "value": [
+            0.00390625,
+            0.00390625,
+            256.0,
+            256.0
+          ]
+        },
+        "uTD2DInfos[1].res": {
+          "type": "vec4",
+          "value": [
+            0.011363636363636364,
+            0.007575757575757576,
+            88.0,
+            132.0
+          ]
+        },
+        "uTD2DInfos[2].res": {
+          "type": "vec4",
+          "value": [
+            0.00390625,
+            0.00390625,
+            256.0,
+            256.0
+          ]
+        }
+      },
+      "time_uniforms": {}
+    },
+    {
+      "id": "project1/ascii/out2",
+      "op": "passthrough",
+      "kind": "passthrough",
+      "w": 256,
+      "h": 256,
+      "inputs": [
+        "project1/ascii/glsl3"
+      ]
+    },
+    {
+      "id": "project1/null1",
+      "op": "passthrough",
+      "kind": "passthrough",
+      "w": 256,
+      "h": 256,
+      "inputs": [
+        "project1/ascii/out2"
+      ]
+    }
+  ],
+  "exprs_lib": null,
+  "services": "services.json"
+}
