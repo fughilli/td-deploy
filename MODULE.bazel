@@ -127,10 +127,27 @@ use_repo(nix_pkg, "mesa", "libglvnd", "libdrm")
 # aarch64-linux it's ~native (cached) and on a Darwin host it builds the cross
 # glibc/clang once (heavier — the trade for LLVM-native, no zig). Wired by
 # //runtime_rs/cross.
-nix_pkg.attr(
+nix_pkg.expr(
     name = "aarch64_cc",
-    attr = "pkgsCross.aarch64-multiplatform.clangStdenv.cc",
+    attr = "aarch64_cc",
     repo = "@nixpkgs",
+    # makeWrapper a STABLE bin/cc that execs the real cross clang wrapper by
+    # absolute path. The wrapper's binary is target-prefixed only when host !=
+    # target (aarch64-unknown-linux-gnu-cc on a Darwin host; plain cc on the
+    # aarch64-linux container), so hardcoding bin/cc breaks on one of them —
+    # ${cc.targetPrefix} resolves it correctly on both.
+    expr = """
+let
+  pkgs = import <nixpkgs> { };
+  cc = pkgs.pkgsCross.aarch64-multiplatform.clangStdenv.cc;
+in
+{
+  aarch64_cc = pkgs.runCommand "aarch64-cross-cc" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
+    mkdir -p "$out/bin"
+    makeWrapper "${cc}/bin/${cc.targetPrefix}cc" "$out/bin/cc"
+  '';
+}
+""",
     build_file_content = """\
 package(default_visibility = ["//visibility:public"])
 filegroup(name = "all", srcs = glob(["**"]))

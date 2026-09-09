@@ -225,7 +225,7 @@
     "@@rules_nixpkgs_core+//extensions:package.bzl%nix_pkg": {
       "general": {
         "bzlTransitiveDigest": "2alEQC7q9PgrArc8ZeI662VmDHLGfuswqnzBJvVDnmg=",
-        "usagesDigest": "EbG99T9fDCvyJeZIqbiXbd9hlWlQVcCO44kYsHBQcYc=",
+        "usagesDigest": "mox4hi3GHWHHr3G4+lq+HaUI9tIW8egOkchUXmZeXao=",
         "recordedInputs": [
           "REPO_MAPPING:,nixpkgs rules_nixpkgs_core++nix_repo+nixpkgs",
           "REPO_MAPPING:rules_nixpkgs_core+,bazel_skylib bazel_skylib+"
@@ -280,9 +280,9 @@
             "repoRuleId": "@@rules_nixpkgs_core+//:nixpkgs.bzl%_nixpkgs_package",
             "attributes": {
               "unmangled_name": "aarch64_cc",
-              "attribute_path": "pkgsCross.aarch64-multiplatform.clangStdenv.cc",
+              "attribute_path": "aarch64_cc",
               "nix_file_deps": {},
-              "nix_file_content": "",
+              "nix_file_content": "\nlet\n  pkgs = import <nixpkgs> { };\n  cc = pkgs.pkgsCross.aarch64-multiplatform.clangStdenv.cc;\nin\n{\n  aarch64_cc = pkgs.runCommand \"aarch64-cross-cc\" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''\n    mkdir -p \"$out/bin\"\n    makeWrapper \"${cc}/bin/${cc.targetPrefix}cc\" \"$out/bin/cc\"\n  '';\n}\n",
               "repository": "@@rules_nixpkgs_core++nix_repo+nixpkgs//:nixpkgs",
               "repositories": {},
               "build_file_content": "package(default_visibility = [\"//visibility:public\"])\nfilegroup(name = \"all\", srcs = glob([\"**\"]))\nfilegroup(name = \"cc\", srcs = [\"bin/cc\"])\n",
