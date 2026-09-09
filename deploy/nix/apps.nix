@@ -76,6 +76,9 @@ in
     package = toxcPkg;
     exec = "bin/toxc-runtime";
     user = "tdplayer";
+    # `audio` grants read access to /dev/snd/midiC*D* — the raw ALSA MIDI device
+    # the runtime reads for a MIDI In CHOP (e.g. a Midi Fighter Twister on USB).
+    extraGroups = [ "audio" ];
     ports = [ port ];
     after = [ "network.target" ];
   };

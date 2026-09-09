@@ -88,6 +88,9 @@ struct ServiceSpec {
     name: String,
     #[serde(default)]
     port: u16,
+    // midiin: the TD device name (advisory — we open the Pi's rawmidi device).
+    #[serde(default)]
+    device: Option<String>,
 }
 
 // ---------------- I/O services (OSC) + CHOP store ----------------
@@ -178,6 +181,145 @@ fn start_osc(name: String, port: u16, store: Chops) {
             }
         }
     });
+}
+
+// A MIDI In CHOP: read the Pi's raw ALSA MIDI byte stream (/dev/snd/midiC*D*),
+// parse channel-voice messages, and feed the SAME chop store as OSC. Mirrors the
+// Python MidiInService mapping: CC<n> -> "cc<n>" and note<n> -> "n<n>", both
+// normalized 0..1, so `op('<name>')['cc13']` reads back as chop_<name>_cc13.
+// Dependency-free (no ALSA/midir crate): rawmidi is a plain MIDI byte stream.
+fn midi_set(store: &Chops, name: &str, ch: String, v: f64) {
+    let mut m = store.lock().unwrap();
+    m.entry(name.to_string()).or_default().insert(ch, v);
+}
+
+// The rawmidi device node for the first attached MIDI input (e.g. the Midi
+// Fighter Twister). `device` (the TD device name) is advisory; the Twister is
+// typically the only rawmidi device on the Pi. Returns None until one appears.
+fn find_rawmidi(_device: &Option<String>) -> Option<String> {
+    let mut cands: Vec<String> = std::fs::read_dir("/dev/snd")
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("midiC"))
+        .collect();
+    cands.sort();
+    cands.first().map(|n| format!("/dev/snd/{n}"))
+}
+
+// Running-status MIDI byte-stream parser. Fed one byte at a time; yields a
+// mapped (channel, normalized-value) pair when a CC / note message completes.
+// Handles running status, note-on-velocity-0 == note-off, and interleaved
+// system-realtime bytes (clock/active-sensing). Pure + unit-tested below.
+#[derive(Default)]
+struct MidiParser {
+    status: u8,
+    data: [u8; 2],
+    have: usize,
+}
+
+impl MidiParser {
+    fn push(&mut self, b: u8) -> Option<(String, f64)> {
+        if b >= 0xF8 {
+            return None; // system realtime: single byte, ignore (may interleave)
+        }
+        if b >= 0x80 {
+            self.status = if b >= 0xF0 { 0 } else { b }; // system common cancels running status
+            self.have = 0;
+            return None;
+        }
+        if self.status == 0 {
+            return None; // data byte with no status yet
+        }
+        self.data[self.have] = b;
+        self.have += 1;
+        let hi = self.status & 0xF0;
+        let need = if hi == 0xC0 || hi == 0xD0 { 1 } else { 2 };
+        if self.have < need {
+            return None;
+        }
+        self.have = 0; // keep status for running status
+        match hi {
+            0xB0 => Some((format!("cc{}", self.data[0]), self.data[1] as f64 / 127.0)),
+            // note-on with velocity 0 is a note-off
+            0x90 => Some((
+                format!("n{}", self.data[0]),
+                if self.data[1] == 0 { 0.0 } else { self.data[1] as f64 / 127.0 },
+            )),
+            0x80 => Some((format!("n{}", self.data[0]), 0.0)),
+            _ => None,
+        }
+    }
+}
+
+fn start_midi(name: String, device: Option<String>, store: Chops) {
+    thread::spawn(move || loop {
+        let path = match find_rawmidi(&device) {
+            Some(p) => p,
+            None => {
+                thread::sleep(Duration::from_secs(2));
+                continue;
+            }
+        };
+        let mut f = match std::fs::File::open(&path) {
+            Ok(f) => {
+                println!("[service] midiin {name} dev:{path}");
+                f
+            }
+            Err(e) => {
+                eprintln!("[service] midiin {name} open {path} failed: {e}");
+                thread::sleep(Duration::from_secs(2));
+                continue;
+            }
+        };
+        let mut parser = MidiParser::default();
+        let mut byte = [0u8; 1];
+        while let Ok(n) = f.read(&mut byte) {
+            if n == 0 {
+                break; // EOF: device unplugged — fall through to reopen
+            }
+            if let Some((ch, v)) = parser.push(byte[0]) {
+                midi_set(&store, &name, ch, v);
+            }
+        }
+        println!("[service] midiin {name} stream ended; reopening");
+        thread::sleep(Duration::from_secs(2));
+    });
+}
+
+#[cfg(test)]
+mod midi_tests {
+    use super::MidiParser;
+
+    fn drive(bytes: &[u8]) -> Vec<(String, f64)> {
+        let mut p = MidiParser::default();
+        bytes.iter().filter_map(|&b| p.push(b)).collect()
+    }
+
+    #[test]
+    fn cc_maps_to_normalized_channel() {
+        // CC13 = 127 on MIDI channel 1 (a Twister encoder maxed out).
+        assert_eq!(drive(&[0xB0, 13, 127]), vec![("cc13".to_string(), 1.0)]);
+    }
+
+    #[test]
+    fn running_status_repeats_cc() {
+        // status byte sent once, then two data pairs (running status).
+        let out = drive(&[0xB0, 1, 64, 2, 0]);
+        assert_eq!(out, vec![("cc1".to_string(), 64.0 / 127.0), ("cc2".to_string(), 0.0)]);
+    }
+
+    #[test]
+    fn note_on_zero_velocity_is_note_off() {
+        let out = drive(&[0x90, 60, 100, 0x90, 60, 0]);
+        assert_eq!(out, vec![("n60".to_string(), 100.0 / 127.0), ("n60".to_string(), 0.0)]);
+    }
+
+    #[test]
+    fn realtime_clock_interleaves_without_breaking_message() {
+        // 0xF8 (clock) between the CC data bytes must be ignored, not corrupt it.
+        assert_eq!(drive(&[0xB0, 13, 0xF8, 100]), vec![("cc13".to_string(), 100.0 / 127.0)]);
+    }
 }
 
 fn chop_value(store: &Chops, input: &str) -> f64 {
@@ -344,6 +486,8 @@ impl<'a> Renderer<'a> {
                 for s in specs {
                     if s.ty == "oscin" {
                         start_osc(s.name, s.port, store.clone());
+                    } else if s.ty == "midiin" {
+                        start_midi(s.name, s.device, store.clone());
                     }
                 }
             }
