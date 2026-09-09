@@ -18,13 +18,12 @@
       "id": "project1/moviefilein1",
       "op": "image_in",
       "kind": "source",
-      "w": 256,
-      "h": 256,
+      "w": 1280,
+      "h": 720,
       "inputs": [],
       "source": {
-        "type": "testcard",
-        "w": 256,
-        "h": 256
+        "type": "image",
+        "path": "assets/project1_moviefilein1.png"
       }
     },
     {
@@ -43,8 +42,8 @@
         "uCropRect": {
           "type": "vec4",
           "value": [
-            1.2890625,
-            4.1015625,
+            0.2578125,
+            0.8203125,
             0.0,
             1.0
           ]
