@@ -88,9 +88,11 @@ toxc_artifact = rule(
                   "so the artifact tree is rooted at schedule.json.",
         ),
         "target": attr.string(
-            default = "gles2",
+            default = "desktop_gl",
             values = ["desktop_gl", "gles", "gles2"],
-            doc = "Render target the artifact is lowered for (src mode only).",
+            doc = "Render target the artifact is lowered for (src mode only). " +
+                  "Must match the image's softwareGL (desktop_gl=llvmpipe, " +
+                  "gles2=VC4 hardware + shaders_gles/).",
         ),
         "res": attr.int(default = 256, doc = "Square output resolution (src mode)."),
         "_toxc": attr.label(

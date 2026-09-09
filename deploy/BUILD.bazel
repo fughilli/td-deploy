@@ -28,10 +28,14 @@ package(default_visibility = ["//visibility:public"])
 # then swap this target to bake that prebuilt dir (which carries services.json,
 # so the deployed runtime picks up the MIDI In CHOP):
 #   toxc_artifact(name = "toxc_artifact", prebuilt = glob(["prebuilt/ascii/**"]))
+# target MUST match apps.nix's softwareGL: desktop_gl ↔ softwareGL=true (Mesa
+# llvmpipe, the functional default on any board); gles2 ↔ softwareGL=false (Pi
+# VC4 hardware) — and gles2 additionally needs shaders_gles/ (build_shaders_gles)
+# baked in + /dev/dri access. We run llvmpipe, so desktop_gl.
 toxc_artifact(
     name = "toxc_artifact",
     src = "//:graphs/blur_demo.json",
-    target = "gles2",
+    target = "desktop_gl",
 )
 
 _BUILD_DATA = [

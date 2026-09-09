@@ -62,6 +62,7 @@ let
         --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath glLibs} \
         --set EGL_PLATFORM surfaceless \
         --set __EGL_VENDOR_LIBRARY_DIRS ${pkgs.mesa}/share/glvnd/egl_vendor.d \
+        --set MESA_SHADER_CACHE_DISABLE true \
         ${lib.optionalString softwareGL "--set LIBGL_ALWAYS_SOFTWARE 1"} \
         --add-flags stream \
         --add-flags ${artifact} \
@@ -78,7 +79,10 @@ in
     user = "tdplayer";
     # `audio` grants read access to /dev/snd/midiC*D* — the raw ALSA MIDI device
     # the runtime reads for a MIDI In CHOP (e.g. a Midi Fighter Twister on USB).
-    extraGroups = [ "audio" ];
+    # `video`/`render` grant /dev/dri access; llvmpipe (softwareGL) doesn't need
+    # it, but it silences the EGL "failed to open /dev/dri/card0" probe warning
+    # and is required for the VC4-hardware gles2 path (softwareGL=false).
+    extraGroups = [ "audio" "video" "render" ];
     ports = [ port ];
     after = [ "network.target" ];
   };
