@@ -22,5 +22,8 @@
       # $SBC_BOARD (so //deploy:tdplayer_pi3 targets a Pi 3 off the same flake).
       board = "raspberry-pi-5";
       appModules = [ ./apps.nix ];
+      # Baked into BOTH images (full + base): skip zstd compression for a much
+      # faster image build (see image.nix). Uncompressed .img, flashed as-is.
+      systemModules = [ ./image.nix ];
     };
 }
