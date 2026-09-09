@@ -1,4 +1,6 @@
-# toxc — TouchDesigner `.tox` → Raspberry Pi compiler
+# td-deploy — TouchDesigner `.tox` → Raspberry Pi compiler
+
+> Built on **`toxc`**, the TOX Compiler — the CLI/Bazel target (`//:toxc`) and MLIR dialect keep the `toxc` name.
 
 Compile a TouchDesigner project into a native real-time media graph that runs on a
 Raspberry Pi, with TouchDesigner removed from the deployment path. See the full
