@@ -1,6 +1,20 @@
 # Bundled JDK SIGILLs at startup on this aarch64 container without this.
+startup --host_jvm_args=-XX:+IgnoreUnrecognizedVMOptions
 startup --host_jvm_args=-XX:UseSVE=0
 
-# Keep the pipeline's Nix/GL work out of Bazel's sandbox: toxc's run target
-# shells into the pinned Nix env (nix/dev.sh) which needs the host /nix + network.
+# bzlmod + the isolated crate_universe usages that @sbc_deploy (and our own
+# runtime_rs crates) rely on.
+common --enable_bzlmod
+common --experimental_isolated_extension_usages
+
+# Keep the pipeline's Nix/GL work out of Bazel's sandbox: the compiler's native
+# steps shell into the pinned Nix env, and the sbc-deploy image/deploy targets
+# invoke the host `nix` CLI — both need the host /nix + network.
 build --spawn_strategy=local
+
+# Persist fetches + build outputs across container restarts (speeds re-runs).
+build --disk_cache=.bazel-disk-cache
+common --repository_cache=.bazel-repo-cache
+
+test --test_output=errors
+build --symlink_prefix=bazel-

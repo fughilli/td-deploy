@@ -8,6 +8,8 @@ result-*
 # bazel
 bazel-*
 /.bazel/
+.bazel-disk-cache/
+.bazel-repo-cache/
 
 # python
 __pycache__/

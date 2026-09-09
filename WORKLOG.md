@@ -2,6 +2,36 @@
 
 Newest first. See `docs/design/tox-to-pi.md` for the full design.
 
+## 2026-09-09 — Bazel is the top-level driver + SD-image targets (repo → td-deploy)
+
+Made Bazel drive the whole project and added Raspberry Pi SD-image / live-deploy
+targets. Repo/project renamed to **td-deploy** (pushed to `fughilli/td-deploy`);
+the `toxc` compiler name is unchanged (module, `//:toxc`, MLIR dialect).
+
+- **MODULE.bazel** rewritten: rules_python (hermetic 3.11 + `requirements.lock`),
+  rules_rust (1.88; crate_universe from `runtime_rs/Cargo.lock`), rules_nixpkgs
+  (pinned nixpkgs 25.05 for Mesa), and a `git_override` on `@sbc_deploy`. Needed
+  `.bazelrc: common --experimental_isolated_extension_usages` (sbc_deploy uses it).
+- **Python pipeline** as a library graph in the root BUILD (`//ir //importer
+  //passes //lowering //runtime //runtime_expr`, all `imports=["."]` for the flat
+  layout), `//:toxc` py_binary, `//:expand` (.toe→IR), `//compiler:emit` + the
+  `build_exprs`/`build_shaders_gles` nix tools, and a hermetic `//:pipeline_test`.
+- **Rust runtime** `//runtime_rs:toxc_runtime` (rust_binary). NB: it `dlopen`s
+  libEGL/libexprs.so, so static-musl is impossible (`-ldl`) + pointless — it's a
+  DYNAMIC aarch64 binary; the image autoPatchelfs it. (Bumped rustc 1.85→1.88 for
+  the `image` crate's `as_chunks_mut`.)
+- **Deploy**: `//deploy:toxc_artifact` (a rule running `//:toxc --emit-artifact`
+  from a committed IR — hermetic) + `sbc_application` `tdplayer` (Pi 5) /
+  `tdplayer_pi3` (Pi 3) → `.image_sd/.image_sd_base/.deploy_live/.ssh/.keys/.update`.
+  `deploy/nix/{flake.nix,apps.nix,flake.lock}` consume the artifact + runtime via
+  sbc-deploy `build_data`; apps.nix finishes the aarch64 `libexprs.so` in-image.
+- **Verified in-container**: `bazel build //...` + `bazel test //...` green;
+  `//:toxc` CPU render + emit-artifact run; Rust runtime builds (aarch64);
+  `//deploy:*.image_sd` materialize with runfiles; flake locks/fetches.
+- **NOT verified (needs hardware / Mac)**: full `nix` image realization + flashing
+  a real SD, booting a Pi 3/5, on-device GL, the `.toe`-bridge expansion (TD), and
+  the dynamic-runtime dlopen(libEGL) on NixOS (autoPatchelf path). See deploy/README.
+
 ## 2026-09-05 (3) — Realtime stream to a browser window + time/transform
 
 **Live video path.** `bazel run //:toxc -- <project.tox> --stream` renders on a

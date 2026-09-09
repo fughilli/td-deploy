@@ -1,0 +1,25 @@
+"""//runtime_rs — the native media-graph runtime (EGL/GLES + native exprs + MJPEG).
+
+Small self-contained Rust binary: it dlopen()s libEGL and the artifact's
+libexprs.so, reads schedule.json + shaders + assets, and renders. Built here as
+a dynamic aarch64 binary; the Pi image autoPatchelf's it onto NixOS (this
+container is aarch64 == the Pi target). Fed to the sbc_application as build_data.
+"""
+
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@toxc_crates//:defs.bzl", "all_crate_deps")
+
+package(default_visibility = ["//visibility:public"])
+
+# Consumed by crate.from_cargo() in //MODULE.bazel.
+exports_files([
+    "Cargo.toml",
+    "Cargo.lock",
+])
+
+rust_binary(
+    name = "toxc_runtime",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2021",
+    deps = all_crate_deps(normal = True),
+)

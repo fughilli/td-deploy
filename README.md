@@ -6,6 +6,34 @@ Compile a TouchDesigner project into a native real-time media graph that runs on
 Raspberry Pi, with TouchDesigner removed from the deployment path. See the full
 design in [`docs/design/tox-to-pi.md`](docs/design/tox-to-pi.md).
 
+## Build with Bazel (the top-level driver)
+
+Bazel drives the whole thing — the Python compiler, the Rust runtime, and the Pi
+SD-image / live-deploy targets. Toolchains are hermetic (a pinned nixpkgs via
+rules_nixpkgs for Mesa/LLVM; rules_python + rules_rust for the rest); `nix` is a
+system requirement.
+
+```sh
+bazel build //...                        # build the whole graph
+bazel test  //...                        # hermetic tests (pipeline + lock)
+bazel query //...                        # see every target
+
+# compile + render (in-container, no hardware):
+bazel run //:toxc -- graphs/blur_demo.json --backend cpu --out /tmp/out
+bazel run //:toxc -- graphs/blur_demo.json --emit-artifact /tmp/art --target gles2
+
+# image an SD card for the Pi and play the compiled graph (see deploy/README.md):
+bazel run //deploy:tdplayer_pi3.image_sd -- --device /dev/sdX     # Pi 3
+bazel run //deploy:tdplayer.image_sd     -- --device /dev/sdX     # Pi 5
+```
+
+Key targets: `//ir` `//passes` `//lowering` `//runtime` (pipeline libs), `//:toxc`
+(CLI), `//:expand` (`.toe`→IR, needs the Mac bridge), `//compiler:emit` +
+`//compiler:build_exprs` (native lowering), `//runtime_rs:toxc_runtime` (Rust
+runtime), `//deploy:toxc_artifact` + `//deploy:tdplayer{,_pi3}.*` (SD-image /
+live-deploy). The `toxc` compiler name is unchanged; only the repo/project is
+`td-deploy`.
+
 ## Status
 
 - **Host bridge** (`hostbridge/`): zero-dependency HTTP server, run on the Mac, exposes

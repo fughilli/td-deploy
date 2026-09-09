@@ -1,0 +1,50 @@
+"""//deploy — Raspberry Pi SD-image / live-deploy targets (via sbc-deploy).
+
+  bazel run //deploy:toxc_artifact                 # compile the demo IR -> artifact
+  bazel run //deploy:tdplayer_pi3.image_sd  -- --device /dev/sdX   # flash a Pi 3 SD
+  bazel run //deploy:tdplayer.image_sd      -- --device /dev/sdX   # flash a Pi 5 SD
+  bazel run //deploy:tdplayer_pi3.deploy_live -- tdplayer.local    # push app to a running Pi
+  bazel run //deploy:tdplayer_pi3.ssh       -- tdplayer.local
+  bazel run //deploy:tdplayer_pi3.keys      -- init
+
+The image bundles two Bazel-built inputs (build_data): the portable artifact
+(:toxc_artifact) and the dynamic aarch64 Rust runtime (//runtime_rs). The flake
+(deploy/nix) finishes the aarch64 native lowering + autoPatchelfs the runtime.
+On macOS, start the aarch64 builder first: `bazel run @sbc_deploy//:linux_builder`.
+"""
+
+load("@sbc_deploy//deploy:defs.bzl", "sbc_application")
+load(":artifact.bzl", "toxc_artifact")
+
+package(default_visibility = ["//visibility:public"])
+
+# The compiled artifact baked into the image. Swap `src` for another committed
+# IR (produce one from a .toe with `bazel run //:expand`), or point a new
+# toxc_artifact target at it. gles2 so a Pi 3 can render it (VC4 GLES2).
+toxc_artifact(
+    name = "toxc_artifact",
+    src = "//:graphs/blur_demo.json",
+    target = "gles2",
+)
+
+_BUILD_DATA = [
+    ":toxc_artifact",
+    "//runtime_rs:toxc_runtime",
+]
+
+# Pi 5 (default board).
+sbc_application(
+    name = "tdplayer",
+    build_data = _BUILD_DATA,
+    flake = "deploy/nix",
+    hostname = "tdplayer",
+)
+
+# Pi 3B/3B+ variant of the SAME flake + config (board overridden via $SBC_BOARD).
+sbc_application(
+    name = "tdplayer_pi3",
+    board = "@sbc_deploy//deploy/boards:raspberry-pi-3",
+    build_data = _BUILD_DATA,
+    flake = "deploy/nix",
+    hostname = "tdplayer",
+)
