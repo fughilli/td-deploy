@@ -100,6 +100,10 @@ class Graph:
                  **({"out_type": n.out_type} if n.out_type else {})}
                 for n in self.nodes.values()
             ],
+            # I/O services (OSC/MIDI In) live off the TOP render DAG, so they must
+            # be serialized explicitly or a round-tripped IR .json loses them (and
+            # a deployed graph would ignore its MIDI/OSC input).
+            **({"services": self.services} if self.services else {}),
         }
 
     # -- structural helpers ----------------------------------------------------

@@ -18,9 +18,16 @@ load(":artifact.bzl", "toxc_artifact")
 
 package(default_visibility = ["//visibility:public"])
 
-# The compiled artifact baked into the image. Swap `src` for another committed
-# IR (produce one from a .toe with `bazel run //:expand`), or point a new
-# toxc_artifact target at it. gles2 so a Pi 3 can render it (VC4 GLES2).
+# The compiled artifact baked into the image. Keep the target named
+# `toxc_artifact` (deploy/nix/apps.nix reads that basename).
+#
+# Default = the asset-free demo graph, compiled hermetically. For a REAL project
+# that needs the Mac TD bridge (assets + OSC/MIDI services), compile it once:
+#   bazel run //:toxc -- /path/ascii_project.toe --emit-artifact deploy/prebuilt/ascii \
+#       --target gles2 [--set-file MOVIE=/host/path]
+# then swap this target to bake that prebuilt dir (which carries services.json,
+# so the deployed runtime picks up the MIDI In CHOP):
+#   toxc_artifact(name = "toxc_artifact", prebuilt = glob(["prebuilt/ascii/**"]))
 toxc_artifact(
     name = "toxc_artifact",
     src = "//:graphs/blur_demo.json",
