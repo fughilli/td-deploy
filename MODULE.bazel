@@ -20,6 +20,10 @@ bazel_dep(name = "rules_python", version = "1.7.0")
 bazel_dep(name = "rules_rust", version = "0.71.3")
 bazel_dep(name = "rules_shell", version = "0.8.0")
 
+# The cross cc toolchain for the aarch64-linux runtime link (//runtime_rs/cross).
+bazel_dep(name = "rules_cc", version = "0.2.22")
+bazel_dep(name = "platforms", version = "1.1.0")
+
 # ---------------------------------------------------------------------------
 # Python — hermetic 3.11 interpreter (Pi-compatible), single root lockfile.
 # Regenerate the lock with:  bazel run //:requirements.update
@@ -60,17 +64,16 @@ rust.toolchain(
     versions = ["1.88.0"],
 )
 use_repo(rust, "rust_toolchains")
-register_toolchains("@rust_toolchains//:all")
 
-# Hermetic zig-based cc toolchain, used ONLY to LINK the cross aarch64-linux-gnu
-# runtime (glibc, so the dlopen'd libEGL/-ldl resolves — unlike static musl).
-# Deliberately NOT register_toolchains'd: //runtime_rs/cross selects it per-target
-# via a transition (--extra_toolchains), so it never hijacks host C++ (this
-# container is itself aarch64-linux). Alternative: a nixpkgs pkgsCross gcc cc
-# toolchain (heavier to build on a Darwin host; same interface).
-bazel_dep(name = "hermetic_cc_toolchain", version = "4.0.1")
-zig = use_extension("@hermetic_cc_toolchain//toolchain:ext.bzl", "toolchains")
-use_repo(zig, "zig_sdk")
+# Cross cc toolchain to LINK the aarch64-linux-gnu runtime: nixpkgs' cross clang
+# wrapper (@aarch64_cc, defined in the Nix section) — clang (LLVM) with the
+# pkgsCross aarch64 glibc sysroot + gcc-toolchain baked in. glibc (not musl) so
+# the dlopen'd libEGL/-ldl resolves. Registered BEFORE the rust defaults and
+# constrained to //runtime_rs/cross:cross (see BUILD) so it binds ONLY the
+# transitioned runtime build and never hijacks host C++ (this container is itself
+# aarch64-linux). The runtime is pure Rust, so cc only runs the final link.
+register_toolchains("//runtime_rs/cross:cross_cc_toolchain")
+register_toolchains("@rust_toolchains//:all")
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 crate.from_cargo(
@@ -116,6 +119,25 @@ filegroup(name = "all", srcs = glob(["**"]))
     for a in ["mesa", "libglvnd", "libdrm"]
 ]
 use_repo(nix_pkg, "mesa", "libglvnd", "libdrm")
+
+# Cross cc for the aarch64-linux-gnu runtime link: nixpkgs' cross clang wrapper
+# (pkgsCross.aarch64-multiplatform.clangStdenv.cc) — clang + the aarch64 glibc
+# sysroot + gcc-toolchain (crt/libgcc) baked into its cc-wrapper, so a bazel cc
+# toolchain just points its linker at bin/cc. Evaluated on the deploy host, so on
+# aarch64-linux it's ~native (cached) and on a Darwin host it builds the cross
+# glibc/clang once (heavier — the trade for LLVM-native, no zig). Wired by
+# //runtime_rs/cross.
+nix_pkg.attr(
+    name = "aarch64_cc",
+    attr = "pkgsCross.aarch64-multiplatform.clangStdenv.cc",
+    repo = "@nixpkgs",
+    build_file_content = """\
+package(default_visibility = ["//visibility:public"])
+filegroup(name = "all", srcs = glob(["**"]))
+filegroup(name = "cc", srcs = ["bin/cc"])
+""",
+)
+use_repo(nix_pkg, "aarch64_cc")
 
 # The MLIR/LLVM 18 + glslang/spirv-cross native-lowering toolchains are pinned
 # (compiler/nix/mlir.nix) and driven two ways, both hermetic-via-nix:

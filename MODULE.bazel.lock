@@ -38,6 +38,7 @@
     "https://bcr.bazel.build/modules/bazel_skylib/1.6.1/MODULE.bazel": "8fdee2dbaace6c252131c00e1de4b165dc65af02ea278476187765e1a617b917",
     "https://bcr.bazel.build/modules/bazel_skylib/1.7.0/MODULE.bazel": "0db596f4563de7938de764cc8deeabec291f55e8ec15299718b93c4423e9796d",
     "https://bcr.bazel.build/modules/bazel_skylib/1.7.1/MODULE.bazel": "3120d80c5861aa616222ec015332e5f8d3171e062e3e804a2a0253e1be26e59b",
+    "https://bcr.bazel.build/modules/bazel_skylib/1.8.0/MODULE.bazel": "2fb3fb53675f6adfc1ca5bfbd5cfb655ae350fba4706d924a8ec7e3ba945671c",
     "https://bcr.bazel.build/modules/bazel_skylib/1.8.2/MODULE.bazel": "69ad6927098316848b34a9142bcc975e018ba27f08c4ff403f50c1b6e646ca67",
     "https://bcr.bazel.build/modules/bazel_skylib/1.8.2/source.json": "34a3c8bcf233b835eb74be9d628899bb32999d3e0eadef1947a0a562a2b16ffb",
     "https://bcr.bazel.build/modules/buildozer/7.1.2/MODULE.bazel": "2e8dd40ede9c454042645fd8d8d0cd1527966aa5c919de86661e62953cd73d84",
@@ -47,8 +48,6 @@
     "https://bcr.bazel.build/modules/googletest/1.14.0.bcr.1/MODULE.bazel": "22c31a561553727960057361aa33bf20fb2e98584bc4fec007906e27053f80c6",
     "https://bcr.bazel.build/modules/googletest/1.14.0.bcr.1/source.json": "41e9e129f80d8c8bf103a7acc337b76e54fad1214ac0a7084bf24f4cd924b8b4",
     "https://bcr.bazel.build/modules/googletest/1.14.0/MODULE.bazel": "cfbcbf3e6eac06ef9d85900f64424708cc08687d1b527f0ef65aa7517af8118f",
-    "https://bcr.bazel.build/modules/hermetic_cc_toolchain/4.0.1/MODULE.bazel": "0809d28e562d804e478c683b06a9f3adeedccfdb42a426c2cc69e39cbc7e3bf3",
-    "https://bcr.bazel.build/modules/hermetic_cc_toolchain/4.0.1/source.json": "527d73a9964cd34ceeb73a1d5e5d04d9e6238401363c783c1f3021d5b25b8a63",
     "https://bcr.bazel.build/modules/jsoncpp/1.9.5/MODULE.bazel": "31271aedc59e815656f5736f282bb7509a97c7ecb43e927ac1a37966e0578075",
     "https://bcr.bazel.build/modules/jsoncpp/1.9.5/source.json": "4108ee5085dd2885a341c7fab149429db457b3169b86eb081fa245eadf69169d",
     "https://bcr.bazel.build/modules/libpfm/4.11.0/MODULE.bazel": "45061ff025b301940f1e30d2c16bea596c25b176c8b6b3087e92615adbd52902",
@@ -90,9 +89,10 @@
     "https://bcr.bazel.build/modules/rules_cc/0.0.9/MODULE.bazel": "836e76439f354b89afe6a911a7adf59a6b2518fafb174483ad78a2a2fde7b1c5",
     "https://bcr.bazel.build/modules/rules_cc/0.1.1/MODULE.bazel": "2f0222a6f229f0bf44cd711dc13c858dad98c62d52bd51d8fc3a764a83125513",
     "https://bcr.bazel.build/modules/rules_cc/0.1.5/MODULE.bazel": "88dfc9361e8b5ae1008ac38f7cdfd45ad738e4fa676a3ad67d19204f045a1fd8",
+    "https://bcr.bazel.build/modules/rules_cc/0.2.22/MODULE.bazel": "94df4328edef9e44d38de5e73b037cd348e75e7ae55f4e21bf07878c41a31ebb",
+    "https://bcr.bazel.build/modules/rules_cc/0.2.22/source.json": "b2d6d6f9c332ce269ad75b89c6f3168d809a66173c9040210fb9bcc733ab42fa",
     "https://bcr.bazel.build/modules/rules_cc/0.2.4/MODULE.bazel": "1ff1223dfd24f3ecf8f028446d4a27608aa43c3f41e346d22838a4223980b8cc",
     "https://bcr.bazel.build/modules/rules_cc/0.2.8/MODULE.bazel": "f1df20f0bf22c28192a794f29b501ee2018fa37a3862a1a2132ae2940a23a642",
-    "https://bcr.bazel.build/modules/rules_cc/0.2.8/source.json": "85087982aca15f31307bd52698316b28faa31bd2c3095a41f456afec0131344c",
     "https://bcr.bazel.build/modules/rules_foreign_cc/0.9.0/MODULE.bazel": "c9e8c682bf75b0e7c704166d79b599f93b72cfca5ad7477df596947891feeef6",
     "https://bcr.bazel.build/modules/rules_fuzzing/0.5.2/MODULE.bazel": "40c97d1144356f52905566c55811f13b299453a14ac7769dfba2ac38192337a8",
     "https://bcr.bazel.build/modules/rules_fuzzing/0.5.2/source.json": "c8b1e2c717646f1702290959a3302a178fb639d987ab61d548105019f11e527e",
@@ -222,6 +222,89 @@
         }
       }
     },
+    "@@rules_nixpkgs_core+//extensions:package.bzl%nix_pkg": {
+      "general": {
+        "bzlTransitiveDigest": "2alEQC7q9PgrArc8ZeI662VmDHLGfuswqnzBJvVDnmg=",
+        "usagesDigest": "EbG99T9fDCvyJeZIqbiXbd9hlWlQVcCO44kYsHBQcYc=",
+        "recordedInputs": [
+          "REPO_MAPPING:,nixpkgs rules_nixpkgs_core++nix_repo+nixpkgs",
+          "REPO_MAPPING:rules_nixpkgs_core+,bazel_skylib bazel_skylib+"
+        ],
+        "generatedRepoSpecs": {
+          "mesa": {
+            "repoRuleId": "@@rules_nixpkgs_core+//:nixpkgs.bzl%_nixpkgs_package",
+            "attributes": {
+              "unmangled_name": "mesa",
+              "attribute_path": "mesa",
+              "nix_file_deps": {},
+              "nix_file_content": "",
+              "repository": "@@rules_nixpkgs_core++nix_repo+nixpkgs//:nixpkgs",
+              "repositories": {},
+              "build_file_content": "package(default_visibility = [\"//visibility:public\"])\nfilegroup(name = \"lib\", srcs = glob([\"lib/**\"]))\nfilegroup(name = \"bin\", srcs = glob([\"bin/**\"], allow_empty = True))\nfilegroup(name = \"all\", srcs = glob([\"**\"]))\n",
+              "nixopts": [],
+              "quiet": false,
+              "fail_not_supported": true
+            }
+          },
+          "libglvnd": {
+            "repoRuleId": "@@rules_nixpkgs_core+//:nixpkgs.bzl%_nixpkgs_package",
+            "attributes": {
+              "unmangled_name": "libglvnd",
+              "attribute_path": "libglvnd",
+              "nix_file_deps": {},
+              "nix_file_content": "",
+              "repository": "@@rules_nixpkgs_core++nix_repo+nixpkgs//:nixpkgs",
+              "repositories": {},
+              "build_file_content": "package(default_visibility = [\"//visibility:public\"])\nfilegroup(name = \"lib\", srcs = glob([\"lib/**\"]))\nfilegroup(name = \"bin\", srcs = glob([\"bin/**\"], allow_empty = True))\nfilegroup(name = \"all\", srcs = glob([\"**\"]))\n",
+              "nixopts": [],
+              "quiet": false,
+              "fail_not_supported": true
+            }
+          },
+          "libdrm": {
+            "repoRuleId": "@@rules_nixpkgs_core+//:nixpkgs.bzl%_nixpkgs_package",
+            "attributes": {
+              "unmangled_name": "libdrm",
+              "attribute_path": "libdrm",
+              "nix_file_deps": {},
+              "nix_file_content": "",
+              "repository": "@@rules_nixpkgs_core++nix_repo+nixpkgs//:nixpkgs",
+              "repositories": {},
+              "build_file_content": "package(default_visibility = [\"//visibility:public\"])\nfilegroup(name = \"lib\", srcs = glob([\"lib/**\"]))\nfilegroup(name = \"bin\", srcs = glob([\"bin/**\"], allow_empty = True))\nfilegroup(name = \"all\", srcs = glob([\"**\"]))\n",
+              "nixopts": [],
+              "quiet": false,
+              "fail_not_supported": true
+            }
+          },
+          "aarch64_cc": {
+            "repoRuleId": "@@rules_nixpkgs_core+//:nixpkgs.bzl%_nixpkgs_package",
+            "attributes": {
+              "unmangled_name": "aarch64_cc",
+              "attribute_path": "pkgsCross.aarch64-multiplatform.clangStdenv.cc",
+              "nix_file_deps": {},
+              "nix_file_content": "",
+              "repository": "@@rules_nixpkgs_core++nix_repo+nixpkgs//:nixpkgs",
+              "repositories": {},
+              "build_file_content": "package(default_visibility = [\"//visibility:public\"])\nfilegroup(name = \"all\", srcs = glob([\"**\"]))\nfilegroup(name = \"cc\", srcs = [\"bin/cc\"])\n",
+              "nixopts": [],
+              "quiet": false,
+              "fail_not_supported": true
+            }
+          }
+        },
+        "moduleExtensionMetadata": {
+          "explicitRootModuleDirectDeps": [
+            "mesa",
+            "libglvnd",
+            "libdrm",
+            "aarch64_cc"
+          ],
+          "explicitRootModuleDirectDevDeps": [],
+          "useAllRepos": "NO",
+          "reproducible": false
+        }
+      }
+    },
     "@@rules_nixpkgs_core+//extensions:package.bzl%nix_pkg%sbc_deploy@_+nix_pkg": {
       "general": {
         "bzlTransitiveDigest": "2alEQC7q9PgrArc8ZeI662VmDHLGfuswqnzBJvVDnmg=",
@@ -309,6 +392,35 @@
         },
         "moduleExtensionMetadata": {
           "explicitRootModuleDirectDeps": [],
+          "explicitRootModuleDirectDevDeps": [],
+          "useAllRepos": "NO",
+          "reproducible": false
+        }
+      }
+    },
+    "@@rules_nixpkgs_core+//extensions:repository.bzl%nix_repo": {
+      "general": {
+        "bzlTransitiveDigest": "dTTtWNdwe7E4j77oKh1mHI1qtdxfaVSGSZa1oPf2QjU=",
+        "usagesDigest": "UDHIXJeqiQ8SeR82Q10EMG05ORV1SkEiFadaFODzXBQ=",
+        "recordedInputs": [
+          "REPO_MAPPING:rules_nixpkgs_core+,bazel_skylib bazel_skylib+"
+        ],
+        "generatedRepoSpecs": {
+          "nixpkgs": {
+            "repoRuleId": "@@rules_nixpkgs_core+//:nixpkgs.bzl%_nixpkgs_http_repository",
+            "attributes": {
+              "unmangled_name": "nixpkgs",
+              "url": "https://github.com/NixOS/nixpkgs/archive/refs/tags/25.05.tar.gz",
+              "strip_prefix": "nixpkgs-25.05",
+              "integrity": "",
+              "sha256": "130b4257b3d53bfbfea6d61fb76d4751a3989a4a09a28615ff77516a82b3924d"
+            }
+          }
+        },
+        "moduleExtensionMetadata": {
+          "explicitRootModuleDirectDeps": [
+            "nixpkgs"
+          ],
           "explicitRootModuleDirectDevDeps": [],
           "useAllRepos": "NO",
           "reproducible": false
@@ -542,7 +654,7 @@
     },
     "@@rules_rust+//crate_universe:extensions.bzl%crate": {
       "general": {
-        "bzlTransitiveDigest": "wXf09kOSg/ugFuioHyOgrhXoXQrl93BsE+ulQKF6CV4=",
+        "bzlTransitiveDigest": "KwLKXd8Sy6SQW8Sq5ehY11H9038el94Ka4Snf4LVPE8=",
         "usagesDigest": "v1gp5Vgx36T3MuDQLjUVSB7gdBcqhgzYJllr5fEu4TI=",
         "recordedInputs": [
           "ENV:CARGO_BAZEL_DEBUG \\0",
@@ -556,7 +668,9 @@
           "REPO_MAPPING:bazel_features+,bazel_features_globals bazel_features++version_extension+bazel_features_globals",
           "REPO_MAPPING:bazel_features+,bazel_features_version bazel_features++version_extension+bazel_features_version",
           "REPO_MAPPING:rules_cc+,bazel_tools bazel_tools",
+          "REPO_MAPPING:rules_cc+,cc_compatibility_proxy rules_cc++compatibility_proxy+cc_compatibility_proxy",
           "REPO_MAPPING:rules_cc+,rules_cc rules_cc+",
+          "REPO_MAPPING:rules_cc++compatibility_proxy+cc_compatibility_proxy,rules_cc rules_cc+",
           "REPO_MAPPING:rules_rust+,bazel_features bazel_features+",
           "REPO_MAPPING:rules_rust+,bazel_skylib bazel_skylib+",
           "REPO_MAPPING:rules_rust+,bazel_tools bazel_tools",

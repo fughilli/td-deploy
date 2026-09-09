@@ -1,11 +1,65 @@
 """The runtime cross-built for the Pi (aarch64-unknown-linux-gnu), fed to the
-image as build_data. See transition.bzl for why (host-targeted builds ship a
-Mach-O from a macOS deploy host).
+image as build_data. A host-targeted rust_binary ships a Mach-O from a macOS
+deploy host; this pins the target + links with nixpkgs' cross clang wrapper.
+
+The `:cross` constraint scopes the clang cc toolchain to THIS build only (the
+transition sets `:aarch64_linux`, which carries `:cross`), so it never hijacks
+host C++ — the same pattern as splanc//pi/player_rs/musl's `:musl`.
 """
 
+load("@rules_cc//cc:defs.bzl", "cc_toolchain")
+load(":cc_toolchain_config.bzl", "cc_toolchain_config")
 load(":transition.bzl", "linux_binary")
 
 package(default_visibility = ["//visibility:public"])
+
+# A marker constraint that ONLY our cross platform carries, so the clang cc
+# toolchain below binds only the transitioned runtime link (never the host).
+constraint_setting(name = "cc")
+
+constraint_value(
+    name = "cross",
+    constraint_setting = ":cc",
+)
+
+platform(
+    name = "aarch64_linux",
+    constraint_values = [
+        "@platforms//cpu:aarch64",
+        "@platforms//os:linux",
+        ":cross",
+    ],
+)
+
+cc_toolchain_config(
+    name = "cross_cc_config",
+    linker = "@aarch64_cc//:cc",
+)
+
+cc_toolchain(
+    name = "cross_cc",
+    all_files = "@aarch64_cc//:all",
+    ar_files = "@aarch64_cc//:all",
+    compiler_files = "@aarch64_cc//:all",
+    dwp_files = "@aarch64_cc//:all",
+    linker_files = "@aarch64_cc//:all",
+    objcopy_files = "@aarch64_cc//:all",
+    strip_files = "@aarch64_cc//:all",
+    toolchain_config = ":cross_cc_config",
+)
+
+# Registered in //MODULE.bazel BEFORE the defaults. target_compatible_with
+# includes :cross, so it's selected only for the :aarch64_linux platform.
+toolchain(
+    name = "cross_cc_toolchain",
+    target_compatible_with = [
+        "@platforms//cpu:aarch64",
+        "@platforms//os:linux",
+        ":cross",
+    ],
+    toolchain = ":cross_cc",
+    toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+)
 
 linux_binary(
     name = "toxc_runtime_linux",

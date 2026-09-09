@@ -7,14 +7,10 @@ transitions the build to the zig-backed linux_arm64 (glibc) cc toolchain via
 
 def _impl(_settings, _attr):
     return {
-        # Target the Pi: aarch64 + linux + glibc 2.34 (the Pi runs 2.40, and
-        # glibc is forward-compatible, so a 2.34-linked binary runs there). The
-        # gnu cc toolchain is libc-version-aware, so the platform must carry the
-        # matching glibc constraint.
-        "//command_line_option:platforms": ["@zig_sdk//libc_aware/platform:linux_arm64_gnu.2.34"],
-        # Link with zig's glibc cc toolchain, ONLY for this transitioned build
-        # (higher priority than registered toolchains, so no global effect).
-        "//command_line_option:extra_toolchains": ["@zig_sdk//libc_aware/toolchain:linux_arm64_gnu.2.34"],
+        # Target the Pi via our own platform (aarch64 + linux + :cross). The
+        # :cross constraint is what binds the nixpkgs clang cc toolchain (see
+        # BUILD), so no --extra_toolchains and no host hijack.
+        "//command_line_option:platforms": ["//runtime_rs/cross:aarch64_linux"],
     }
 
 _linux_transition = transition(
@@ -22,7 +18,6 @@ _linux_transition = transition(
     inputs = [],
     outputs = [
         "//command_line_option:platforms",
-        "//command_line_option:extra_toolchains",
     ],
 )
 
