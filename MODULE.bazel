@@ -50,12 +50,27 @@ use_repo(pip, "pypi")
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
+    # aarch64-unknown-linux-gnu: the DEPLOY target. The runtime binary is fed to
+    # the Pi image as build_data and MUST be a Linux ELF regardless of the deploy
+    # host — on macOS a host-targeted rust_binary produces a Mach-O the Pi can't
+    # exec. //runtime_rs/cross transitions the build to this triple.
+    extra_target_triples = ["aarch64-unknown-linux-gnu"],
     # The `image` crate stack uses slice::as_chunks_mut (stable since 1.88), so
     # the runtime needs >= 1.88 (toxc has no firmware rustc pin like splanc's).
     versions = ["1.88.0"],
 )
 use_repo(rust, "rust_toolchains")
 register_toolchains("@rust_toolchains//:all")
+
+# Hermetic zig-based cc toolchain, used ONLY to LINK the cross aarch64-linux-gnu
+# runtime (glibc, so the dlopen'd libEGL/-ldl resolves — unlike static musl).
+# Deliberately NOT register_toolchains'd: //runtime_rs/cross selects it per-target
+# via a transition (--extra_toolchains), so it never hijacks host C++ (this
+# container is itself aarch64-linux). Alternative: a nixpkgs pkgsCross gcc cc
+# toolchain (heavier to build on a Darwin host; same interface).
+bazel_dep(name = "hermetic_cc_toolchain", version = "4.0.1")
+zig = use_extension("@hermetic_cc_toolchain//toolchain:ext.bzl", "toolchains")
+use_repo(zig, "zig_sdk")
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 crate.from_cargo(

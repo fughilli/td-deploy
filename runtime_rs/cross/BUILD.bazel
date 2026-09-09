@@ -1,0 +1,13 @@
+"""The runtime cross-built for the Pi (aarch64-unknown-linux-gnu), fed to the
+image as build_data. See transition.bzl for why (host-targeted builds ship a
+Mach-O from a macOS deploy host).
+"""
+
+load(":transition.bzl", "linux_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+linux_binary(
+    name = "toxc_runtime_linux",
+    src = "//runtime_rs:toxc_runtime",
+)

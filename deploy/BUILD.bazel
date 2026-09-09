@@ -36,7 +36,10 @@ toxc_artifact(
 
 _BUILD_DATA = [
     ":toxc_artifact",
-    "//runtime_rs:toxc_runtime",
+    # The runtime cross-built for the Pi (aarch64-linux-gnu) — NOT the host
+    # //runtime_rs:toxc_runtime, which on a macOS deploy host is a Mach-O binary
+    # the Pi can't exec. Keyed as "toxc_runtime" for apps.nix (see transition.bzl).
+    "//runtime_rs/cross:toxc_runtime_linux",
 ]
 
 # Pi 5 (default board).

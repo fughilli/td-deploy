@@ -12,6 +12,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -659,21 +660,34 @@ const PAGE: &[u8] = b"<!doctype html><html><body style='margin:0;background:#111
 align-items:center;justify-content:center;height:100vh'>\
 <img src='/stream' style='max-width:100vw;max-height:100vh;image-rendering:pixelated'></body></html>";
 
-fn serve_http(port: u16, latest: Arc<Mutex<Vec<u8>>>) {
+// Count of clients currently pulling frames. The render loop only renders +
+// encodes while this is > 0, so an idle box (no viewer) spends no CPU/GPU.
+fn serve_http(port: u16, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<AtomicUsize>) {
     let l = TcpListener::bind(("0.0.0.0", port)).expect("bind http");
     println!("[stream] native MJPEG on http://0.0.0.0:{port}/");
     for c in l.incoming().flatten() {
         let latest = latest.clone();
-        thread::spawn(move || handle_conn(c, latest));
+        let clients = clients.clone();
+        thread::spawn(move || handle_conn(c, latest, clients));
     }
 }
 
-fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>) {
+// Decrement the client count when a viewer's handler returns, on every path.
+struct ClientGuard(Arc<AtomicUsize>);
+impl Drop for ClientGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<AtomicUsize>) {
     let mut buf = [0u8; 2048];
     let n = s.read(&mut buf).unwrap_or(0);
     let req = String::from_utf8_lossy(&buf[..n]);
     let path = req.split_whitespace().nth(1).unwrap_or("/");
     if path.starts_with("/stream") {
+        clients.fetch_add(1, Ordering::Relaxed);
+        let _guard = ClientGuard(clients.clone()); // wakes the render loop; drop pauses it
         if s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-cache\r\n\r\n").is_err() {
             return;
         }
@@ -688,6 +702,10 @@ fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>) {
             thread::sleep(Duration::from_millis(33));
         }
     } else if path.starts_with("/frame.jpg") {
+        // One-shot: count as a client briefly so the loop renders a fresh frame.
+        clients.fetch_add(1, Ordering::Relaxed);
+        let _guard = ClientGuard(clients.clone());
+        thread::sleep(Duration::from_millis(150));
         let jpg = latest.lock().unwrap().clone();
         let hdr = format!("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", jpg.len());
         let _ = s.write_all(hdr.as_bytes());
@@ -702,13 +720,21 @@ fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>) {
 fn stream(gl: &glow::Context, dir: &str, port: u16, fps: f64) {
     let mut r = Renderer::new(gl, dir);
     let latest: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let clients: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
     {
         let latest = latest.clone();
-        thread::spawn(move || serve_http(port, latest));
+        let clients = clients.clone();
+        thread::spawn(move || serve_http(port, latest, clients));
     }
     let start = Instant::now();
     let period = Duration::from_secs_f64(1.0 / fps.max(1.0));
     loop {
+        // Idle when nobody's watching: no render, no JPEG encode, no GL work.
+        // Time is wall-clock, so animations stay correct across idle gaps.
+        if clients.load(Ordering::Relaxed) == 0 {
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
         let t = start.elapsed().as_secs_f64();
         let (buf, w, h) = r.render(t);
         let mut rgb = Vec::with_capacity((w * h * 3) as usize);
