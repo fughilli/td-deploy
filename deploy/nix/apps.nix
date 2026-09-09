@@ -85,5 +85,12 @@ in
     extraGroups = [ "audio" "video" "render" ];
     ports = [ port ];
     after = [ "network.target" ];
+    # CAP_SYS_ADMIN lets the runtime become DRM master (drmSetMaster) to modeset
+    # the HDMI output (sink.rs). Needed because it's a system service, not a
+    # logind session. Harmless if the display becomes an implicit master on open.
+    extraServiceConfig = {
+      AmbientCapabilities = [ "CAP_SYS_ADMIN" ];
+      CapabilityBoundingSet = [ "CAP_SYS_ADMIN" ];
+    };
   };
 }

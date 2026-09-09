@@ -17,6 +17,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod sink;
+
 const PLATFORM_SURFACELESS_MESA: egl::Enum = 0x31DD;
 const CTX_OPENGL_PROFILE_MASK: egl::Int = 0x30FD;
 const CTX_OPENGL_CORE_PROFILE_BIT: egl::Int = 0x0000_0001;
@@ -726,26 +728,41 @@ fn stream(gl: &glow::Context, dir: &str, port: u16, fps: f64) {
         let clients = clients.clone();
         thread::spawn(move || serve_http(port, latest, clients));
     }
+    // HDMI output: scan out straight to the display (no encoding). None when
+    // headless / no display / no modeset permission — then it's MJPEG-only.
+    let mut drm = sink::DrmSink::open();
+    if drm.is_none() {
+        println!("[sink] no DRM/HDMI output (headless or no permission) — MJPEG only");
+    }
     let start = Instant::now();
     let period = Duration::from_secs_f64(1.0 / fps.max(1.0));
     loop {
-        // Idle when nobody's watching: no render, no JPEG encode, no GL work.
-        // Time is wall-clock, so animations stay correct across idle gaps.
-        if clients.load(Ordering::Relaxed) == 0 {
+        let has_client = clients.load(Ordering::Relaxed) > 0;
+        // Render when the HDMI display is attached OR a web client is watching;
+        // otherwise idle (no GL, no encode). Wall-clock time keeps animation
+        // correct across idle gaps.
+        if drm.is_none() && !has_client {
             thread::sleep(Duration::from_millis(100));
             continue;
         }
         let t = start.elapsed().as_secs_f64();
         let (buf, w, h) = r.render(t);
-        let mut rgb = Vec::with_capacity((w * h * 3) as usize);
-        for px in buf.chunks_exact(4) {
-            rgb.extend_from_slice(&px[..3]);
+        // HDMI: present every frame directly, no round-trip through encoding.
+        if let Some(d) = &mut drm {
+            d.present(&buf, w as usize, h as usize);
         }
-        let mut jpg = Vec::new();
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpg, 80)
-            .encode(&rgb, w as u32, h as u32, image::ExtendedColorType::Rgb8)
-            .unwrap();
-        *latest.lock().unwrap() = jpg;
+        // Web: encode a JPEG only while someone is actually connected.
+        if has_client {
+            let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+            for px in buf.chunks_exact(4) {
+                rgb.extend_from_slice(&px[..3]);
+            }
+            let mut jpg = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpg, 80)
+                .encode(&rgb, w as u32, h as u32, image::ExtendedColorType::Rgb8)
+                .unwrap();
+            *latest.lock().unwrap() = jpg;
+        }
         let ft = start.elapsed().as_secs_f64() - t;
         if let Some(s) = period.checked_sub(Duration::from_secs_f64(ft.max(0.0))) {
             thread::sleep(s);
