@@ -53,10 +53,11 @@ pub struct DrmSink {
     dw: usize,
     dh: usize,
     started: bool,
-    // Cached staging frame (XRGB8888, one u32/pixel). We compose here (normal
-    // cached RAM) then bulk-copy row-by-row into the mapped dumb buffer, which is
-    // write-combined: scattered byte writes straight to it are ~50x slower than a
-    // sequential memcpy. Black letterbox bars are written once and never touched.
+    // Cached staging frame (XRGB8888 u32/px). This dumb-buffer path is the
+    // FALLBACK (headless / web-only / no GBM); the primary HDMI path is
+    // zero-copy GBM scanout (see scanout.rs / make_gl). We compose here in cached
+    // RAM then bulk-copy row-by-row into the mapped dumb buffer (writes to it are
+    // ~uncached, so sequential + minimal is the best we can do on the CPU).
     staging: Vec<u32>,
 }
 
@@ -112,9 +113,16 @@ impl DrmSink {
         })
     }
 
-    /// Draw an RGBA frame (w x h) into the off-screen buffer (aspect-fit +
-    /// centered, nearest upscale, black bars) and flip it on the next vblank.
+    /// Present = compose() then flip(); kept for callers that don't want the split.
     pub fn present(&mut self, rgba: &[u8], w: usize, h: usize) {
+        self.compose(rgba, w, h);
+        self.flip();
+    }
+
+    /// Compose an RGBA frame (w x h) into the back dumb buffer (aspect-fit +
+    /// centered, nearest upscale, black bars). CPU cost = staging fill + the copy
+    /// into the (write-combined) dumb buffer.
+    pub fn compose(&mut self, rgba: &[u8], w: usize, h: usize) {
         if w == 0 || h == 0 {
             return;
         }
@@ -162,6 +170,12 @@ impl DrmSink {
             }
         }
 
+    }
+
+    /// Scan out the composed back buffer and block until the vblank page-flip
+    /// lands (so the buffer we just left the screen is free to draw next frame).
+    pub fn flip(&mut self) {
+        let idx = self.back;
         let fb = self.fbs[idx];
         if !self.started {
             let _ = self
@@ -169,8 +183,6 @@ impl DrmSink {
                 .set_crtc(self.crtc, Some(fb), (0, 0), &[self.conn], Some(self.mode));
             self.started = true;
         } else if self.card.page_flip(self.crtc, fb, PageFlipFlags::EVENT, None).is_ok() {
-            // Block until the flip lands, so the buffer we just left the screen
-            // (the other index) is free to draw into next frame — no tearing.
             'wait: loop {
                 match self.card.receive_events() {
                     Ok(events) => {

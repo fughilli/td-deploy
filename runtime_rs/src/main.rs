@@ -1020,7 +1020,11 @@ fn stream(gl: &glow::Context, dir: &str, port: u16, fps: f64) {
         // HDMI: present every frame directly, no round-trip through encoding.
         if let Some(d) = &mut drm {
             let tp = Instant::now();
-            d.present(&buf, w as usize, h as usize);
+            d.compose(&buf, w as usize, h as usize);     // CPU: staging + copy to dumb buffer
+            let tc = Instant::now();
+            prof_add(&prof, "present:compose", tp.elapsed().as_secs_f64());
+            d.flip();                                    // scanout + vblank page-flip wait
+            prof_add(&prof, "present:flip", tc.elapsed().as_secs_f64());
             prof_add(&prof, "present", tp.elapsed().as_secs_f64());
         }
         // Web: encode a JPEG only while someone is actually connected.
