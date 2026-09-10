@@ -10,6 +10,8 @@ Commands (stdin):
   {"cmd":"pick_toe","toe":"/path/project.toe"}        # set the current project
   {"cmd":"deploy"}                                     # deploy the current .toe now
   {"cmd":"watch","enable":true}                        # auto-deploy on save
+  {"cmd":"list_disks"}                                 # enumerate removable disks
+  {"cmd":"flash","disk_id":"...","tag":"latest"}       # download base img + flash SD
   {"cmd":"ping"}
 
 Events (stdout):
@@ -17,6 +19,14 @@ Events (stdout):
   {"type":"progress","phase":...,"frac":..,"overall":..,"message":...}
   {"type":"log","line":...} {"type":"done","ok":true,"staging":...}
   {"type":"error","message":...} {"type":"watch","enabled":bool} {"type":"pong"}
+  {"type":"disks","disks":[{"id":..,"name":..,"size_gb":..,"bus":..}]}
+  {"type":"flash_start","disk":..,"tag":..}
+  {"type":"flash_progress","stage":"download|write","frac":..,"message":..}
+  {"type":"flash_done","disk":..} {"type":"flash_error","message":..}
+
+Re-entry: `sidecar --raw-write <image> <device> <progress_file>` runs the tiny
+privileged raw-write worker (see deploy_engine.flasher.rawwrite) — this is how the
+frozen binary flashes as root without shipping a separate interpreter.
 
 All engine work runs on a single worker thread (coalescing: rapid saves collapse to
 one deploy); stdout writes are serialized so events never interleave.
@@ -123,6 +133,35 @@ class Sidecar:
         except OSError:
             return 0.0
 
+    # --- SD flashing (own thread; download base image then raw-write) ---
+    def _flash_worker(self, disk_id: str, tag: str, image: str | None) -> None:
+        from deploy_engine import download, flasher
+        try:
+            disk = flasher.require_removable(disk_id)  # confirm before any work
+            emit({"type": "flash_start", "disk": disk.to_dict(), "tag": tag})
+            if not image:
+                emit({"type": "log", "line": f"fetching base image {tag}"})
+                image = download.fetch_base_image(
+                    tag, on_progress=lambda f, m: emit({
+                        "type": "flash_progress", "stage": "download", "frac": f, "message": m}))
+            emit({"type": "log", "line": f"writing {image} -> {disk.name}"})
+            flasher.flash(image, disk_id, on_progress=lambda f, m: emit({
+                "type": "flash_progress", "stage": "write", "frac": f, "message": m}))
+            emit({"type": "flash_done", "disk": disk.to_dict()})
+        except Exception as e:  # noqa: BLE001 - surface to UI
+            emit({"type": "flash_error", "message": str(e)})
+
+    def start_flash(self, disk_id: str, tag: str, image: str | None) -> None:
+        threading.Thread(target=self._flash_worker,
+                         args=(disk_id, tag, image), daemon=True).start()
+
+    def list_disks(self) -> None:
+        from deploy_engine import flasher
+        try:
+            emit({"type": "disks", "disks": [d.to_dict() for d in flasher.list_disks()]})
+        except Exception as e:  # noqa: BLE001
+            emit({"type": "error", "message": f"list_disks: {e}"})
+
     # --- command dispatch ---
     def handle(self, msg: dict) -> None:
         cmd = msg.get("cmd")
@@ -140,6 +179,10 @@ class Sidecar:
             if msg.get("toe"):
                 self.toe = msg["toe"]
             self._set_watch(bool(msg.get("enable")))
+        elif cmd == "list_disks":
+            self.list_disks()
+        elif cmd == "flash":
+            self.start_flash(msg["disk_id"], msg.get("tag", "latest"), msg.get("image"))
         elif cmd == "ping":
             emit({"type": "pong"})
         else:
@@ -147,6 +190,12 @@ class Sidecar:
 
 
 def main() -> int:
+    # Privileged re-entry: when launched elevated by the flasher, act as the raw
+    # writer and nothing else. Must be handled before anything touches stdout.
+    if len(sys.argv) >= 2 and sys.argv[1] == "--raw-write":
+        from deploy_engine.flasher import rawwrite
+        return rawwrite.main(sys.argv[2:])
+
     sc = Sidecar()
     emit({"type": "ready", "settings": sc.settings})
     for line in sys.stdin:

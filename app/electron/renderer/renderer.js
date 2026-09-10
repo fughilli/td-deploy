@@ -102,8 +102,84 @@ window.td.onEvent((evt) => {
       els.watch.checked = !!evt.enabled;
       log('watch ' + (evt.enabled ? 'on' : 'off'));
       break;
+    case 'disks':
+      renderDisks(evt.disks || []);
+      break;
+    case 'flash_start':
+      log('flash ' + evt.disk.name + ' <- ' + evt.tag);
+      break;
+    case 'flash_progress':
+      fm.phase.textContent = (evt.stage === 'download' ? 'Downloading image' : 'Writing SD')
+        + (evt.message ? ' — ' + evt.message : '');
+      fm.fill.style.width = Math.round(evt.frac * 100) + '%';
+      break;
+    case 'flash_done':
+      flashing = false;
+      fm.cancel.disabled = false;
+      fm.phase.textContent = 'Done ✓ — you can remove the card';
+      fm.fill.style.width = '100%';
+      log('flashed ' + evt.disk.name, 'ok');
+      break;
+    case 'flash_error':
+      flashing = false;
+      fm.cancel.disabled = false;
+      fm.phase.textContent = 'Error';
+      log('FLASH ERROR: ' + evt.message, 'err');
+      break;
   }
 });
+
+// --- SD flashing modal ---
+const fm = {
+  modal: $('flash-modal'), tag: $('flash-tag'), refresh: $('flash-refresh'),
+  list: $('disk-list'), go: $('flash-go'), cancel: $('flash-cancel'),
+  progress: $('flash-progress'), phase: $('flash-phase'), fill: $('flash-fill'),
+};
+let selectedDisk = null;
+let flashing = false;
+
+function openFlash() {
+  selectedDisk = null;
+  flashing = false;
+  fm.go.disabled = true;
+  fm.progress.classList.add('hidden');
+  fm.list.innerHTML = '<li class="muted">Scanning…</li>';
+  fm.modal.classList.remove('hidden');
+  window.td.send({ cmd: 'list_disks' });
+}
+function closeFlash() { if (!flashing) fm.modal.classList.add('hidden'); }
+
+function renderDisks(disks) {
+  fm.list.innerHTML = '';
+  if (!disks.length) {
+    fm.list.innerHTML = '<li class="muted">No removable disks found. Insert an SD card and Refresh.</li>';
+    return;
+  }
+  for (const d of disks) {
+    const li = document.createElement('li');
+    li.textContent = `${d.name} — ${d.size_gb} GB${d.bus ? ' (' + d.bus + ')' : ''}`;
+    li.onclick = () => {
+      selectedDisk = d;
+      fm.go.disabled = false;
+      for (const c of fm.list.children) c.classList.remove('sel');
+      li.classList.add('sel');
+    };
+    fm.list.appendChild(li);
+  }
+}
+
+els.flash.onclick = openFlash;
+fm.cancel.onclick = closeFlash;
+fm.refresh.onclick = () => { fm.list.innerHTML = '<li class="muted">Scanning…</li>'; window.td.send({ cmd: 'list_disks' }); };
+fm.go.onclick = () => {
+  if (!selectedDisk) return;
+  flashing = true;
+  fm.go.disabled = true; fm.cancel.disabled = true;
+  fm.progress.classList.remove('hidden');
+  fm.fill.style.width = '0%';
+  fm.phase.textContent = 'Starting…';
+  window.td.send({ cmd: 'flash', disk_id: selectedDisk.id, tag: fm.tag.value || 'latest' });
+};
 
 // --- init from stored settings ---
 (function init() {

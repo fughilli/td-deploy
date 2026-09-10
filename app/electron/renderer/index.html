@@ -46,9 +46,31 @@
       <button id="pick-key">…</button>
     </div>
     <div class="row">
-      <button id="flash" disabled title="Phase 4">Flash SD card…</button>
+      <button id="flash">Flash SD card…</button>
     </div>
   </section>
+
+  <div id="flash-modal" class="modal hidden">
+    <div class="modal-box">
+      <h2>Flash SD card</h2>
+      <p class="warn">This <b>erases</b> the selected disk. Only removable disks are shown.</p>
+      <div class="row">
+        <label class="grow">Base image tag
+          <input id="flash-tag" type="text" value="latest" />
+        </label>
+        <button id="flash-refresh">Refresh disks</button>
+      </div>
+      <ul id="disk-list" class="disks"><li class="muted">Scanning…</li></ul>
+      <div id="flash-progress" class="hidden">
+        <div id="flash-phase" class="phase">Preparing…</div>
+        <div class="bar"><div id="flash-fill"></div></div>
+      </div>
+      <div class="row modal-actions">
+        <button id="flash-cancel">Cancel</button>
+        <button id="flash-go" class="primary" disabled>Erase &amp; Flash</button>
+      </div>
+    </div>
+  </div>
 
   <section class="card log-card">
     <div class="log-head">Log</div>

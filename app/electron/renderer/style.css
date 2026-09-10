@@ -53,3 +53,24 @@ label.grow input { flex: 1; width: 100%; }
   Consolas, monospace; font-size: 11.5px; color: #c4c8d2; white-space: pre-wrap; user-select: text; }
 #log .ok { color: var(--ok); }
 #log .err { color: var(--err); }
+
+/* flash modal */
+.hidden { display: none !important; }
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.55);
+  display: flex; align-items: center; justify-content: center; }
+.modal-box { background: var(--card); border: 1px solid var(--edge); border-radius: 12px;
+  padding: 18px; width: 460px; max-width: 92vw; }
+.modal-box h2 { margin: 0 0 4px; font-size: 15px; }
+.warn { color: #ffcf6b; font-size: 12px; margin: 0 0 10px; }
+.warn b { color: var(--err); }
+.disks { list-style: none; margin: 10px 0; padding: 0; max-height: 200px; overflow: auto;
+  border: 1px solid var(--edge); border-radius: 8px; }
+.disks li { padding: 9px 12px; cursor: pointer; border-bottom: 1px solid var(--edge);
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+.disks li:last-child { border-bottom: 0; }
+.disks li:hover { background: #262a33; }
+.disks li.sel { background: var(--accent); color: #fff; }
+.disks li.muted { cursor: default; color: var(--muted); font-family: inherit; }
+.disks li.muted:hover { background: none; }
+.modal-actions { justify-content: flex-end; margin-top: 12px; }
+#flash-progress { margin-top: 6px; }
