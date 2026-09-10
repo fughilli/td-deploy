@@ -27,16 +27,16 @@
       }
     },
     {
-      "id": "project1/crop1",
-      "op": "crop",
+      "id": "project1/transform1",
+      "op": "transform",
       "kind": "shader",
       "w": 256,
       "h": 256,
       "inputs": [
         "project1/moviefilein1"
       ],
-      "vert": "shaders/project1_crop1.vert",
-      "frag": "shaders/project1_crop1.frag",
+      "vert": "shaders/project1_transform1.vert",
+      "frag": "shaders/project1_transform1.frag",
       "sampler_array": null,
       "uniforms": {
         "uCropRect": {
@@ -47,23 +47,7 @@
             0.0,
             1.0
           ]
-        }
-      },
-      "time_uniforms": {}
-    },
-    {
-      "id": "project1/transform1",
-      "op": "transform",
-      "kind": "shader",
-      "w": 256,
-      "h": 256,
-      "inputs": [
-        "project1/crop1"
-      ],
-      "vert": "shaders/project1_transform1.vert",
-      "frag": "shaders/project1_transform1.frag",
-      "sampler_array": null,
-      "uniforms": {
+        },
         "uTranslate": {
           "type": "vec2",
           "value": [

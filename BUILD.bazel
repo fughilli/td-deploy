@@ -147,3 +147,13 @@ py_test(
         ":runtime_expr",
     ],
 )
+
+py_test(
+    name = "fusion_test",
+    srcs = ["tests/fusion_test.py"],
+    imports = ["."],
+    deps = [
+        ":ir",
+        ":lowering",
+    ],
+)

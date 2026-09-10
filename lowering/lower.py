@@ -123,8 +123,38 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
     return Step(nid, n.op, "passthrough", ot, inputs=inputs, params=dict(n.params))
 
 
+def _fuse_coord_remaps(steps: list[Step], target: str) -> list[Step]:
+    """TOP producer/consumer fusion: a crop feeding ONLY a transform is two
+    single-tap coordinate remaps, so compose them into one pass (source ->
+    crop-UV -> transform-UV -> one sample), dropping the crop's FBO. The transform
+    keeps its id, so downstream inputs are unchanged; it now samples the source.
+    (glsl2->glsl3 Sobel-into-ASCII fusion is the next step — see the design doc.)"""
+    consumers: dict[str, list[str]] = {}
+    for s in steps:
+        for inp in s.inputs:
+            consumers.setdefault(inp, []).append(s.node_id)
+    by_id = {s.node_id: s for s in steps}
+    drop: set[str] = set()
+    for t in steps:
+        if t.op != "transform" or len(t.inputs) != 1:
+            continue
+        c = by_id.get(t.inputs[0])
+        # Fuse only when the crop's output goes nowhere else (else it's shared).
+        if c is None or c.op != "crop" or c.node_id in drop:
+            continue
+        if consumers.get(c.node_id) != [t.node_id] or len(c.inputs) != 1:
+            continue
+        t.fragment = shaders.crop_transform_top(target)
+        t.uniforms = {**c.uniforms, **t.uniforms}   # uCropRect + uTranslate/uScale
+        t.inputs = list(c.inputs)                    # sample the source directly
+        t.params = {**c.params, **t.params, "_fused_from": c.node_id}
+        drop.add(c.node_id)
+    return [s for s in steps if s.node_id not in drop]
+
+
 def lower(g: Graph, target: str = "desktop_gl") -> RuntimePlan:
     if target not in shaders.TARGETS:
         raise ValueError(f"unknown target {target!r}; pick one of {sorted(shaders.TARGETS)}")
     steps = [_lower_node(g, nid, target) for nid in g.topo_order()]
+    steps = _fuse_coord_remaps(steps, target)
     return RuntimePlan(steps=steps, output_id=g.output, target=target)

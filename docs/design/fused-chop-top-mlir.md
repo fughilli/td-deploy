@@ -179,8 +179,20 @@ it from single exprs to the whole CHOP DAG (constant/speed/math/… as `tox` ops
   `chop:eval` in `/stats` drops).
 - **P2 — CHOP→TOP specialization.** Constant-fold CHOP→uniform into shaders;
   keep dynamic ones as fused-kernel-computed uniforms.
-- **P3 — TOP fusion + placement (profile-guided).** Producer/consumer TOP
-  fusion; cost-modelled placement seeded by `/stats`; the PGO loop of §5.
+- **P3 — TOP fusion + placement (profile-guided). ◒ started (2026-09-10).**
+  Producer/consumer TOP fusion begun in the lowering (`lowering/_fuse_coord_remaps`):
+  a Crop feeding **only** a Transform is two single-tap coordinate remaps, so they
+  compose into one pass (source → crop-UV → transform-UV → one sample), dropping
+  the crop's FBO. The ascii graph went 4 shader passes → 3; verified bit-faithful
+  on-device (banana identical) and `//:fusion_test`. *Next:* the general case —
+  `glsl2` (Sobel, a neighbour-sampling GLSL TOP) feeds only `glsl3` (ASCII), so
+  inline glsl2's fragment into glsl3 (glsl3 recomputes the 3×3 Sobel of its input
+  in-place) to drop the glsl2 FBO → 2 passes. That needs shader-body inlining
+  (rename `sTD2DInputs[]`/uniforms, substitute the sampled coord), not just
+  coordinate composition. Cost-modelled placement seeded by `/stats` is still TODO.
+  Note: on the Pi 3 the frame is already vblank-locked at the display refresh, so
+  fusion buys GPU/bandwidth headroom (higher res, more effects, weaker boards),
+  not more fps.
 - **P4 — TOP→CHOP reductions + transfer elimination.** Lower analysis CHOPs to
   GPU reductions; bufferize + eliminate redundant CHOP↔TOP copies.
 
