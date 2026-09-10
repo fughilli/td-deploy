@@ -15,8 +15,8 @@ import os
 from .progress import Progress
 from .toolchain import Toolchain
 
-_MLIR_LOWER = ("--convert-math-to-llvm --convert-arith-to-llvm "
-               "--convert-func-to-llvm --reconcile-unrealized-casts")
+_MLIR_LOWER = ["--convert-math-to-llvm", "--convert-arith-to-llvm",
+               "--convert-func-to-llvm", "--reconcile-unrealized-casts"]
 
 
 def _build_so(tc: Toolchain, art: str, name: str, progress: Progress) -> bool:
@@ -26,14 +26,13 @@ def _build_so(tc: Toolchain, art: str, name: str, progress: Progress) -> bool:
         return False
     out = os.path.join(art, name)
     os.makedirs(out, exist_ok=True)
-    clang = "clang " + " ".join(tc.clang_flags)
+    low, ll, so = (os.path.join(out, f) for f in ("low.mlir", f"{name}.ll", f"lib{name}.so"))
     progress.log(f"codegen {name}.mlir -> {name}/lib{name}.so")
-    tc.run_llvm_script(
-        f"set -e\n"
-        f"mlir-opt '{mlir}' {_MLIR_LOWER} -o '{out}/low.mlir'\n"
-        f"mlir-translate '{out}/low.mlir' --mlir-to-llvmir -o '{out}/{name}.ll'\n"
-        f"{clang} -O2 -shared -fPIC '{out}/{name}.ll' -o '{out}/lib{name}.so' -lm\n"
-    )
+    tc.run_pipeline([
+        ["mlir-opt", mlir, *_MLIR_LOWER, "-o", low],
+        ["mlir-translate", low, "--mlir-to-llvmir", "-o", ll],
+        ["clang", *tc.clang_flags, "-O2", "-shared", "-fPIC", ll, "-o", so, "-lm"],
+    ])
     return True
 
 

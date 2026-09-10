@@ -136,8 +136,8 @@ def translate_frag(path: str) -> str:
     return legalize_modulo(es)
 
 
-def main():
-    art = sys.argv[1]
+def main(art=None):
+    art = art or sys.argv[1]
     sched = json.load(open(f"{art}/schedule.json"))
     outdir = f"{art}/shaders_gles"
     os.makedirs(outdir, exist_ok=True)
@@ -151,7 +151,7 @@ def main():
         open(f"{outdir}/{sid}.vert", "w").write(es2_vertex(vec3))
         open(f"{outdir}/{sid}.frag", "w").write(translate_frag(f"{art}/{st['frag']}"))
         n += 1
-    print(f"[gles] translated {n} shaders -> {outdir}")
+    print(f"[gles] translated {n} shaders -> {outdir}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -14,10 +14,10 @@ from .compile import compile_toe
 from .finish import finish
 from .progress import Progress, cli_progress
 from .push import DEFAULT_SERVICE, push
-from .toolchain import BundledToolchain, NixToolchain, Toolchain
+from .toolchain import BundledToolchain, NixToolchain, Toolchain, default_toolchain
 
 __all__ = ["deploy", "compile_toe", "finish", "push", "Progress", "cli_progress",
-           "Toolchain", "NixToolchain", "BundledToolchain"]
+           "Toolchain", "NixToolchain", "BundledToolchain", "default_toolchain"]
 
 
 def deploy(toe_path: str, pi_host: str, *, target: str = "gles2", res: int = 256,
@@ -29,6 +29,6 @@ def deploy(toe_path: str, pi_host: str, *, target: str = "gles2", res: int = 256
     art = artifact_dir or tempfile.mkdtemp(prefix="toxc_artifact_")
     info = compile_toe(toe_path, art, target=target, res=res, set_file=set_file,
                        bridge=bridge, progress=progress)
-    finish(art, target, toolchain or NixToolchain(), progress)
+    finish(art, target, toolchain or default_toolchain(), progress)
     staging = push(art, pi_host, user=user, key=key, service=service, progress=progress)
     return {"artifact": art, "info": info, "staging": staging}

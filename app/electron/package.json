@@ -7,19 +7,27 @@
   "author": "fughilli",
   "license": "MIT",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dist": "electron-builder"
   },
   "devDependencies": {
-    "electron": "^31.3.0"
+    "electron": "^31.3.0",
+    "electron-builder": "^24.13.3"
   },
   "build": {
     "appId": "com.fughilli.tddeploystudio",
     "productName": "td-deploy Studio",
     "files": ["main.js", "preload.js", "renderer/**"],
     "extraResources": [
-      { "from": "../dist/sidecar", "to": "sidecar" }
+      { "from": "../dist/td-deploy-sidecar", "to": "sidecar" }
     ],
-    "mac": { "category": "public.app-category.developer-tools", "target": "dmg" },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": "dmg",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
     "win": { "target": "nsis" }
   }
 }
