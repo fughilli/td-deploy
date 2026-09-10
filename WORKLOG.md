@@ -30,6 +30,22 @@ CPU copy.
   confirm the HDMI picture** when the display is on (it was off during bring-up;
   hotplug handles it) — incl. vertical orientation of the scanout blit.
 
+**HDMI hotplug (no reboot).** Scanout owns its EGL state and reconfigures live:
+`poll_hotplug()` force-probes while headless and, on connect, recreates the gbm +
+EGL surface at the display's mode (`recreate_surface`) then modesets; while
+connected a cheap state check detects disconnect → headless (keeps rendering).
+Verified: plug HDMI in after boot and it comes up on its own.
+
+**Transform TOP scale, now dynamic + correct.** `sx`/`sy` in `ascii_project.toe`
+are TD expressions (`op('midiin1')[1]/64`) — but the lowering read scale as a
+static float (and under the wrong names), so it never applied. Now every
+transform component (rotate/translate/scale) lowers to a per-frame time-uniform
+(per-component scalar shader uniforms `uScaleX/uScaleY/…`), evaluated from the
+CHOP store each frame. Scale tracks knob 1 live (0 → scaled to nothing). Also
+fixed an `emit_artifact` dedup bug that wrote `"inputs": null` for a repeated expr
+(crashed the runtime's schedule parse). Confirmed on-device: banana rotates AND
+scales from the Midi Fighter Twister.
+
 **TOP fusion started (P3).** "Why 4 GPU passes — does the optimizer fuse them?" It
 didn't. `lowering/_fuse_coord_remaps` now composes a Crop feeding only a Transform
 into ONE coordinate-remap pass (source → crop-UV → transform-UV → one sample),
