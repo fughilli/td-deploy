@@ -37,22 +37,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: nixbuild/nix-quick-install-action@v30
-        with:
-          nix_conf: experimental-features = nix-command flakes
+      # DeterminateSystems installer sets the flake registry so `nixpkgs#…`
+      # resolves (nix-quick-install-action provides no <nixpkgs> / NIX_PATH).
+      - uses: DeterminateSystems/nix-installer-action@main
       - uses: nix-community/cache-nix-action@v6
         with:
           primary-key: nix-wintools-${{ hashFiles('.github/workflows/build-toolchain.yml') }}
           restore-prefixes-first-match: nix-wintools-
-          gc-max-store-size-linux: 5G
+          gc-max-store-size: 5G
 
       - name: Cross-build mlir/glslang/spirv-cross for Windows (mingw)
         run: |
           set -euo pipefail
-          X='(import <nixpkgs> {}).pkgsCross.mingwW64'
-          mlir="$(nix build --impure --no-link --print-out-paths --expr "${X}.llvmPackages_18.mlir")"
-          gls="$(nix build --impure --no-link --print-out-paths --expr "${X}.glslang")"
-          sc="$(nix build --impure --no-link --print-out-paths --expr "${X}.spirv-cross")"
+          # Pin to nixos-24.11 (same LLVM/MLIR 18 as compiler/nix/mlir.nix); an
+          # explicit flake ref needs no registry / NIX_PATH.
+          X='github:NixOS/nixpkgs/nixos-24.11#pkgsCross.mingwW64'
+          mlir="$(nix build --no-link --print-out-paths "${X}.llvmPackages_18.mlir")"
+          gls="$(nix build --no-link --print-out-paths "${X}.glslang")"
+          sc="$(nix build --no-link --print-out-paths "${X}.spirv-cross")"
 
           mkdir -p bundle/bin
           cp -Lv "$mlir"/bin/mlir-opt.exe "$mlir"/bin/mlir-translate.exe bundle/bin/
@@ -115,8 +117,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p stage/glslang stage/spirv-cross
-          g="$(nix build --no-link --print-out-paths nixpkgs#glslang | tail -1)"
-          s="$(nix build --no-link --print-out-paths nixpkgs#spirv-cross | tail -1)"
+          NP='github:NixOS/nixpkgs/nixos-24.11'
+          g="$(nix build --no-link --print-out-paths "$NP#glslang" | tail -1)"
+          s="$(nix build --no-link --print-out-paths "$NP#spirv-cross" | tail -1)"
           cp -L "$g/bin/glslangValidator" stage/glslang/glslangValidator
           cp -L "$s/bin/spirv-cross" stage/spirv-cross/spirv-cross
 
