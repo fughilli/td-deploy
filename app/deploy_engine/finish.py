@@ -37,7 +37,7 @@ def _build_so(tc: Toolchain, art: str, name: str, progress: Progress) -> bool:
         [
             ["mlir-opt", mlir, *_MLIR_LOWER, "-o", low],
             ["mlir-translate", low, "--mlir-to-llvmir", "-o", ll],
-            ["clang", *tc.clang_flags, "-O2", "-shared", "-fPIC", ll, "-o", so, "-lm"],
+            ["clang", *tc.clang_flags, "-O2", "-shared", "-fPIC", ll, "-o", so, *tc.link_libs],
         ]
     )
     return True

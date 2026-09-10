@@ -3,7 +3,9 @@
 #
 #   toolchain/
 #     bin/{mlir-opt,mlir-translate,clang,clang++,ld.lld,glslangValidator,spirv-cross}
-#     sysroot/            # aarch64-unknown-linux-gnu crt + libc/libm dev
+#
+# No sysroot: finish cross-links the kernels with `-nostdlib` and leaves libm
+# undefined (resolved on the Pi at dlopen) — see deploy_engine/toolchain.py.
 #
 # This is the OS-scriptable part (macOS/Linux). It expects the individual pieces
 # to have been fetched/built into $STAGE by the caller (CI) and just lays them out
@@ -11,10 +13,10 @@
 #
 #   STAGE=<dir with the fetched pieces> OUT=app/toolchain assemble_toolchain.sh
 set -euo pipefail
-STAGE="${STAGE:?set STAGE to the dir holding mlir/clang/glslang/sysroot pieces}"
+STAGE="${STAGE:?set STAGE to the dir holding mlir/clang/glslang pieces}"
 OUT="${OUT:?set OUT to the toolchain output dir (e.g. app/toolchain)}"
 
-mkdir -p "$OUT/bin" "$OUT/sysroot"
+mkdir -p "$OUT/bin"
 
 copy() {  # copy <src> <dst-name>   (resolves symlinks; keeps exec bit)
   local src="$1" dst="$2"
@@ -36,11 +38,6 @@ copy "$STAGE/llvm/ld.lld"   ld.lld
 # `spirv-cross`, so the bundled names must match exactly.
 copy "$STAGE/glslang/glslangValidator" glslangValidator
 copy "$STAGE/spirv-cross/spirv-cross"  spirv-cross
-
-# aarch64-linux sysroot (crt1.o/crti.o + libc.so/libm.so + headers).
-cp -a "$STAGE/sysroot/." "$OUT/sysroot/"
-test -e "$OUT/sysroot/usr/lib/libc.so" -o -e "$OUT/sysroot/lib/libc.so.6" \
-  || echo "WARN: no libc under sysroot/ — the -shared link may fail" >&2
 
 echo "==> toolchain assembled at $OUT"
 ls -l "$OUT/bin"

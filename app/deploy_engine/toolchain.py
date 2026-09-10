@@ -6,8 +6,9 @@ GLSL -> GLSL ES). Two implementations:
   shell`. In the aarch64-linux container this compiles NATIVELY for the Pi (same
   arch), which is enough to prove the deploy loop.
 - BundledToolchain (Phase 3, the shipped app): direct paths to the bundled clang/
-  lld/mlir tools + an aarch64 sysroot, cross-targeting aarch64-unknown-linux-gnu.
-  Runs each tool as a plain subprocess (NO shell) so it works on Windows too.
+  lld/mlir tools, cross-targeting aarch64-unknown-linux-gnu with `-nostdlib` (no
+  sysroot — see the class docstring). Runs each tool as a plain subprocess (NO
+  shell) so it works on Windows too.
 
 finish.py builds a pipeline of argv commands; each toolchain runs them its own way.
 Only the tool resolution + clang cross flags differ.
@@ -28,10 +29,13 @@ _STDERR = {"stdout": sys.stderr}
 
 
 class Toolchain:
-    """Interface. clang_flags are appended to the clang codegen invocation (cross
-    target/sysroot for the bundled toolchain; empty for a native build)."""
+    """Interface. clang_flags are inserted into the clang codegen invocation (cross
+    target for the bundled toolchain; empty for a native build); link_libs are the
+    libraries to link (native links -lm; the cross build leaves libm undefined,
+    resolved on the Pi at dlopen)."""
 
     clang_flags: list[str] = []
+    link_libs: list[str] = ["-lm"]
 
     def run_pipeline(self, commands: list[list[str]]) -> None:
         """Run a sequence of argv commands (mlir-opt/mlir-translate/clang), each
@@ -81,14 +85,20 @@ class NixToolchain(Toolchain):
 
 class BundledToolchain(Toolchain):
     """Phase 3: direct bundled binaries + aarch64 cross flags. tools_dir holds
-    bin/{mlir-opt,mlir-translate,clang,ld.lld,glslang,spirv-cross} + sysroot/.
-    No shell — each command is a direct subprocess, so this runs on Windows."""
+    bin/{mlir-opt,mlir-translate,clang,ld.lld,glslangValidator,spirv-cross}. No
+    shell — each command is a direct subprocess, so this runs on Windows too.
+
+    No sysroot is needed: the kernels compile from already-lowered .ll (no headers),
+    are shared libs (undefined symbols are allowed at link), and the Pi runtime
+    already has libm/libc loaded when it dlopens them — so we cross-link with
+    `-nostdlib` and leave sin/cos/etc. undefined, resolved on-device. This keeps the
+    bundle small and removes the fragile cross-sysroot entirely."""
 
     def __init__(self, tools_dir: str, triple: str = "aarch64-unknown-linux-gnu"):
         self.tools = tools_dir
         self.bindir = os.path.join(tools_dir, "bin")
-        self.sysroot = os.path.join(tools_dir, "sysroot")
-        self.clang_flags = [f"--target={triple}", f"--sysroot={self.sysroot}", "-fuse-ld=lld"]
+        self.clang_flags = [f"--target={triple}", "-fuse-ld=lld", "-nostdlib"]
+        self.link_libs = []  # libm resolved at dlopen on the Pi, not linked here
 
     def _resolve(self, tool: str) -> str:
         """Map a bare tool name to the bundled binary (with an .exe fallback)."""

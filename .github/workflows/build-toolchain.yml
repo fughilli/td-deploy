@@ -2,14 +2,16 @@
 #
 # Output (uploaded as artifact `toolchain-<os>`): the pieces the finish step needs
 # to turn optimized MLIR into an aarch64-linux .so + GLSL ES on the user's laptop:
-#   mlir-opt, mlir-translate, clang, lld, glslangValidator, spirv-cross + an aarch64
-#   sysroot.
+#   mlir-opt, mlir-translate, clang, lld, glslangValidator, spirv-cross.
+#
+# No sysroot: the kernels compile from already-lowered .ll (no headers), are shared
+# libs (undefined symbols allowed at link), and the Pi runtime already has libm/libc
+# loaded when it dlopens them — so finish cross-links with `-nostdlib` and leaves
+# libm undefined, resolved on-device (see deploy_engine/toolchain.py).
 #
 # The heavy piece is mlir-opt/mlir-translate (NOT in the LLVM release): built from
 # the pinned compiler/nix on macOS; built from LLVM source with MSVC on Windows
-# (cached aggressively — the long job). The aarch64 sysroot is built once on Linux
-# via nixpkgs and shared to both OS jobs as an artifact (it's OS-independent data),
-# so there's no external prebuilt to depend on.
+# (cached aggressively — the long job).
 name: build-toolchain
 
 on:
@@ -27,39 +29,8 @@ env:
   SPIRV_CROSS_VERSION: 'vulkan-sdk-1.3.290.0'
 
 jobs:
-  # ------------------------------------------------------------- sysroot --------
-  # Build the aarch64-linux sysroot (crt objects + libc/libm + headers) once on
-  # Linux; both OS toolchains link -shared against it. Tarred to keep symlinks.
-  sysroot:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: nixbuild/nix-quick-install-action@v30
-        with:
-          nix_conf: experimental-features = nix-command flakes
-      - name: Build aarch64 sysroot
-        run: |
-          set -euo pipefail
-          out="$(nix build --impure --no-link --print-out-paths --expr '
-            with (import <nixpkgs> {}).pkgsCross.aarch64-multiplatform;
-            (import <nixpkgs> {}).buildEnv {
-              name = "aarch64-sysroot";
-              paths = [ stdenv.cc.libc stdenv.cc.libc.dev ];
-            }')"
-          mkdir -p sysroot/usr
-          cp -aL "$out"/lib sysroot/usr/lib
-          cp -aL "$out"/include sysroot/usr/include
-          # clang also probes <sysroot>/lib for crt*.o
-          ln -s usr/lib sysroot/lib
-          tar -C sysroot -cf sysroot.tar .
-      - uses: actions/upload-artifact@v4
-        with:
-          name: aarch64-sysroot
-          path: sysroot.tar
-
   # ---------------------------------------------------------------- macOS -------
   macos:
-    needs: sysroot
     runs-on: macos-14 # arm64
     steps:
       - uses: actions/checkout@v4
@@ -97,11 +68,6 @@ jobs:
           cp -L "$g/bin/glslangValidator" stage/glslang/glslangValidator
           cp -L "$s/bin/spirv-cross" stage/spirv-cross/spirv-cross
 
-      - name: Fetch shared aarch64 sysroot
-        uses: actions/download-artifact@v4
-        with: { name: aarch64-sysroot, path: . }
-      - run: mkdir -p stage/sysroot && tar -C stage/sysroot -xf sysroot.tar
-
       - name: Assemble bundle
         run: STAGE=stage OUT=app/toolchain app/packaging/assemble_toolchain.sh
 
@@ -110,7 +76,6 @@ jobs:
 
   # -------------------------------------------------------------- Windows -------
   windows:
-    needs: sysroot
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -159,12 +124,6 @@ jobs:
           cmake -S SPIRV-Cross -B sc-build -DCMAKE_BUILD_TYPE=Release -DSPIRV_CROSS_CLI=ON
           cmake --build sc-build --config Release --target spirv-cross
 
-      - name: Fetch shared aarch64 sysroot
-        uses: actions/download-artifact@v4
-        with: { name: aarch64-sysroot, path: . }
-      - shell: pwsh
-        run: mkdir sysroot; tar -xf sysroot.tar -C sysroot
-
       - name: Locate built binaries
         id: bins
         shell: pwsh
@@ -181,7 +140,7 @@ jobs:
             -Mlir mlir-install\bin -Llvm llvm-full\bin `
             -Glslang '${{ steps.bins.outputs.glslang }}' `
             -SpirvCross '${{ steps.bins.outputs.spirvcross }}' `
-            -Sysroot sysroot -Out app\toolchain
+            -Out app\toolchain
 
       - uses: actions/upload-artifact@v4
         with: { name: toolchain-windows, path: app/toolchain }

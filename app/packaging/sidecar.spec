@@ -7,7 +7,7 @@
 #     compiler/emit_artifact + compiler/translate_gles) — same code the dev CLI runs
 #   * Pillow + PyAV (host-asset decoding)
 #   * the per-OS cross toolchain under app/toolchain/ (clang/lld/mlir/glslang/
-#     spirv-cross + aarch64 sysroot), if CI has populated it — added as data so it
+#     spirv-cross), if CI has populated it — added as data so it
 #     lands under sys._MEIPASS/toolchain (see toolchain.default_toolchain()).
 #
 # Build:  pyinstaller app/packaging/sidecar.spec
