@@ -188,5 +188,23 @@
     }
   ],
   "exprs_lib": null,
-  "services": "services.json"
+  "services": "services.json",
+  "chops": [
+    {
+      "name": "constant1",
+      "type": "constant",
+      "inputs": [],
+      "channels": [
+        "op('midiin1')[0][0]/127 - 0.5"
+      ]
+    },
+    {
+      "name": "speed1",
+      "type": "speed",
+      "inputs": [
+        "constant1"
+      ],
+      "channels": []
+    }
+  ]
 }

@@ -94,14 +94,16 @@ def emit(plan, graph, outdir: str) -> dict:
     with open(os.path.join(outdir, "services.json"), "w") as f:
         json.dump(getattr(graph, "services", []), f, indent=2)
 
+    chops = list(getattr(graph, "chops", []))
     schedule = {
         "output": plan.output_id,
         "target": plan.target,
         "steps": steps_json,
         "exprs_lib": "exprs/libexprs.so" if expr_funcs else None,
         "services": "services.json",
+        "chops": chops,
     }
     with open(os.path.join(outdir, "schedule.json"), "w") as f:
         json.dump(schedule, f, indent=2)
 
-    return {"steps": len(steps_json), "exprs": len(expr_funcs), **coverage}
+    return {"steps": len(steps_json), "exprs": len(expr_funcs), "chops": len(chops), **coverage}

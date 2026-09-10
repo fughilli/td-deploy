@@ -69,6 +69,7 @@ class Graph:
     nodes: dict[str, Node] = field(default_factory=dict)
     version: str = "0.1"
     services: list = field(default_factory=list)  # I/O service specs (OSC/MIDI in)
+    chops: list = field(default_factory=list)  # control-rate CHOP DAG feeding exprs
 
     # -- (de)serialization -----------------------------------------------------
     @staticmethod
@@ -81,7 +82,7 @@ class Graph:
                 raise ValueError(f"duplicate node id {n.id!r}")
             nodes[n.id] = n
         g = Graph(output=obj["output"], nodes=nodes, version=obj.get("version", "0.1"),
-                  services=list(obj.get("services", [])))
+                  services=list(obj.get("services", [])), chops=list(obj.get("chops", [])))
         g.validate()
         return g
 
@@ -104,6 +105,7 @@ class Graph:
             # be serialized explicitly or a round-tripped IR .json loses them (and
             # a deployed graph would ignore its MIDI/OSC input).
             **({"services": self.services} if self.services else {}),
+            **({"chops": self.chops} if self.chops else {}),
         }
 
     # -- structural helpers ----------------------------------------------------

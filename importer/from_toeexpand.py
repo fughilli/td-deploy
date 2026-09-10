@@ -30,6 +30,7 @@ noted in the coverage report and skipped.
 from __future__ import annotations
 
 import os
+import re
 import struct
 from dataclasses import dataclass, field
 
@@ -211,6 +212,80 @@ def _effective_inputs(ops: dict[str, RawOp], compinputs: dict, path: str) -> lis
     return resolved
 
 
+_OPREF = re.compile(r"op\(\s*['\"]([^'\"]+)['\"]\s*\)")
+
+
+def _param_expr(raw) -> str:
+    """A Constant CHOP value param stores `<default> "<expr>"`. Return the quoted
+    expression if present, else the leading numeric literal (as a string the
+    interpreter evaluates as a constant)."""
+    if raw is None:
+        return "0"
+    s = str(raw).strip()
+    for q in ('"', "'"):
+        a = s.find(q)
+        if a != -1:
+            b = s.find(q, a + 1)
+            if b != -1:
+                return s[a + 1:b]
+    toks = s.split()
+    return toks[0] if toks else "0"
+
+
+def _collect_chops(ops: dict) -> list:
+    """Import the CHOP DAG feeding any op('X') reference in a param expr, in
+    dependency (topo) order. Services (oscin/midiin) are excluded — the runtime
+    reads them live. constant: per-channel exprs; speed/math/null: passthrough."""
+    def resolve(name):
+        for p, op in ops.items():
+            if op.family == "CHOP" and (p == name or p.endswith("/" + name)):
+                return op
+        return None
+
+    # Seed from op() refs in ANY op's params (TOP exprs + CHOP exprs).
+    stack = []
+    for op in ops.values():
+        for v in (op.params or {}).values():
+            stack += _OPREF.findall(str(v))
+
+    defs: dict = {}  # name -> def dict, or None for services / unresolved
+    while stack:
+        name = stack.pop()
+        if name in defs:
+            continue
+        op = resolve(name)
+        if op is None or op.optype in ("oscin", "midiin"):
+            defs[name] = None  # service or external — read live, don't emit
+            continue
+        inputs = [rel for (_i, rel) in sorted(op.inputs)]
+        channels = []
+        if op.optype == "constant":
+            i = 0
+            while f"const{i}value" in op.params:
+                channels.append(_param_expr(op.params[f"const{i}value"]))
+                i += 1
+        defs[name] = {"name": name, "type": op.optype, "inputs": inputs, "channels": channels}
+        stack += inputs
+        for v in op.params.values():
+            stack += _OPREF.findall(str(v))
+
+    # Topo order: inputs before dependents.
+    real = {n: d for n, d in defs.items() if d is not None}
+    order, seen = [], set()
+
+    def visit(n):
+        if n in seen or n not in real:
+            return
+        seen.add(n)
+        for inp in real[n]["inputs"]:
+            visit(inp)
+        order.append(real[n])
+
+    for n in list(real):
+        visit(n)
+    return order
+
+
 def import_dir(dirroot: str) -> ImportResult:
     ops = _load_tree(dirroot)
 
@@ -300,7 +375,15 @@ def import_dir(dirroot: str) -> ImportResult:
                                  "device": op.params.get("device")})
             coverage.append(f"service: {op.optype} {name} -> {services[-1]}")
 
-    g = Graph(output=sink, nodes=nodes, services=services)
+    # Control-rate CHOP DAG feeding parameter exprs (op('speed1')[0] etc.). The
+    # render path is TOP-only, but exprs read CHOPs; import that little DAG so the
+    # runtime can evaluate it per-frame. Services (oscin/midiin) are excluded —
+    # the runtime reads them live.
+    chops = _collect_chops(ops)
+    for c in chops:
+        coverage.append(f"chop: {c['type']} {c['name']} <- {c['inputs']}")
+
+    g = Graph(output=sink, nodes=nodes, services=services, chops=chops)
     g.validate()
 
     supported = sum(1 for n in nodes.values() if n.op != "passthrough" or True)

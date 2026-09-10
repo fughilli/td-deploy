@@ -14,6 +14,7 @@ glow = "0.14"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+fasteval = "0.2.4"
 
 # DRM/KMS HDMI sink (runtime_rs/src/sink.rs) — Linux-only; other hosts use the
 # no-op stub so the runtime still builds there (e.g. a macOS `bazel build //...`).

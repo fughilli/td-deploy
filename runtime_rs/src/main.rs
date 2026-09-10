@@ -12,11 +12,13 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod expr;
 mod sink;
 
 const PLATFORM_SURFACELESS_MESA: egl::Enum = 0x31DD;
@@ -31,6 +33,23 @@ struct Schedule {
     exprs_lib: Option<String>,
     #[serde(default)]
     target: String,
+    // The CHOP DAG feeding parameter exprs (op('name')[..]), in dependency order.
+    // Evaluated per-frame into the chop store; see Renderer::eval_chops.
+    #[serde(default)]
+    chops: Vec<ChopDef>,
+}
+// A control-rate node the importer pulled in because an expr reads it.
+// constant: `channels` are per-channel exprs. speed: integrates its input over
+// time. null/select/math: passthrough of channel 0 (extend as needed).
+#[derive(Deserialize, Clone)]
+struct ChopDef {
+    name: String,
+    #[serde(rename = "type")]
+    ty: String,
+    #[serde(default)]
+    inputs: Vec<String>,
+    #[serde(default)]
+    channels: Vec<String>,
 }
 #[derive(Deserialize)]
 struct Step {
@@ -78,6 +97,10 @@ struct TimeUniform {
     func: Option<String>,
     #[serde(default)]
     inputs: Vec<String>,
+    // The raw TD expr, present when the transpiler couldn't lower it to a native
+    // fn. Evaluated by the interpreter (expr.rs) each frame.
+    #[serde(default)]
+    interpreted: Option<String>,
     #[serde(default = "one")]
     mul: f64,
 }
@@ -222,7 +245,10 @@ struct MidiParser {
 }
 
 impl MidiParser {
-    fn push(&mut self, b: u8) -> Option<(String, f64)> {
+    // Returns (control_or_note, raw_value 0..127, is_note). RAW (not normalized):
+    // TD's MIDI In CHOP is un-normalized, and exprs divide by 127 themselves
+    // (e.g. `op('midiin1')[0][0]/127 - 0.5`).
+    fn push(&mut self, b: u8) -> Option<(u8, f64, bool)> {
         if b >= 0xF8 {
             return None; // system realtime: single byte, ignore (may interleave)
         }
@@ -243,13 +269,10 @@ impl MidiParser {
         }
         self.have = 0; // keep status for running status
         match hi {
-            0xB0 => Some((format!("cc{}", self.data[0]), self.data[1] as f64 / 127.0)),
+            0xB0 => Some((self.data[0], self.data[1] as f64, false)),
             // note-on with velocity 0 is a note-off
-            0x90 => Some((
-                format!("n{}", self.data[0]),
-                if self.data[1] == 0 { 0.0 } else { self.data[1] as f64 / 127.0 },
-            )),
-            0x80 => Some((format!("n{}", self.data[0]), 0.0)),
+            0x90 => Some((self.data[0], if self.data[1] == 0 { 0.0 } else { self.data[1] as f64 }, true)),
+            0x80 => Some((self.data[0], 0.0, true)),
             _ => None,
         }
     }
@@ -281,8 +304,13 @@ fn start_midi(name: String, device: Option<String>, store: Chops) {
             if n == 0 {
                 break; // EOF: device unplugged — fall through to reopen
             }
-            if let Some((ch, v)) = parser.push(byte[0]) {
-                midi_set(&store, &name, ch, v);
+            if let Some((ctrl, v, is_note)) = parser.push(byte[0]) {
+                if is_note {
+                    midi_set(&store, &name, format!("n{ctrl}"), v);
+                } else {
+                    midi_set(&store, &name, format!("cc{ctrl}"), v); // op('midiin1')['ccN']
+                    midi_set(&store, &name, format!("{ctrl}"), v); // op('midiin1')[N] (channel = CC #)
+                }
             }
         }
         println!("[service] midiin {name} stream ended; reopening");
@@ -294,34 +322,34 @@ fn start_midi(name: String, device: Option<String>, store: Chops) {
 mod midi_tests {
     use super::MidiParser;
 
-    fn drive(bytes: &[u8]) -> Vec<(String, f64)> {
+    fn drive(bytes: &[u8]) -> Vec<(u8, f64, bool)> {
         let mut p = MidiParser::default();
         bytes.iter().filter_map(|&b| p.push(b)).collect()
     }
 
     #[test]
-    fn cc_maps_to_normalized_channel() {
-        // CC13 = 127 on MIDI channel 1 (a Twister encoder maxed out).
-        assert_eq!(drive(&[0xB0, 13, 127]), vec![("cc13".to_string(), 1.0)]);
+    fn cc_is_raw() {
+        // CC13 = 127 (raw; exprs normalize themselves via /127). false = not a note.
+        assert_eq!(drive(&[0xB0, 13, 127]), vec![(13, 127.0, false)]);
     }
 
     #[test]
     fn running_status_repeats_cc() {
         // status byte sent once, then two data pairs (running status).
         let out = drive(&[0xB0, 1, 64, 2, 0]);
-        assert_eq!(out, vec![("cc1".to_string(), 64.0 / 127.0), ("cc2".to_string(), 0.0)]);
+        assert_eq!(out, vec![(1, 64.0, false), (2, 0.0, false)]);
     }
 
     #[test]
     fn note_on_zero_velocity_is_note_off() {
         let out = drive(&[0x90, 60, 100, 0x90, 60, 0]);
-        assert_eq!(out, vec![("n60".to_string(), 100.0 / 127.0), ("n60".to_string(), 0.0)]);
+        assert_eq!(out, vec![(60, 100.0, true), (60, 0.0, true)]);
     }
 
     #[test]
     fn realtime_clock_interleaves_without_breaking_message() {
         // 0xF8 (clock) between the CC data bytes must be ignored, not corrupt it.
-        assert_eq!(drive(&[0xB0, 13, 0xF8, 100]), vec![("cc13".to_string(), 100.0 / 127.0)]);
+        assert_eq!(drive(&[0xB0, 13, 0xF8, 100]), vec![(13, 100.0, false)]);
     }
 }
 
@@ -468,6 +496,27 @@ struct Renderer<'a> {
     size: HashMap<String, (i32, i32)>,
     gles2: bool,
     quad: Option<glow::Buffer>,
+    // Control-rate (CHOP) evaluation: the pre-compiled DAG + integrator state.
+    chop_progs: Vec<ChopProg>,
+    // Pre-compiled interpreted uniforms, keyed by (step index, uniform name).
+    uniform_progs: HashMap<(usize, String), expr::Program>,
+    speed_state: RefCell<HashMap<(String, usize), f64>>,
+    last_t: Cell<f64>,
+}
+
+// A CHOP with its constant channel exprs pre-compiled (fasteval).
+struct ChopProg {
+    name: String,
+    ty: String,
+    inputs: Vec<String>,
+    chans: Vec<expr::Program>,
+}
+
+fn chop_get(store: &Chops, name: &str, chan: &str) -> f64 {
+    store.lock().unwrap().get(name).and_then(|m| m.get(chan)).copied().unwrap_or(0.0)
+}
+fn chop_set(store: &Chops, name: &str, chan: &str, v: f64) {
+    store.lock().unwrap().entry(name.to_string()).or_default().insert(chan.to_string(), v);
 }
 
 // Resolve a shader path, redirecting to the translated ES1.00 set on gles2.
@@ -496,13 +545,76 @@ impl<'a> Renderer<'a> {
             }
         }
         let gles2 = sched.target == "gles2";
+        // Pre-compile the CHOP channel exprs + interpreted uniforms once.
+        let chop_progs: Vec<ChopProg> = sched
+            .chops
+            .iter()
+            .map(|c| ChopProg {
+                name: c.name.clone(),
+                ty: c.ty.clone(),
+                inputs: c.inputs.clone(),
+                chans: c.channels.iter().map(|e| expr::Program::compile(e)).collect(),
+            })
+            .collect();
+        let mut uniform_progs = HashMap::new();
+        for (si, st) in sched.steps.iter().enumerate() {
+            for (name, tu) in &st.time_uniforms {
+                if let Some(s) = &tu.interpreted {
+                    uniform_progs.insert((si, name.clone()), expr::Program::compile(s));
+                }
+            }
+        }
         let mut r = Renderer {
             gl, dir: dir.to_string(), sched, exprs, store,
             tex: HashMap::new(), fbo: HashMap::new(), prog: HashMap::new(), size: HashMap::new(),
             gles2, quad: None,
+            chop_progs, uniform_progs,
+            speed_state: RefCell::new(HashMap::new()), last_t: Cell::new(0.0),
         };
         r.setup();
         r
+    }
+
+    // Evaluate the control-rate CHOP DAG (dependency order) into the store, so
+    // interpreted uniforms like op('speed1')[0] resolve. Constant = its expr;
+    // speed = time-integral of its input; others pass channel 0 through.
+    fn eval_chops(&self, t: f64) {
+        if self.chop_progs.is_empty() {
+            return;
+        }
+        let dt = (t - self.last_t.get()).max(0.0).min(1.0);
+        self.last_t.set(t);
+        let frame = (t * 60.0).floor();
+        for cp in &self.chop_progs {
+            match cp.ty.as_str() {
+                "constant" => {
+                    for (i, prog) in cp.chans.iter().enumerate() {
+                        let store = self.store.clone();
+                        let v = prog.eval(t, frame, &|n, ch| chop_get(&store, n, ch));
+                        chop_set(&self.store, &cp.name, &i.to_string(), v);
+                    }
+                }
+                "speed" => {
+                    if let Some(inp) = cp.inputs.first() {
+                        let iv = chop_get(&self.store, inp, "0");
+                        let val = {
+                            let mut ss = self.speed_state.borrow_mut();
+                            let acc = ss.entry((cp.name.clone(), 0)).or_insert(0.0);
+                            *acc += iv * dt;
+                            *acc
+                        };
+                        chop_set(&self.store, &cp.name, "0", val);
+                    }
+                }
+                _ => {
+                    // null / select / passthrough: copy channel 0 of the input.
+                    if let Some(inp) = cp.inputs.first() {
+                        let iv = chop_get(&self.store, inp, "0");
+                        chop_set(&self.store, &cp.name, "0", iv);
+                    }
+                }
+            }
+        }
     }
 
     fn setup(&mut self) {
@@ -564,7 +676,8 @@ impl<'a> Renderer<'a> {
 
     fn render(&mut self, t: f64) -> (Vec<u8>, i32, i32) {
         let gl = self.gl;
-        for st in &self.sched.steps {
+        self.eval_chops(t); // control-rate pass -> store, before the shader uniforms read it
+        for (si, st) in self.sched.steps.iter().enumerate() {
             if st.kind == "passthrough" {
                 if let Some(src) = st.inputs.first() {
                     let (a, b) = (self.tex[src], self.size[src]);
@@ -615,6 +728,11 @@ impl<'a> Renderer<'a> {
                                     other => chop_value(&self.store, other),
                                 }).collect();
                                 call_expr(lib, func, &args) * tu.mul
+                            } else if let Some(prog) = self.uniform_progs.get(&(si, name.clone())) {
+                                // Interpreted expr (op('name')[i], absTime, math) via fasteval.
+                                let store = self.store.clone();
+                                let frame = (t * 60.0).floor();
+                                prog.eval(t, frame, &|n, ch| chop_get(&store, n, ch)) * tu.mul
                             } else {
                                 0.0
                             };
