@@ -30,6 +30,15 @@ CPU copy.
   confirm the HDMI picture** when the display is on (it was off during bring-up;
   hotplug handles it) — incl. vertical orientation of the scanout blit.
 
+**TOP fusion started (P3).** "Why 4 GPU passes — does the optimizer fuse them?" It
+didn't. `lowering/_fuse_coord_remaps` now composes a Crop feeding only a Transform
+into ONE coordinate-remap pass (source → crop-UV → transform-UV → one sample),
+dropping the crop FBO — ascii went **4 shader passes → 3**, verified bit-faithful
+on-device (banana identical) + `//:fusion_test`. The general `glsl2→glsl3`
+(Sobel-into-ASCII) fusion needs shader-body inlining (documented, not done — it's
+GPU headroom, not fps, since the frame is vblank-locked). Also: `cli.py` now sends
+the host bridge's `X-Auth-Token` (the bridge requires a token now).
+
 
 
 ## 2026-09-10 (2) — VC4 GPU acceleration + fused-graph P0 (branch bazel-top-level)
