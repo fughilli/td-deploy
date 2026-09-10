@@ -104,11 +104,19 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
                     params=dict(n.params))
 
     if n.op == "transform":
-        rot = value_or_expr(n.params.get("rotate"), 0.0)   # degrees (literal or expr)
-        tx = float(value_or_expr(n.params.get("tx"), 0.0))
-        ty = float(value_or_expr(n.params.get("ty"), 0.0))
-        sx = float(value_or_expr(n.params.get("scalex"), 1.0))
-        sy = float(value_or_expr(n.params.get("scaley"), 1.0))
+        def _p(names, default):
+            for nm in names:
+                if nm in n.params:
+                    return value_or_expr(n.params[nm], default)
+            return default
+        rot = _p(["rotate", "r"], 0.0)                      # degrees (literal or expr)
+        tx = float(_p(["tx", "translatex"], 0.0))
+        ty = float(_p(["ty", "translatey"], 0.0))
+        # TD Transform TOP: per-axis Scale is sx/sy (NOT scalex/scaley), times a
+        # separate "Uniform Scale" (scale). Read robustly + apply the multiplier.
+        uscale = float(_p(["scale"], 1.0))
+        sx = float(_p(["sx", "scalex"], 1.0)) * uscale
+        sy = float(_p(["sy", "scaley"], 1.0)) * uscale
         return Step(nid, n.op, "shader", ot, inputs=inputs,
                     vertex=shaders.vertex(target),
                     fragment=shaders.transform_top(target),

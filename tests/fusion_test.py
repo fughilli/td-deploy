@@ -33,6 +33,18 @@ class FusionTest(unittest.TestCase):
         self.assertIn("mix(uCropRect", t.fragment)  # composed coordinate remap
         self.assertEqual(t.params.get("_fused_from"), "c")
 
+    def test_transform_scale_param_names(self):
+        # TD Transform TOP per-axis scale is sx/sy times a uniform `scale`.
+        g = Graph.from_json({"output": "t", "nodes": [
+            {"id": "src", "op": "image_in", "family": "TOP", "inputs": [],
+             "out_type": {"w": 256, "h": 256, "fmt": "rgba8"}},
+            {"id": "t", "op": "transform", "family": "TOP", "inputs": ["src"],
+             "params": {"sx": "2", "sy": "3", "scale": "2"},
+             "out_type": {"w": 256, "h": 256, "fmt": "rgba8"}},
+        ]})
+        t = [s for s in lower(g, "desktop_gl").steps if s.kind == "shader"][0]
+        self.assertEqual(t.uniforms["uScale"], ("vec2", [4.0, 6.0]))  # sx*scale, sy*scale
+
     def test_shared_crop_not_fused(self):
         # When the crop feeds another op too, it must stay its own pass.
         plan = lower(_graph(crop_shared=True), "desktop_gl")
