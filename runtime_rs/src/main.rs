@@ -20,6 +20,25 @@ use std::time::{Duration, Instant};
 
 mod expr;
 mod sink;
+mod scanout;
+
+// Passthrough blit (GLSL ES 1.00) for the GBM scanout path: draw the graph's
+// final texture into the display-sized surface, aspect-fit + centered (black bars
+// via uScale), on the GPU — no CPU readback.
+const BLIT_VERT: &str = "#version 100\n\
+attribute vec2 aPos;\n\
+varying vec2 vUV;\n\
+void main(){ vUV = aPos*0.5+0.5; gl_Position = vec4(aPos,0.0,1.0); }\n";
+const BLIT_FRAG: &str = "#version 100\n\
+precision mediump float;\n\
+varying vec2 vUV;\n\
+uniform sampler2D tex;\n\
+uniform vec2 uScale;\n\
+void main(){\n\
+  vec2 uv = (vUV-0.5)/uScale+0.5;\n\
+  if(uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0) gl_FragColor=vec4(0.0,0.0,0.0,1.0);\n\
+  else gl_FragColor=texture2D(tex, uv);\n\
+}\n";
 
 const PLATFORM_SURFACELESS_MESA: egl::Enum = 0x31DD;
 const CTX_OPENGL_PROFILE_MASK: egl::Int = 0x30FD;
@@ -524,6 +543,7 @@ struct Renderer<'a> {
     size: HashMap<String, (i32, i32)>,
     gles2: bool,
     quad: Option<glow::Buffer>,
+    blit_prog: Option<glow::Program>,   // GBM scanout: final-texture -> display surface
     // Control-rate (CHOP) evaluation: the pre-compiled DAG + integrator state.
     chop_progs: Vec<ChopProg>,
     // The compiled CHOP kernel (chops_v), if the DAG was fully lowered. Preferred
@@ -664,7 +684,7 @@ impl<'a> Renderer<'a> {
         let mut r = Renderer {
             gl, dir: dir.to_string(), sched, exprs, store,
             tex: HashMap::new(), fbo: HashMap::new(), prog: HashMap::new(), size: HashMap::new(),
-            gles2, quad: None,
+            gles2, quad: None, blit_prog: None,
             chop_progs, chops_lib, chops_abi, chop_state, chop_state_idx, uniform_progs,
             speed_state: RefCell::new(HashMap::new()), last_t: Cell::new(0.0),
             prof: Arc::new(Mutex::new(Default::default())),
@@ -758,6 +778,15 @@ impl<'a> Renderer<'a> {
                 gl.bind_buffer(glow::ARRAY_BUFFER, Some(b));
                 gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
                 self.quad = Some(b);
+                // Passthrough blit program for the GBM scanout present.
+                let vs = compile(gl, glow::VERTEX_SHADER, BLIT_VERT);
+                let fs = compile(gl, glow::FRAGMENT_SHADER, BLIT_FRAG);
+                let p = gl.create_program().unwrap();
+                gl.attach_shader(p, vs);
+                gl.attach_shader(p, fs);
+                gl.link_program(p);
+                assert!(gl.get_program_link_status(p), "blit link: {}", gl.get_program_info_log(p));
+                self.blit_prog = Some(p);
             } else {
                 let vao = gl.create_vertex_array().unwrap();
                 gl.bind_vertex_array(Some(vao));
@@ -804,7 +833,9 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    fn render(&mut self, t: f64) -> (Vec<u8>, i32, i32) {
+    // Render the graph's TOP passes into their FBOs (no readback). Final output
+    // lands in self.tex[output].
+    fn cook(&mut self, t: f64) {
         let gl = self.gl;
         let tc = Instant::now();
         self.eval_chops(t); // control-rate pass -> store, before the shader uniforms read it
@@ -891,6 +922,11 @@ impl<'a> Renderer<'a> {
                 prof_add(&self.prof, &format!("top:{}", st.id), ts.elapsed().as_secs_f64());
             }
         }
+    }
+
+    // GPU->CPU readback of the final output (for MJPEG / the CPU sink / snapshots).
+    fn readback(&self) -> (Vec<u8>, i32, i32) {
+        let gl = self.gl;
         let (ow, oh) = self.size[&self.sched.output];
         let mut raw = vec![0u8; (ow * oh * 4) as usize];
         let tr = Instant::now();
@@ -904,6 +940,46 @@ impl<'a> Renderer<'a> {
         }
         prof_add(&self.prof, "readback", tr.elapsed().as_secs_f64());
         (flip_vert(&raw, ow as usize, oh as usize), ow, oh)
+    }
+
+    fn render(&mut self, t: f64) -> (Vec<u8>, i32, i32) {
+        self.cook(t);
+        self.readback()
+    }
+
+    // GBM scanout present: draw the final texture into the display surface
+    // (aspect-fit, centered, black bars) on the GPU. No readback. The caller then
+    // eglSwapBuffers + page-flips.
+    fn present_scanout(&self, dw: i32, dh: i32) {
+        let gl = self.gl;
+        let (ow, oh) = self.size[&self.sched.output];
+        let p = match self.blit_prog {
+            Some(p) => p,
+            None => return,
+        };
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None); // default FB = the gbm surface
+            gl.viewport(0, 0, dw, dh);
+            gl.clear_color(0.0, 0.0, 0.0, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+            gl.use_program(Some(p));
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.tex[&self.sched.output]));
+            if let Some(l) = gl.get_uniform_location(p, "tex") {
+                gl.uniform_1_i32(Some(&l), 0);
+            }
+            let (ia, da) = (ow as f32 / oh as f32, dw as f32 / dh as f32);
+            let (sx, sy) = if ia < da { (ia / da, 1.0) } else { (1.0, da / ia) };
+            if let Some(l) = gl.get_uniform_location(p, "uScale") {
+                gl.uniform_2_f32(Some(&l), sx, sy);
+            }
+            gl.bind_buffer(glow::ARRAY_BUFFER, self.quad);
+            if let Some(loc) = gl.get_attrib_location(p, "aPos") {
+                gl.enable_vertex_attrib_array(loc);
+                gl.vertex_attrib_pointer_f32(loc, 2, glow::FLOAT, false, 8, 0);
+            }
+            gl.draw_arrays(glow::TRIANGLES, 0, 6);
+        }
     }
 }
 
@@ -985,8 +1061,38 @@ fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<Atomi
     }
 }
 
-fn stream(gl: &glow::Context, dir: &str, port: u16, fps: f64) {
-    let mut r = Renderer::new(gl, dir);
+fn stream(dir: &str, port: u16, fps: f64, target: &str) {
+    // Prefer zero-copy GBM scanout (the GPU renders straight into the scanned-out
+    // buffer — no readback). Fall back to surfaceless GL + the dumb-buffer sink,
+    // else MJPEG only.
+    let mut sc = scanout::Scanout::open();
+    let egl;
+    let dpy;
+    let gl;
+    let surf;
+    let mut drm;
+    if let Some(s) = &sc {
+        let (e, d, sf, g) = s.init_gl();
+        egl = e;
+        dpy = d;
+        gl = g;
+        surf = Some(sf);
+        drm = None;
+    } else {
+        println!("[scanout] no GBM/HDMI — surfaceless GL + dumb-buffer sink / MJPEG");
+        let (e, d, g) = make_gl(target);
+        egl = e;
+        dpy = d;
+        gl = g;
+        surf = None;
+        drm = sink::DrmSink::open();
+        if drm.is_none() {
+            println!("[sink] no DRM/HDMI output (headless or no permission) — MJPEG only");
+        }
+    }
+    let hdmi = surf.is_some() || drm.is_some();
+
+    let mut r = Renderer::new(&gl, dir);
     let prof = r.prof();
     let latest: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let clients: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
@@ -996,53 +1102,60 @@ fn stream(gl: &glow::Context, dir: &str, port: u16, fps: f64) {
         let prof = prof.clone();
         thread::spawn(move || serve_http(port, latest, clients, prof));
     }
-    // HDMI output: scan out straight to the display (no encoding). None when
-    // headless / no display / no modeset permission — then it's MJPEG-only.
-    let mut drm = sink::DrmSink::open();
-    if drm.is_none() {
-        println!("[sink] no DRM/HDMI output (headless or no permission) — MJPEG only");
-    }
     let start = Instant::now();
     let period = Duration::from_secs_f64(1.0 / fps.max(1.0));
     let mut last_log = Instant::now();
     loop {
         let has_client = clients.load(Ordering::Relaxed) > 0;
-        // Render when the HDMI display is attached OR a web client is watching;
-        // otherwise idle (no GL, no encode). Wall-clock time keeps animation
-        // correct across idle gaps.
-        if drm.is_none() && !has_client {
+        // Render when the HDMI display is attached OR a web client is watching.
+        if !hdmi && !has_client {
             thread::sleep(Duration::from_millis(100));
             continue;
         }
         let t = start.elapsed().as_secs_f64();
         let tf = Instant::now();
-        let (buf, w, h) = r.render(t);
-        // HDMI: present every frame directly, no round-trip through encoding.
-        if let Some(d) = &mut drm {
+        r.cook(t); // graph passes into FBOs (no readback)
+
+        // HDMI, zero-copy: GPU-blit the final texture into the scanout surface.
+        if let (Some(sf), Some(s)) = (&surf, &mut sc) {
             let tp = Instant::now();
-            d.compose(&buf, w as usize, h as usize);     // CPU: staging + copy to dumb buffer
+            r.present_scanout(s.dw as i32, s.dh as i32);
+            let _ = egl.swap_buffers(dpy, *sf);
             let tc = Instant::now();
-            prof_add(&prof, "present:compose", tp.elapsed().as_secs_f64());
-            d.flip();                                    // scanout + vblank page-flip wait
+            prof_add(&prof, "present:blit", tp.elapsed().as_secs_f64());
+            s.flip(); // page-flip the freshly rendered bo + vblank wait
             prof_add(&prof, "present:flip", tc.elapsed().as_secs_f64());
             prof_add(&prof, "present", tp.elapsed().as_secs_f64());
         }
-        // Web: encode a JPEG only while someone is actually connected.
+
+        // Read back only when the dumb-buffer sink or a web client needs pixels.
+        let need_rb = drm.is_some() || has_client;
+        let rb = if need_rb { Some(r.readback()) } else { None };
+        if let (Some(d), Some((buf, w, h))) = (&mut drm, &rb) {
+            let tp = Instant::now();
+            d.compose(buf, *w as usize, *h as usize);
+            let tc = Instant::now();
+            prof_add(&prof, "present:compose", tp.elapsed().as_secs_f64());
+            d.flip();
+            prof_add(&prof, "present:flip", tc.elapsed().as_secs_f64());
+            prof_add(&prof, "present", tp.elapsed().as_secs_f64());
+        }
         if has_client {
-            let te = Instant::now();
-            let mut rgb = Vec::with_capacity((w * h * 3) as usize);
-            for px in buf.chunks_exact(4) {
-                rgb.extend_from_slice(&px[..3]);
+            if let Some((buf, w, h)) = &rb {
+                let te = Instant::now();
+                let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+                for px in buf.chunks_exact(4) {
+                    rgb.extend_from_slice(&px[..3]);
+                }
+                let mut jpg = Vec::new();
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpg, 80)
+                    .encode(&rgb, *w as u32, *h as u32, image::ExtendedColorType::Rgb8)
+                    .unwrap();
+                *latest.lock().unwrap() = jpg;
+                prof_add(&prof, "encode", te.elapsed().as_secs_f64());
             }
-            let mut jpg = Vec::new();
-            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpg, 80)
-                .encode(&rgb, w as u32, h as u32, image::ExtendedColorType::Rgb8)
-                .unwrap();
-            *latest.lock().unwrap() = jpg;
-            prof_add(&prof, "encode", te.elapsed().as_secs_f64());
         }
         prof_add(&prof, "frame", tf.elapsed().as_secs_f64());
-        // Periodic profile summary to the journal (every ~5s).
         if last_log.elapsed().as_secs_f64() >= 5.0 {
             println!("{}", prof_summary(&prof));
             last_log = Instant::now();
@@ -1057,28 +1170,27 @@ fn stream(gl: &glow::Context, dir: &str, port: u16, fps: f64) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(|s| s.as_str());
-    let target = if matches!(mode, Some("run") | Some("stream")) {
-        artifact_target(&args[2])
-    } else {
-        "desktop_gl".to_string()
-    };
-    let (_egl, _dpy, gl) = make_gl(&target);
     match mode {
         Some("run") => {
             let dir = &args[2];
             let out = args.get(3).map(|s| s.as_str()).unwrap_or("out.png");
             let t = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0.0);
             let wait_ms = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
+            let (_egl, _dpy, gl) = make_gl(&artifact_target(dir));
             run(&gl, dir, out, t, wait_ms);
         }
         Some("stream") => {
             let dir = &args[2];
             let port = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(8788);
             let fps = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(30.0);
-            stream(&gl, dir, port, fps);
+            // stream() creates its own context (GBM scanout, else surfaceless).
+            stream(dir, port, fps, &artifact_target(dir));
         }
-        _ => unsafe {
-            println!("OK GL_RENDERER {} ({target})", gl.get_parameter_string(glow::RENDERER));
-        },
+        _ => {
+            let (_egl, _dpy, gl) = make_gl("desktop_gl");
+            unsafe {
+                println!("OK GL_RENDERER {}", gl.get_parameter_string(glow::RENDERER));
+            }
+        }
     }
 }
