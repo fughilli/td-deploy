@@ -33,7 +33,7 @@ py_library(
     ],
 )
 
-# CHOP DAG -> tox dialect MLIR (P0 of the fused CHOP+TOP plan). Pure Python.
+# CHOP DAG -> tox dialect MLIR (P0) + lowering to a compiled kernel (P1).
 py_library(
     name = "chop_to_tox",
     srcs = ["chop_to_tox.py"],
@@ -41,14 +41,43 @@ py_library(
     visibility = ["//visibility:public"],
 )
 
-# Hermetic (no MLIR toolchain) — runs in `bazel test //...`. The toxc-opt
-# round-trip is a manual check (needs the nixpkgs MLIR shell).
+py_library(
+    name = "chop_lower",
+    srcs = [
+        "chop_lower.py",
+        "chop_ref.py",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+)
+
+# Hermetic (no MLIR toolchain) — run in `bazel test //...`.
 py_test(
     name = "test_chop_to_tox",
     srcs = ["test_chop_to_tox.py"],
     imports = ["."],
     main = "test_chop_to_tox.py",
     deps = [":chop_to_tox"],
+)
+
+py_test(
+    name = "test_chop_ref",
+    srcs = ["test_chop_ref.py"],
+    imports = ["."],
+    main = "test_chop_ref.py",
+    deps = [":chop_lower"],
+)
+
+# The P1 bit-parity gate: lower -> compile (.so) -> diff vs the reference over a
+# frame sequence. Needs the nixpkgs MLIR shell, so manual/local (like test_expr).
+py_test(
+    name = "test_chop_lower",
+    srcs = ["test_chop_lower.py"],
+    data = glob(["nix/**"]),
+    imports = ["."],
+    main = "test_chop_lower.py",
+    tags = ["local", "manual", "requires-network"],
+    deps = [":chop_lower"],
 )
 
 # exprs.mlir -> exprs/libexprs.so, via the pinned nixpkgs mlir-opt/mlir-translate

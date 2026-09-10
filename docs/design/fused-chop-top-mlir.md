@@ -157,9 +157,20 @@ it from single exprs to the whole CHOP DAG (constant/speed/math/… as `tox` ops
   compiler/chop_to_tox.py deploy/prebuilt/ascii/schedule.json)`). Hermetic test:
   `//compiler:test_chop_to_tox`. No optimization yet — structural parity with the
   runtime CHOP eval.
-- **P1 — CHOP fusion + compile.** Fold/DCE the CHOP subgraph; lower to one
-  `arith`/`math`/`linalg` CPU kernel per uniform (via the M1 transpiler path),
-  replacing per-node interpretation. Verify bit-parity vs the fasteval path.
+- **P1 — CHOP fusion + compile. ✅ lowering landed (2026-09-10).**
+  `compiler/chop_lower.py` fuses the whole DAG into ONE `func`/`arith`/`math`
+  function `@chops(%t,%dt,%frame, <sources…>, <speed-states-in…>) -> (<outputs…>)`
+  — every channel is an SSA value, so the store only crosses the ABI for live
+  sources, the loop-carried Speed accumulators, and the outputs (a Speed output
+  *is* its next-frame state). Constant exprs lower through the M1 arith/math path
+  (extended for integer/double `op('X')[c][s]` indices); Speed = `state + in*dt`;
+  Null/Select = SSA passthrough. It compiles mlir-opt → mlir-translate → clang →
+  `.so` and is **bit-parity (|Δ|≤1e-9) vs the reference evaluator**
+  (`compiler/chop_ref.py`, which mirrors runtime_rs `eval_chops`) over a
+  frame sequence with carried state — gate `//compiler:test_chop_lower`
+  (hermetic pieces: `//compiler:test_chop_ref`). *Remaining for P1:* wire the
+  runtime to call the compiled `@chops` instead of the per-node fasteval loop
+  (behind the artifact, keeping fasteval as the fallback for unlowerable exprs).
 - **P2 — CHOP→TOP specialization.** Constant-fold CHOP→uniform into shaders;
   keep dynamic ones as fused-kernel-computed uniforms.
 - **P3 — TOP fusion + placement (profile-guided).** Producer/consumer TOP

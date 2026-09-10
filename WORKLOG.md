@@ -26,8 +26,19 @@ CHOP DAG next to the TOPs (`docs/design/fused-chop-top-mlir.md` §7):
 - `compiler/chop_to_tox.py` emits the DAG from the importer's `chops` JSON; it
   round-trips through `toxc-opt` (built via the pinned MLIR-18 nix shell).
 - Structural parity with the runtime CHOP eval — no fusion yet. Hermetic test
-  `//compiler:test_chop_to_tox`. Next: P1 (lower `chop_expr` → arith/math, fuse
-  the DAG into one compiled kernel, bit-parity vs fasteval).
+  `//compiler:test_chop_to_tox`.
+
+**Fused CHOP+TOP MLIR — P1 (fuse + compile).** `compiler/chop_lower.py` fuses the
+whole CHOP DAG into ONE `arith`/`math` function `@chops(t, dt, frame, <sources>,
+<speed-states-in>) -> (<outputs>)` — every channel is SSA, so only live sources,
+the loop-carried Speed accumulators, and the outputs cross the ABI. It compiles
+to a native `.so` (mlir-opt → mlir-translate → clang) and is **bit-parity
+(|Δ|≤1e-9)** with `compiler/chop_ref.py` (a Python mirror of runtime_rs
+`eval_chops`) over a multi-frame sequence with carried state — replacing per-node
+fasteval interpretation. Gates: `//compiler:test_chop_lower` (compile+parity,
+manual/network), `//compiler:test_chop_ref` (hermetic). Next: wire the runtime to
+call `@chops` instead of the fasteval loop (fasteval stays as the unlowerable-expr
+fallback).
 
 ## 2026-09-10 — On-Pi runtime: DRM/KMS HDMI, CHOP engine, perf counters (branch bazel-top-level)
 
