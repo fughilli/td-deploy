@@ -31,7 +31,10 @@ let
   # The runtime logs `[gl] renderer=…` so the journal shows VC4 vs llvmpipe.
   softwareGL = false;
 
-  glLibs = [ pkgs.mesa pkgs.libglvnd pkgs.libdrm ];
+  # libgbm (dlopen'd by scanout.rs for zero-copy HDMI) is split out of mesa in
+  # recent nixpkgs, so add it explicitly. `or pkgs.mesa` keeps older channels
+  # (where gbm lived in mesa) building.
+  glLibs = [ pkgs.mesa pkgs.libglvnd pkgs.libdrm (pkgs.libgbm or pkgs.mesa) ];
   mlir = pkgs.llvmPackages_18;
 
   # Finish the portable artifact for aarch64: exprs.mlir -> exprs/libexprs.so,
@@ -77,6 +80,8 @@ let
         --set EGL_PLATFORM surfaceless \
         --set __EGL_VENDOR_LIBRARY_DIRS ${pkgs.mesa}/share/glvnd/egl_vendor.d \
         --set MESA_SHADER_CACHE_DISABLE true \
+        --set GBM_BACKENDS_PATH ${pkgs.mesa}/lib/gbm \
+        --set LIBGL_DRIVERS_PATH ${pkgs.mesa}/lib/dri \
         ${lib.optionalString softwareGL "--set LIBGL_ALWAYS_SOFTWARE 1"} \
         --add-flags stream \
         --add-flags ${artifact} \

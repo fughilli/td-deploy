@@ -58,8 +58,8 @@ mod linux {
         _p: [u8; 0],
     }
 
-    // fourcc 'XR24' (XRGB8888), little-endian u32.
-    const GBM_FORMAT_XRGB8888: u32 = 0x3458_3252;
+    // fourcc 'XR24' (XRGB8888) = 'X'|'R'<<8|'2'<<16|'4'<<24.
+    const GBM_FORMAT_XRGB8888: u32 = 0x3432_5258;
     const GBM_BO_USE_SCANOUT: u32 = 1 << 0;
     const GBM_BO_USE_RENDERING: u32 = 1 << 2;
 
@@ -133,14 +133,50 @@ mod linux {
         gbm: Gbm,
         dev: *mut GbmDevice,
         surf: *mut GbmSurface,
-        crtc: crtc::Handle,
-        conn: connector::Handle,
-        mode: Mode,
+        // None until an HDMI display is present (headless / awaiting hotplug).
+        crtc: Option<crtc::Handle>,
+        conn: Option<connector::Handle>,
+        mode: Option<Mode>,
         pub dw: u32,
         pub dh: u32,
         prev_bo: *mut GbmBo,
         fbs: HashMap<u32, framebuffer::Handle>, // gem handle -> fb (bo's are recycled)
         started: bool,
+        probe_ctr: u32, // hotplug re-probe throttle while headless
+    }
+
+    // Force-probe connectors for a connected display with a usable mode + crtc.
+    // Retries for up to wait_ms (0 = single shot).
+    fn probe_connector(
+        card: &Card,
+        res: &drm::control::ResourceHandles,
+        wait_ms: u64,
+    ) -> Option<(crtc::Handle, connector::Handle, Mode)> {
+        let mut waited = 0u64;
+        loop {
+            let found = res.connectors().iter().find_map(|&h| {
+                let info = card.get_connector(h, true).ok()?; // force EDID probe
+                if info.state() == connector::State::Connected && !info.modes().is_empty() {
+                    let mode = info.modes()[0];
+                    let crtc = info
+                        .current_encoder()
+                        .and_then(|e| card.get_encoder(e).ok())
+                        .and_then(|e| e.crtc())
+                        .or_else(|| res.crtcs().first().copied())?;
+                    Some((crtc, info.handle(), mode))
+                } else {
+                    None
+                }
+            });
+            if found.is_some() {
+                return found;
+            }
+            if waited >= wait_ms {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            waited += 250;
+        }
     }
 
     impl Scanout {
@@ -148,35 +184,51 @@ mod linux {
         /// surface. None (=> fall back to the dumb-buffer sink / MJPEG) on any
         /// failure (headless, no perms, no libgbm).
         pub fn open() -> Option<Scanout> {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open("/dev/dri/card0")
-                .ok()?;
-            let card = Card(file);
-            let _ = card.acquire_master_lock();
-
-            let res = card.resource_handles().ok()?;
-            let conn = res.connectors().iter().find_map(|&h| {
-                let info = card.get_connector(h, false).ok()?;
-                if info.state() == connector::State::Connected && !info.modes().is_empty() {
-                    Some(info)
-                } else {
-                    None
+            eprintln!("[scanout] probing /dev/dri/card0 for GBM scanout");
+            let file = match OpenOptions::new().read(true).write(true).open("/dev/dri/card0") {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("[scanout] open card0 failed: {e}");
+                    return None;
                 }
-            })?;
-            let mode: Mode = conn.modes()[0];
-            let (dw, dh) = (mode.size().0 as u32, mode.size().1 as u32);
-            let crtc: crtc::Handle = conn
-                .current_encoder()
-                .and_then(|e| card.get_encoder(e).ok())
-                .and_then(|e| e.crtc())
-                .or_else(|| res.crtcs().first().copied())?;
+            };
+            let card = Card(file);
+            if let Err(e) = card.acquire_master_lock() {
+                eprintln!("[scanout] acquire_master_lock: {e} (continuing)");
+            }
 
-            let gbm = unsafe { Gbm::load()? };
+            let res = match card.resource_handles() {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[scanout] resource_handles failed: {e}");
+                    return None;
+                }
+            };
+            // Find a connected display now (short forced probe). If none (HDMI off
+            // or unplugged), come up HEADLESS at a default mode and start scanning
+            // out when the display appears — flip() re-probes for hotplug.
+            let disp = probe_connector(&card, &res, 1500);
+            let (dw, dh) = disp
+                .map(|(_, _, m)| (m.size().0 as u32, m.size().1 as u32))
+                .unwrap_or((1280, 720));
+            if disp.is_none() {
+                eprintln!(
+                    "[scanout] no HDMI display yet — headless GBM {dw}x{dh}, will scan out on hotplug"
+                );
+            }
+            eprintln!("[scanout] card0 ok {dw}x{dh}; loading libgbm");
+
+            let gbm = match unsafe { Gbm::load() } {
+                Some(g) => g,
+                None => {
+                    eprintln!("[scanout] libgbm dlopen failed (not on LD_LIBRARY_PATH?)");
+                    return None;
+                }
+            };
             let fd = card.0.as_raw_fd();
             let dev = unsafe { (gbm.create_device)(fd) };
             if dev.is_null() {
+                eprintln!("[scanout] gbm_create_device failed (fd={fd})");
                 return None;
             }
             let surf = unsafe {
@@ -189,25 +241,31 @@ mod linux {
                 )
             };
             if surf.is_null() {
+                eprintln!("[scanout] gbm_surface_create {dw}x{dh} XR24 failed");
                 return None;
             }
             println!(
-                "[scanout] GBM zero-copy {dw}x{dh} on connector {:?}",
-                conn.interface()
+                "[scanout] GBM zero-copy {dw}x{dh} ({})",
+                if disp.is_some() {
+                    "display attached"
+                } else {
+                    "headless, awaiting HDMI hotplug"
+                }
             );
             Some(Scanout {
                 card,
                 gbm,
                 dev,
                 surf,
-                crtc,
-                conn: conn.handle(),
-                mode,
+                crtc: disp.map(|(c, _, _)| c),
+                conn: disp.map(|(_, c, _)| c),
+                mode: disp.map(|(_, _, m)| m),
                 dw,
                 dh,
                 prev_bo: std::ptr::null_mut(),
                 fbs: HashMap::new(),
                 started: false,
+                probe_ctr: 0,
             })
         }
 
@@ -260,10 +318,24 @@ mod linux {
                 0,
                 egl::NONE,
             ];
-            let cfg = egl
-                .choose_first_config(dpy, &attrs)
-                .expect("choose config")
-                .expect("no gbm config");
+            // eglCreateWindowSurface(GBM) needs a config whose EGL_NATIVE_VISUAL_ID
+            // equals the gbm surface's fourcc, else EGL_BAD_MATCH. Pick that one.
+            let mut configs: Vec<egl::Config> = Vec::with_capacity(64);
+            egl.choose_config(dpy, &attrs, &mut configs).expect("choose_config");
+            let want = GBM_FORMAT_XRGB8888 as egl::Int;
+            let cfg = configs
+                .iter()
+                .copied()
+                .find(|&c| {
+                    egl.get_config_attrib(dpy, c, egl::NATIVE_VISUAL_ID).ok() == Some(want)
+                })
+                .or_else(|| configs.first().copied())
+                .expect("no EGL config for the gbm surface");
+            eprintln!(
+                "[scanout] egl config visual=0x{:x} (want 0x{:x})",
+                egl.get_config_attrib(dpy, cfg, egl::NATIVE_VISUAL_ID).unwrap_or(0),
+                want
+            );
             let ctx = egl
                 .create_context(
                     dpy,
@@ -308,10 +380,35 @@ mod linux {
             if bo.is_null() {
                 return;
             }
+            // Hotplug: while headless, re-probe periodically for a display that
+            // matches our surface size, then start scanning out.
+            if self.conn.is_none() {
+                self.probe_ctr = self.probe_ctr.wrapping_add(1);
+                if self.probe_ctr % 60 == 0 {
+                    if let Ok(res) = self.card.resource_handles() {
+                        if let Some((cr, co, m)) = probe_connector(&self.card, &res, 0) {
+                            if m.size().0 as u32 == self.dw && m.size().1 as u32 == self.dh {
+                                eprintln!(
+                                    "[scanout] HDMI connected — scanning out {}x{}",
+                                    self.dw, self.dh
+                                );
+                                self.crtc = Some(cr);
+                                self.conn = Some(co);
+                                self.mode = Some(m);
+                                self.started = false;
+                            } else {
+                                eprintln!(
+                                    "[scanout] HDMI up at {}x{} but surface is {}x{} — restart to match",
+                                    m.size().0, m.size().1, self.dw, self.dh
+                                );
+                            }
+                        }
+                    }
+                }
+            }
             let handle = (unsafe { (self.gbm.bo_get_handle)(bo) } & 0xffff_ffff) as u32;
             let pitch = unsafe { (self.gbm.bo_get_stride)(bo) };
-            let (dw, dh, crtc, conn, mode) =
-                (self.dw, self.dh, self.crtc, self.conn, self.mode);
+            let (dw, dh) = (self.dw, self.dh);
             let card = &self.card;
             let fb = *self.fbs.entry(handle).or_insert_with(|| {
                 let bh = BufHandle::from(RawResourceHandle::new(handle).expect("gem handle"));
@@ -322,26 +419,30 @@ mod linux {
                 };
                 card.add_framebuffer(&wrap, 24, 32).expect("add_framebuffer")
             });
-            if !self.started {
-                let _ = self
+            // Present only when a display is attached; otherwise just recycle the
+            // buffer (keeps eglSwapBuffers flowing so we can measure the GPU path).
+            if let (Some(crtc), Some(conn), Some(mode)) = (self.crtc, self.conn, self.mode) {
+                if !self.started {
+                    let _ = self
+                        .card
+                        .set_crtc(crtc, Some(fb), (0, 0), &[conn], Some(mode));
+                    self.started = true;
+                } else if self
                     .card
-                    .set_crtc(crtc, Some(fb), (0, 0), &[conn], Some(mode));
-                self.started = true;
-            } else if self
-                .card
-                .page_flip(crtc, fb, PageFlipFlags::EVENT, None)
-                .is_ok()
-            {
-                'wait: loop {
-                    match self.card.receive_events() {
-                        Ok(events) => {
-                            for ev in events {
-                                if let Event::PageFlip(_) = ev {
-                                    break 'wait;
+                    .page_flip(crtc, fb, PageFlipFlags::EVENT, None)
+                    .is_ok()
+                {
+                    'wait: loop {
+                        match self.card.receive_events() {
+                            Ok(events) => {
+                                for ev in events {
+                                    if let Event::PageFlip(_) = ev {
+                                        break 'wait;
+                                    }
                                 }
                             }
+                            Err(_) => break,
                         }
-                        Err(_) => break,
                     }
                 }
             }
