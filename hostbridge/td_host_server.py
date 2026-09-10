@@ -32,8 +32,9 @@ POST /render   (EXPERIMENTAL — TD-as-oracle for conformance)
     Returns 501 with guidance if a headless render path isn't wired on this host.
 
 POST /deploy   (requires --token) — run the ONE Pi live-deploy on the HOST, async
-    JSON { host?: "tdplayer.local", keep_builder?: false }
-      -> runs exactly: bazel run //deploy:tdplayer_pi3.deploy_live -- <host>
+    JSON { host?: "tdplayer.local", keep_builder?: false, builder_disk?: "/abs/path" }
+      -> runs exactly: bazel run //deploy:tdplayer_pi3.deploy_live -- [--keep-builder] <host>
+      builder_disk sets $SBC_BUILDER_DISK (the macOS aarch64 builder VM's disk).
     Also: {"action":"kill","id":"deploy-1"}. Returns { id, cmd, cwd }. This runs a
     single fixed command in --workspace (NOT arbitrary exec), so a container can
     drive the host-only deploy (the aarch64 image build needs the Mac's builder).
@@ -153,7 +154,7 @@ _DEFAULT_HOST = "tdplayer.local"
 _HOST_RE = re.compile(r"^[A-Za-z0-9._-]+$")   # hostname / IPv4 — no shell metachars
 
 
-def _start_job(label, cmd, cwd):
+def _start_job(label, cmd, cwd, env=None):
     with _JOBS_LOCK:
         _JOB_SEQ[0] += 1
         jid = "%s-%d" % (label, _JOB_SEQ[0])
@@ -166,8 +167,8 @@ def _start_job(label, cmd, cwd):
     def _run_job():
         try:
             p = subprocess.Popen(
-                cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1)
+                cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, bufsize=1)
         except Exception as e:  # noqa: BLE001 - report launch failure to the client
             with _JOBS_LOCK:
                 job["lines"].append("[exec] failed to start: %r" % (e,))
@@ -409,11 +410,12 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def deploy_start(self):
-        """POST /deploy {host?, keep_builder?} — run the Pi live-deploy on the host.
+        """POST /deploy {host?, keep_builder?, builder_disk?} — Pi live-deploy on host.
 
-        Runs exactly `bazel run //deploy:tdplayer_pi3.deploy_live -- <host>` in the
-        configured --workspace (nothing else). Async: returns {id}; poll
-        GET /deploy?id=<id>. `{"action":"kill","id":...}` stops it.
+        Runs exactly `bazel run //deploy:tdplayer_pi3.deploy_live -- [--keep-builder]
+        <host>` in the configured --workspace (nothing else). `builder_disk` sets
+        $SBC_BUILDER_DISK for the build (the macOS aarch64 builder VM's disk image).
+        Async: returns {id}; poll GET /deploy?id=<id>. `{"action":"kill"}` stops it.
         """
         gate = self._deploy_gate()
         if gate:
@@ -431,14 +433,24 @@ class Handler(BaseHTTPRequestHandler):
         if not os.path.isdir(os.path.join(cwd, "deploy")):
             return self._send_json(
                 {"error": "workspace has no deploy/ dir: %s" % cwd}, 500)
-        cmd = [bazel, "run", _DEPLOY_TARGET]
+        # Optional builder disk override -> env (safe: goes in the env dict, not the
+        # shell). Inherits the bridge's env so an exported SBC_BUILDER_DISK works too.
+        env = None
+        builder_disk = req.get("builder_disk")
+        if builder_disk is not None:
+            if not (isinstance(builder_disk, str) and os.path.isabs(builder_disk)):
+                return self._send_json(
+                    {"error": "builder_disk must be an absolute path"}, 400)
+            env = os.environ.copy()
+            env["SBC_BUILDER_DISK"] = builder_disk
+        cmd = [bazel, "run", _DEPLOY_TARGET, "--"]
         if req.get("keep_builder"):
-            cmd += ["--"]
-            cmd += ["--keep-builder", host]
-        else:
-            cmd += ["--", host]
-        job = _start_job("deploy", cmd, cwd)
-        return self._send_json({"id": job["id"], "cmd": job["cmd"], "cwd": cwd})
+            cmd += ["--keep-builder"]
+        cmd += [host]
+        job = _start_job("deploy", cmd, cwd, env=env)
+        return self._send_json(
+            {"id": job["id"], "cmd": job["cmd"], "cwd": cwd,
+             "builder_disk": builder_disk})
 
     def deploy_poll(self, q):
         """GET /deploy?id=<id>[&from=<n>] — poll (new output lines from offset
