@@ -1,0 +1,64 @@
+"""//deploy — Raspberry Pi SD-image / live-deploy targets (via sbc-deploy).
+
+  bazel run //deploy:toxc_artifact                 # compile the demo IR -> artifact
+  bazel run //deploy:tdplayer_pi3.image_sd  -- --device /dev/sdX   # flash a Pi 3 SD
+  bazel run //deploy:tdplayer.image_sd      -- --device /dev/sdX   # flash a Pi 5 SD
+  bazel run //deploy:tdplayer_pi3.deploy_live -- tdplayer.local    # push app to a running Pi
+  bazel run //deploy:tdplayer_pi3.ssh       -- tdplayer.local
+  bazel run //deploy:tdplayer_pi3.keys      -- init
+
+The image bundles two Bazel-built inputs (build_data): the portable artifact
+(:toxc_artifact) and the dynamic aarch64 Rust runtime (//runtime_rs). The flake
+(deploy/nix) finishes the aarch64 native lowering + autoPatchelfs the runtime.
+On macOS, start the aarch64 builder first: `bazel run @sbc_deploy//:linux_builder`.
+"""
+
+load("@sbc_deploy//deploy:defs.bzl", "sbc_application")
+load(":artifact.bzl", "toxc_artifact")
+
+package(default_visibility = ["//visibility:public"])
+
+# The compiled artifact baked into the image. Keep the target named
+# `toxc_artifact` (deploy/nix/apps.nix reads that basename).
+#
+# Default = the asset-free demo graph, compiled hermetically. For a REAL project
+# that needs the Mac TD bridge (assets + OSC/MIDI services), compile it once:
+#   bazel run //:toxc -- /path/ascii_project.toe --emit-artifact deploy/prebuilt/ascii \
+#       --target gles2 [--set-file MOVIE=/host/path]
+# then swap this target to bake that prebuilt dir (which carries services.json,
+# so the deployed runtime picks up the MIDI In CHOP):
+#   toxc_artifact(name = "toxc_artifact", prebuilt = glob(["prebuilt/ascii/**"]))
+# target MUST match apps.nix's softwareGL: desktop_gl ↔ softwareGL=true (Mesa
+# llvmpipe, the functional default on any board); gles2 ↔ softwareGL=false (Pi
+# VC4 hardware) — and gles2 additionally needs shaders_gles/ (build_shaders_gles)
+# baked in + /dev/dri access. We run llvmpipe, so desktop_gl.
+toxc_artifact(
+    name = "toxc_artifact",
+    prebuilt = glob(["prebuilt/ascii/**"]),
+    prebuilt_strip = "deploy/prebuilt/ascii/",
+)
+
+_BUILD_DATA = [
+    ":toxc_artifact",
+    # The runtime cross-built for the Pi (aarch64-linux-gnu) — NOT the host
+    # //runtime_rs:toxc_runtime, which on a macOS deploy host is a Mach-O binary
+    # the Pi can't exec. Keyed as "toxc_runtime" for apps.nix (see transition.bzl).
+    "//runtime_rs/cross:toxc_runtime_linux",
+]
+
+# Pi 5 (default board).
+sbc_application(
+    name = "tdplayer",
+    build_data = _BUILD_DATA,
+    flake = "deploy/nix",
+    hostname = "tdplayer",
+)
+
+# Pi 3B/3B+ variant of the SAME flake + config (board overridden via $SBC_BOARD).
+sbc_application(
+    name = "tdplayer_pi3",
+    board = "@sbc_deploy//deploy/boards:raspberry-pi-3",
+    build_data = _BUILD_DATA,
+    flake = "deploy/nix",
+    hostname = "tdplayer",
+)

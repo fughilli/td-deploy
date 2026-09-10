@@ -1,64 +1,98 @@
-# toxc deployment (sbc-deploy → Raspberry Pi)
+# td-deploy — Raspberry Pi deployment (Bazel + sbc-deploy)
 
-End-to-end: a TouchDesigner `.tox` → compiled artifact → native Rust runtime on a Pi.
+End-to-end: a TouchDesigner `.tox` → compiled artifact → native Rust runtime on
+a Pi, imaged onto an SD card and live-deployable. **Bazel is the driver** — the
+image and live-deploy targets come from the [sbc-deploy](https://github.com/fughilli/sbc-deploy)
+framework via the `sbc_application` macro (`//deploy:BUILD.bazel`).
 
-## Build the artifact (host / container)
+## The targets
+
 ```sh
-# expand + import + optimize + lower + emit the artifact (assets fetched via the bridge)
-nix/dev.sh python3 -m cli <project.tox> --res 256 --emit-artifact ./my_artifact \
-    [--set-file NODE=/host/path/asset]
-# compile the transpiled parameter expressions to native code
-compiler/build_exprs.sh ./my_artifact
+# 1. (optional) snapshot a .toe to a committed IR .json — needs the Mac TD bridge:
+bazel run //:expand -- project.toe graphs/project.json
+
+# 2. compile the IR into the portable artifact (hermetic, no bridge):
+bazel build //deploy:toxc_artifact          # or point a new toxc_artifact() at your .json
+
+# 3. image an SD card (bundles the artifact + Rust runtime):
+bazel run //deploy:tdplayer_pi3.image_sd -- --device /dev/sdX      # Raspberry Pi 3
+bazel run //deploy:tdplayer.image_sd     -- --device /dev/sdX      # Raspberry Pi 5
+
+# base image only (networking, no app):
+bazel run //deploy:tdplayer_pi3.image_sd_base -- --device /dev/sdX
+
+# 4. iterate on a running board without re-flashing:
+bazel run //deploy:tdplayer_pi3.deploy_live -- tdplayer.local
+bazel run //deploy:tdplayer_pi3.ssh         -- tdplayer.local
+bazel run //deploy:tdplayer_pi3.keys        -- init
+
+# 5. seed WiFi onto a running board (persistent; survives redeploys):
+cp deploy/wifi.yaml.example deploy/secrets/wifi.yaml   # then edit in your SSID/PSK
+bazel run //deploy:tdplayer_pi3.seed_wifi   -- tdplayer.local --wifi-file deploy/secrets/wifi.yaml
+bazel run //deploy:tdplayer_pi3.seed_wifi   -- tdplayer.local --list
 ```
-Artifact = `schedule.json` + `shaders/` + `assets/` + `exprs/libexprs.so` + `services.json`.
 
-## Deploy (sbc-deploy Pi3)
-`sbc-deploy` is a separate repo (github.com/fughilli/sbc-deploy). In the Pi3
-`sbc_application` NixOS config:
-```nix
-imports = [ /path/to/toxc/deploy/toxc-service.nix ];
-services.toxc = {
-  enable = true;
-  artifact = ./my_artifact;   # copied into the Nix store / image
-  port = 8788;
-  fps = 30;
-  # softwareGL = true;  # default; required on Pi3 (see below)
-};
-```
-Then image once and use sbc-deploy's live-deploy flow to update. `runtime_rs/default.nix`
-is a `buildRustPackage`, so nix builds the aarch64 closure (incl. Mesa) — no musl needed.
-View the live output at `http://<pi>:8788/`.
+## WiFi
 
-## GPU reality on the Pi3 (important)
-The **Pi3 (VideoCore IV) GPU is GLES 2.0 only** — it cannot run the GLES-3.x / desktop
-GL-3.3 shaders these graphs use (`texture()`, sampler arrays, `gl_VertexID`, `out`).
-So `softwareGL = true` forces **Mesa llvmpipe** (CPU): the exact desktop-GL-3.3 path
-verified bit-exact in-container. It's CPU-bound (small res / modest fps on the Pi3), but
-functional and needs no shader translation.
+`.seed_wifi` pushes the networks in a YAML file onto a **running** board as a
+persistent NetworkManager layer (`nmcli`, profiles named `seed-<ssid>` in
+`/etc/NetworkManager/system-connections`). It is **not** baked into the image —
+secret PSKs stay off the nix store — and it survives `deploy_live`. See
+[`wifi.yaml.example`](wifi.yaml.example) for the schema (`{ssid, psk?, priority?,
+hidden?}`). Put real creds in `deploy/secrets/wifi.yaml` (gitignored) and pass it
+with `--wifi-file`; `--list` / `--remove <ssid>` manage seeded profiles. To bake
+networks into the image instead (reproducible across a reflash, PSK in the store),
+set `wifi_config_file = "wifi.yaml"` on the `sbc_application` in `BUILD.bazel`.
 
-**Hardware-accelerated Pi3 (VC4 GLES 2.0) path — WORKING.** Build a GLES2 artifact:
-```sh
-nix/dev.sh python3 -m cli <project.tox> --res 256 --target gles2 --emit-artifact ./art \
-    [--set-file NODE=/host/path]
-compiler/build_exprs.sh        ./art     # native param exprs
-compiler/build_shaders_gles.sh ./art     # shaders/ -> shaders_gles/ (GLSL ES 1.00)
-```
-Translation pipeline: desktop GLSL → glslang (`-G`) → SPIR-V → `spirv-cross --es --version
-100` → legalize integer `%`; vertex shaders regenerated as ES2 attribute-based fullscreen
-quads (no `gl_VertexID`). The runtime sees `target=gles2` and uses an ES2 context + attribute
-VBO + `shaders_gles/`. **Verified in-container: renders bit-exact vs desktop GL under a real
-GLES2 context** (max|Δ|=0) — the same Mesa GLSL-ES-1.00 frontend the Pi3 VC4 driver uses.
+Boot the Pi and view the live render at `http://<pi>:8788/` (MJPEG). On macOS,
+start the aarch64 builder first: `bazel run @sbc_deploy//:linux_builder`.
 
-For a GLES2 artifact set `services.toxc.softwareGL = false` to use the VC4 GPU. Software
-llvmpipe (`softwareGL = true`, desktop_gl artifact) remains the fallback.
+## How it fits together
 
-## Output sinks
-- **Network (now):** `stream` mode serves MJPEG over HTTP (this module). Works headless;
-  view from any browser on the Pi's network.
-- **HDMI (planned):** a DRM/KMS sink for direct HDMI scanout — to be written and tested
-  on the device (needs the Pi + display).
+`sbc_application` (Pi 5 `tdplayer`, Pi 3 `tdplayer_pi3`) bundles two Bazel
+outputs as `build_data` and hands them to the Nix flake (`deploy/nix`) through
+sbc-deploy's `sbcBuildData` (keyed by basename):
 
-## Status
-Verified in-container: importer → IR → optimize → lower → artifact → native Rust runtime
-(GL bit-exact vs the Python reference; native transpiled exprs; native OSC input; native
-MJPEG stream). Pending on hardware: the actual Pi3 run (llvmpipe perf) + HDMI/DRM sink.
+| Bazel target | key | role |
+|---|---|---|
+| `//deploy:toxc_artifact` | `toxc_artifact` | portable artifact: `schedule.json` + `shaders/` + `assets/` + `exprs.mlir` + `services.json` (arch-independent) |
+| `//runtime_rs:toxc_runtime` | `toxc_runtime` | the dynamic aarch64 Rust runtime |
+
+`deploy/nix/apps.nix` then, at image-build time:
+1. **finishes the artifact for aarch64** — compiles `exprs.mlir → exprs/libexprs.so`
+   with the image's own LLVM 18 + clang (the Bazel-emitted artifact is
+   arch-independent on purpose; the native `.so` must match the Pi).
+2. **autoPatchelfs the runtime** onto NixOS and wraps it with the headless-EGL
+   env (Mesa on `LD_LIBRARY_PATH`, `EGL_PLATFORM=surfaceless`) + the
+   `stream <artifact> <port> <fps>` args.
+3. exposes it as a `services.sbcApps.tdplayer` systemd unit on port 8788.
+
+The sbc-deploy version is pinned twice, in parallel — `git_override` in
+`//MODULE.bazel` (Bazel side) and `deploy/nix/flake.lock` (Nix side). Bump both.
+
+## GPU reality on the Pi (important)
+
+The image forces **Mesa llvmpipe** (`softwareGL = true` in `apps.nix`): CPU GL,
+functional on any board and **required on the Pi 3** (VideoCore IV is GLES 2.0
+only and can't run these desktop/GLES-3 shaders in hardware). It's CPU-bound
+(small res / modest fps on a Pi 3). For hardware acceleration, build a `gles2`
+artifact + translate the shaders (`bazel run //compiler:build_shaders_gles`) and
+set `softwareGL = false` on a Pi 5 (V3D). `//deploy:toxc_artifact` already
+lowers to `gles2` so a Pi 3 can render it under llvmpipe.
+
+## `services.toxc` (legacy, manual import)
+
+`deploy/toxc-service.nix` is the older hand-imported NixOS module (`imports = [
+./toxc-service.nix ]` in an external sbc-deploy config). The `sbc_application`
+targets above supersede it; it's kept for reference.
+
+## Status / not-yet-verified on hardware
+
+Verified in-container: the full Bazel graph builds (`bazel build //...`), the
+hermetic pipeline test passes, `//:toxc` renders (CPU) + emits the artifact, the
+Rust runtime builds (aarch64), and the `*.image_sd` targets materialize with all
+runfiles. **Pending hardware:** the actual `nix` image realization + flashing,
+booting a Pi 3/5, on-device GL, and the `.toe`-bridge expansion (needs a Mac
+running TouchDesigner). The runtime is DYNAMIC (it `dlopen`s libEGL) — the image
+autoPatchelfs it; a fully-static musl build is impossible here (`-ldl`) and
+pointless (a loader is needed for `dlopen` regardless).

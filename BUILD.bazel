@@ -1,9 +1,159 @@
-load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+"""td-deploy (toxc) — root Bazel package.
 
-# The whole shebang: `bazel run //:toxc -- <project.tox|.toe|graph.json> [opts]`
-# Expands via the Mac host bridge, imports to IR, optimizes, lowers, runs on GL.
-sh_binary(
+The `toxc` compiler is a FLAT Python tree (`ir/graph.py` imported as `ir.graph`,
+etc.), so the repo root must be on the import path: every py_library here sets
+`imports = ["."]`, which puts the workspace root on PYTHONPATH. The heavier
+native pieces live in their own packages: //compiler (MLIR/GLES), //runtime_rs
+(the Rust runtime), //deploy (the Pi SD-image / live-deploy targets).
+
+  bazel run //:toxc -- graphs/blur_demo.json --backend cpu --out /tmp/out
+  bazel run //:toxc -- graphs/blur_demo.json --emit-artifact /tmp/art --target gles2
+  bazel run //:expand -- project.toe project.json     # .toe -> IR (needs TD bridge)
+  bazel test //...
+"""
+
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+load("@rules_python//python:pip.bzl", "compile_pip_requirements")
+load("@pypi//:requirements.bzl", "requirement")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "requirements.in",
+    "requirements.lock",
+    # Committed demo IR, compiled into the deploy artifact (//deploy:toxc_artifact).
+    "graphs/blur_demo.json",
+])
+
+# Regenerate requirements.lock from requirements.in:  bazel run //:requirements.update
+compile_pip_requirements(
+    name = "requirements",
+    src = "requirements.in",
+    requirements_txt = "requirements.lock",
+)
+
+# --- the pipeline, as a library graph -------------------------------------
+
+py_library(
+    name = "ir",
+    srcs = glob(["ir/*.py"]),
+    imports = ["."],
+)
+
+py_library(
+    name = "importer",
+    srcs = glob(["importer/*.py"]),
+    imports = ["."],
+    deps = [":ir"],
+)
+
+py_library(
+    name = "passes",
+    srcs = glob(["passes/*.py"]),
+    imports = ["."],
+    deps = [":ir"],
+)
+
+# Pure-Python param-expr evaluator (no numpy/GL) — the one runtime module the
+# lowering step needs, split out so //:lowering stays dependency-light.
+py_library(
+    name = "runtime_expr",
+    srcs = ["runtime/expr.py"],
+    imports = ["."],
+)
+
+py_library(
+    name = "lowering",
+    srcs = glob(["lowering/*.py"]),
+    imports = ["."],
+    deps = [
+        ":ir",
+        ":runtime_expr",
+    ],
+)
+
+# The reference runtime: numpy CPU backend + EGL/Mesa GL backend + MJPEG stream.
+# The GL path additionally needs Mesa at RUNTIME (LD_LIBRARY_PATH); see the
+# //:toxc_nixgl fallback and deploy/README for the headless-EGL env.
+py_library(
+    name = "runtime",
+    srcs = glob(["runtime/*.py"]),
+    imports = ["."],
+    deps = [
+        ":ir",
+        ":lowering",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("pyopengl"),
+        requirement("av"),
+    ],
+)
+
+# --- entrypoints -----------------------------------------------------------
+
+py_binary(
     name = "toxc",
+    srcs = ["cli.py"],
+    imports = ["."],
+    main = "cli.py",
+    deps = [
+        ":importer",
+        ":ir",
+        ":lowering",
+        ":passes",
+        ":runtime",
+        "//compiler:emit",
+    ],
+)
+
+py_binary(
+    name = "expand",
+    srcs = [
+        "cli.py",
+        "tools/expand.py",
+    ],
+    imports = ["."],
+    main = "tools/expand.py",
+    deps = [
+        ":importer",
+        ":ir",
+        ":lowering",
+        ":passes",
+    ],
+)
+
+# The legacy Nix-shell entrypoint, kept as the GL-render fallback until the
+# Bazel py_binary's Mesa-env launcher is verified on hardware. Runs the same
+# `python -m cli` inside the pinned Nix env (Mesa + EGL surfaceless).
+sh_binary(
+    name = "toxc_nixgl",
     srcs = ["tools/toxc_run.sh"],
-    visibility = ["//visibility:public"],
+)
+
+# --- hermetic tests (no bridge, no GL, no native tools) --------------------
+
+# Exercises ir -> passes -> lowering end-to-end on the committed demo graph:
+# loads the IR, optimizes, lowers, and asserts real GLSL shader steps come out.
+py_test(
+    name = "pipeline_test",
+    srcs = ["tests/pipeline_test.py"],
+    data = ["graphs/blur_demo.json"],
+    imports = ["."],
+    deps = [
+        ":ir",
+        ":lowering",
+        ":passes",
+        ":runtime_expr",
+    ],
+)
+
+py_test(
+    name = "fusion_test",
+    srcs = ["tests/fusion_test.py"],
+    imports = ["."],
+    deps = [
+        ":ir",
+        ":lowering",
+    ],
 )

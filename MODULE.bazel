@@ -1,5 +1,181 @@
+"""td-deploy (toxc) — Bazel module (bzlmod).
+
+Bazel is the top-level driver for the whole pipeline: the Python compiler
+(import -> optimize -> lower -> emit), the MLIR/LLVM native-expr + GLES shader
+compile steps, the Rust runtime, and the Raspberry Pi SD-image / live-deploy
+targets (via the sbc-deploy framework). Heavy native toolchains (Mesa GL, LLVM
+18 / MLIR, clang, glslang, spirv-cross) are provided hermetically from a pinned
+nixpkgs snapshot through rules_nixpkgs — `nix` is a system requirement.
+
+The compiler itself keeps the `toxc` name (this module, the //:toxc target, and
+the MLIR dialect); only the repo/project is `td-deploy`.
+"""
+
 module(name = "toxc", version = "0.1.0")
 
-# Only need sh_binary for the run wrapper; the heavy toolchain (python + Mesa GL)
-# is provided hermetically by Nix via nix/dev.nix (see tools/toxc_run.sh).
+# ---------------------------------------------------------------------------
+# Core language rules
+# ---------------------------------------------------------------------------
+bazel_dep(name = "rules_python", version = "1.7.0")
+bazel_dep(name = "rules_rust", version = "0.71.3")
 bazel_dep(name = "rules_shell", version = "0.8.0")
+
+# The cross cc toolchain for the aarch64-linux runtime link (//runtime_rs/cross).
+bazel_dep(name = "rules_cc", version = "0.2.22")
+bazel_dep(name = "platforms", version = "1.1.0")
+
+# ---------------------------------------------------------------------------
+# Python — hermetic 3.11 interpreter (Pi-compatible), single root lockfile.
+# Regenerate the lock with:  bazel run //:requirements.update
+# ---------------------------------------------------------------------------
+PYTHON_VERSION = "3.11"
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(
+    is_default = True,
+    python_version = PYTHON_VERSION,
+)
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "pypi",
+    python_version = PYTHON_VERSION,
+    requirements_lock = "//:requirements.lock",
+)
+use_repo(pip, "pypi")
+
+# ---------------------------------------------------------------------------
+# Rust — the native runtime (runtime_rs/). A DYNAMIC aarch64 binary: it
+# dlopen()s libEGL + the artifact's libexprs.so, so a fully-static musl build is
+# both impossible (-ldl has no static musl lib) and pointless (a loader is
+# needed anyway). This container is aarch64 == the Pi, so the host binary is the
+# deployable; the image autoPatchelf's it onto NixOS (deploy/nix/apps.nix).
+# ---------------------------------------------------------------------------
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2021",
+    # aarch64-unknown-linux-gnu: the DEPLOY target. The runtime binary is fed to
+    # the Pi image as build_data and MUST be a Linux ELF regardless of the deploy
+    # host — on macOS a host-targeted rust_binary produces a Mach-O the Pi can't
+    # exec. //runtime_rs/cross transitions the build to this triple.
+    extra_target_triples = ["aarch64-unknown-linux-gnu"],
+    # The `image` crate stack uses slice::as_chunks_mut (stable since 1.88), so
+    # the runtime needs >= 1.88 (toxc has no firmware rustc pin like splanc's).
+    versions = ["1.88.0"],
+)
+use_repo(rust, "rust_toolchains")
+
+# Cross cc toolchain to LINK the aarch64-linux-gnu runtime: nixpkgs' cross clang
+# wrapper (@aarch64_cc, defined in the Nix section) — clang (LLVM) with the
+# pkgsCross aarch64 glibc sysroot + gcc-toolchain baked in. glibc (not musl) so
+# the dlopen'd libEGL/-ldl resolves. Registered BEFORE the rust defaults and
+# constrained to //runtime_rs/cross:cross (see BUILD) so it binds ONLY the
+# transitioned runtime build and never hijacks host C++ (this container is itself
+# aarch64-linux). The runtime is pure Rust, so cc only runs the final link.
+register_toolchains("//runtime_rs/cross:cross_cc_toolchain")
+register_toolchains("@rust_toolchains//:all")
+
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate.from_cargo(
+    name = "toxc_crates",
+    cargo_lockfile = "//runtime_rs:Cargo.lock",
+    manifests = ["//runtime_rs:Cargo.toml"],
+)
+use_repo(crate, "toxc_crates")
+
+# ---------------------------------------------------------------------------
+# Nix integration — pinned nixpkgs snapshot for the native build/runtime tools.
+# rules_nixpkgs realizes each package lazily (only when a target that uses it is
+# built), so an unrelated `bazel build //ir:...` pays nothing for LLVM/Mesa.
+# ---------------------------------------------------------------------------
+bazel_dep(name = "rules_nixpkgs_core", version = "0.13.0")
+
+nix_repo = use_extension("@rules_nixpkgs_core//extensions:repository.bzl", "nix_repo")
+nix_repo.github(
+    name = "nixpkgs",
+    org = "NixOS",
+    repo = "nixpkgs",
+    # release-25.05, same pin as splanc (sha256 of the GitHub archive tarball).
+    sha256 = "130b4257b3d53bfbfea6d61fb76d4751a3989a4a09a28615ff77516a82b3924d",
+    tag = "25.05",
+)
+use_repo(nix_repo, "nixpkgs")
+
+nix_pkg = use_extension("@rules_nixpkgs_core//extensions:package.bzl", "nix_pkg")
+
+# Mesa GL + friends: the headless EGL-surfaceless (llvmpipe) runtime for the
+# Python GL reference render on the host/container (and the Pi's V3D at deploy).
+[
+    nix_pkg.attr(
+        attr = a,
+        repo = "@nixpkgs",
+        build_file_content = """\
+package(default_visibility = ["//visibility:public"])
+filegroup(name = "lib", srcs = glob(["lib/**"]))
+filegroup(name = "bin", srcs = glob(["bin/**"], allow_empty = True))
+filegroup(name = "all", srcs = glob(["**"]))
+""",
+    )
+    for a in ["mesa", "libglvnd", "libdrm"]
+]
+use_repo(nix_pkg, "mesa", "libglvnd", "libdrm")
+
+# Cross cc for the aarch64-linux-gnu runtime link: nixpkgs' cross clang wrapper
+# (pkgsCross.aarch64-multiplatform.clangStdenv.cc) — clang + the aarch64 glibc
+# sysroot + gcc-toolchain (crt/libgcc) baked into its cc-wrapper, so a bazel cc
+# toolchain just points its linker at bin/cc. Evaluated on the deploy host, so on
+# aarch64-linux it's ~native (cached) and on a Darwin host it builds the cross
+# glibc/clang once (heavier — the trade for LLVM-native, no zig). Wired by
+# //runtime_rs/cross.
+nix_pkg.expr(
+    name = "aarch64_cc",
+    attr = "aarch64_cc",
+    repo = "@nixpkgs",
+    # makeWrapper a STABLE bin/cc that execs the real cross clang wrapper by
+    # absolute path. The wrapper's binary is target-prefixed only when host !=
+    # target (aarch64-unknown-linux-gnu-cc on a Darwin host; plain cc on the
+    # aarch64-linux container), so hardcoding bin/cc breaks on one of them —
+    # ${cc.targetPrefix} resolves it correctly on both.
+    expr = """
+let
+  pkgs = import <nixpkgs> { };
+  cc = pkgs.pkgsCross.aarch64-multiplatform.clangStdenv.cc;
+in
+{
+  aarch64_cc = pkgs.runCommand "aarch64-cross-cc" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
+    mkdir -p "$out/bin"
+    makeWrapper "${cc}/bin/${cc.targetPrefix}cc" "$out/bin/cc"
+  '';
+}
+""",
+    build_file_content = """\
+package(default_visibility = ["//visibility:public"])
+filegroup(name = "all", srcs = glob(["**"]))
+filegroup(name = "cc", srcs = ["bin/cc"])
+""",
+)
+use_repo(nix_pkg, "aarch64_cc")
+
+# The MLIR/LLVM 18 + glslang/spirv-cross native-lowering toolchains are pinned
+# (compiler/nix/mlir.nix) and driven two ways, both hermetic-via-nix:
+#   * host dev: //compiler:build_exprs / :build_shaders_gles (pinned `nix shell`).
+#   * the DEPLOYABLE aarch64 compile: inside the image's Nix flake (deploy/nix),
+#     using the image's own llvmPackages_18 — correct target arch, not the host.
+# They are deliberately NOT wired as rules_nixpkgs genrules: build_exprs mutates
+# an artifact dir in place, and the arch that matters (aarch64) is the image's.
+
+# ---------------------------------------------------------------------------
+# sbc-deploy — the reusable Bazel+Nix single-board-computer deploy framework
+# (github.com/fughilli/sbc-deploy). Provides the `sbc_application` macro
+# (deploy/defs.bzl) used by //deploy, and `lib.mkSbcProject` on the Nix side
+# (pinned in parallel by deploy/nix/flake.lock — bump both together).
+# ---------------------------------------------------------------------------
+bazel_dep(name = "sbc_deploy", version = "0.0.0")
+git_override(
+    module_name = "sbc_deploy",
+    # build-data branch (matches deploy/nix/flake.lock — keep the two in sync).
+    # Adds the `.seed_wifi` target; includes build_data + the deploy brick-guard
+    # and the hermetic flake-source staging + macOS builder fix.
+    commit = "4d88be7dbc04a99acbb6578c7c72bd33cb35ce23",
+    remote = "https://github.com/fughilli/sbc-deploy.git",
+)

@@ -1,0 +1,122 @@
+"""//compiler — artifact emission (pure Python) + the native lowering tools.
+
+`emit_artifact` turns a lowered RuntimePlan into the portable, arch-independent
+artifact (schedule.json + shaders/ + assets/ + exprs.mlir + services.json). The
+native, ARCH-SPECIFIC steps — compiling exprs.mlir -> exprs/libexprs.so and
+translating desktop GLSL -> GLES 1.00 — are `build_exprs` / `build_shaders_gles`
+here for host dev, and are re-run for aarch64 inside the image (deploy/nix).
+
+  bazel run //compiler:build_exprs        -- <artifact_dir>
+  bazel run //compiler:build_shaders_gles -- <artifact_dir>
+"""
+
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
+load("@pypi//:requirements.bzl", "requirement")
+
+package(default_visibility = ["//visibility:public"])
+
+# imports=["."] makes compiler/ its own import root, so `import emit_artifact`
+# / `from expr_transpile import ...` resolve as top-level (matching how cli.py
+# adds compiler/ to sys.path for the --emit-artifact path).
+py_library(
+    name = "emit",
+    srcs = [
+        "emit_artifact.py",
+        "expr_transpile.py",
+        "translate_gles.py",
+    ],
+    imports = ["."],
+    deps = [
+        ":chop_lower",
+        requirement("pillow"),
+        requirement("av"),
+    ],
+)
+
+# CHOP DAG -> tox dialect MLIR (P0) + lowering to a compiled kernel (P1).
+py_library(
+    name = "chop_to_tox",
+    srcs = ["chop_to_tox.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+)
+
+py_library(
+    name = "chop_lower",
+    srcs = [
+        "chop_lower.py",
+        "chop_ref.py",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+)
+
+# Hermetic (no MLIR toolchain) — run in `bazel test //...`.
+py_test(
+    name = "test_chop_to_tox",
+    srcs = ["test_chop_to_tox.py"],
+    imports = ["."],
+    main = "test_chop_to_tox.py",
+    deps = [":chop_to_tox"],
+)
+
+py_test(
+    name = "test_chop_ref",
+    srcs = ["test_chop_ref.py"],
+    imports = ["."],
+    main = "test_chop_ref.py",
+    deps = [":chop_lower"],
+)
+
+# The P1 bit-parity gate: lower -> compile (.so) -> diff vs the reference over a
+# frame sequence. Needs the nixpkgs MLIR shell, so manual/local (like test_expr).
+py_test(
+    name = "test_chop_lower",
+    srcs = ["test_chop_lower.py"],
+    data = glob(["nix/**"]),
+    imports = ["."],
+    main = "test_chop_lower.py",
+    tags = ["local", "manual", "requires-network"],
+    deps = [":chop_lower"],
+)
+
+# exprs.mlir -> exprs/libexprs.so, via the pinned nixpkgs mlir-opt/mlir-translate
+# /clang (compiler/nix/shell.sh). Host-arch dev convenience; the aarch64 build is
+# redone in-image. Runs the host `nix`, so tag it local + manual.
+sh_binary(
+    name = "build_exprs",
+    srcs = ["build_exprs.sh"],
+    data = glob([
+        "nix/**",
+    ]),
+    tags = ["local", "manual", "requires-network"],
+)
+
+# shaders/*.frag -> shaders_gles/*.frag (GLSL ES 1.00) via glslang + spirv-cross.
+sh_binary(
+    name = "build_shaders_gles",
+    srcs = ["build_shaders_gles.sh"],
+    data = glob([
+        "nix/**",
+        "*.py",
+    ]),
+    tags = ["local", "manual", "requires-network"],
+)
+
+# Transpiler conformance: param-expr string -> MLIR -> native .so, compared
+# against the Python reference evaluator. Needs the nix MLIR toolchain at run
+# time, so it's tagged manual (excluded from `bazel test //...`) + local.
+py_test(
+    name = "test_expr",
+    srcs = ["test_expr.py"],
+    data = glob(["nix/**"]),
+    imports = ["."],
+    main = "test_expr.py",
+    tags = ["local", "manual", "requires-network"],
+    deps = [
+        ":emit",
+        "//:runtime",
+        "//:runtime_expr",
+    ],
+)

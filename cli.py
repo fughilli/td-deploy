@@ -28,8 +28,23 @@ from passes.optimize import optimize  # noqa: E402
 from lowering.lower import lower       # noqa: E402
 
 
+def _host_token() -> str | None:
+    """Shared secret for the host bridge (X-Auth-Token), if it requires one."""
+    t = os.environ.get("TOXC_HOST_TOKEN")
+    if t:
+        return t.strip()
+    try:  # container convenience: the token the bridge was started with
+        with open("/workspace/credentials/toxc_host_token.txt") as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
 def _http_get_bytes(url: str, data: bytes | None = None, timeout: int = 60) -> bytes:
     req = urllib.request.Request(url, data=data, method="POST" if data is not None else "GET")
+    tok = _host_token()
+    if tok:
+        req.add_header("X-Auth-Token", tok)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
 

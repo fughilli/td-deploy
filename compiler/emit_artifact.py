@@ -30,19 +30,19 @@ def emit(plan, graph, outdir: str) -> dict:
     os.makedirs(os.path.join(outdir, "assets"), exist_ok=True)
 
     expr_funcs: list[str] = []
-    expr_cache: dict[str, str] = {}   # expr string -> fn name (dedup)
+    expr_cache: dict[str, tuple] = {}   # expr string -> (fn name, input names) (dedup)
     steps_json = []
     coverage = {"interpreted_exprs": []}
 
     def add_expr(expr: str):
         if expr in expr_cache:
-            return expr_cache[expr], None
+            return expr_cache[expr]           # (fn, inputs) — keep the input list!
         mlir, info = transpile(expr, fname=f"expr{len(expr_funcs)}")
         if mlir is None:
             return None, info                 # unsupported -> Rust/py fallback
         fn = f"expr{len(expr_funcs)}"
         expr_funcs.append(mlir)
-        expr_cache[expr] = fn
+        expr_cache[expr] = (fn, info)
         return fn, info
 
     for st in plan.steps:
@@ -94,14 +94,35 @@ def emit(plan, graph, outdir: str) -> dict:
     with open(os.path.join(outdir, "services.json"), "w") as f:
         json.dump(getattr(graph, "services", []), f, indent=2)
 
+    chops = list(getattr(graph, "chops", []))
+    # Fuse + lower the whole CHOP DAG to one native kernel (P1). Emit chops.mlir
+    # (compiled to chops/libchops.so in-image, arch-correct); the runtime calls
+    # `chops_v` instead of the fasteval loop. Falls back to fasteval (keeps the
+    # `chops` list) if any node is unlowerable.
+    chops_lib = None
+    chops_abi = None
+    if chops:
+        try:
+            from chop_lower import lower as _chop_lower
+            mlir, abi = _chop_lower(chops)
+            with open(os.path.join(outdir, "chops.mlir"), "w") as f:
+                f.write("module {\n" + mlir + "}\n")
+            chops_lib = "chops/libchops.so"
+            chops_abi = abi
+        except Exception as e:                       # noqa: BLE001 (parity fallback)
+            coverage["chop_lower_fallback"] = str(e)
+
     schedule = {
         "output": plan.output_id,
         "target": plan.target,
         "steps": steps_json,
         "exprs_lib": "exprs/libexprs.so" if expr_funcs else None,
         "services": "services.json",
+        "chops": chops,
+        "chops_lib": chops_lib,
+        "chops_abi": chops_abi,
     }
     with open(os.path.join(outdir, "schedule.json"), "w") as f:
         json.dump(schedule, f, indent=2)
 
-    return {"steps": len(steps_json), "exprs": len(expr_funcs), **coverage}
+    return {"steps": len(steps_json), "exprs": len(expr_funcs), "chops": len(chops), **coverage}

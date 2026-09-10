@@ -109,22 +109,58 @@ void main() {
 """
 
 
+def crop_transform_top(target: str) -> str:
+    """Fused Crop->Transform: transform the screen UV, apply the crop remap, then
+    sample the SOURCE once. Exact composition of crop_top feeding transform_top —
+    one pass and one FBO instead of two (producer/consumer fusion of two
+    single-tap coordinate-remap ops)."""
+    return _header(target, "fragment") + """
+in vec2 vUV;
+out vec4 fragColor;
+uniform sampler2D tex0;      // the source (crop's input)
+uniform vec4 uCropRect;      // (left, right, bottom, top) in source UV
+uniform float uRotate;       // radians
+uniform float uTranslateX;
+uniform float uTranslateY;
+uniform float uScaleX;
+uniform float uScaleY;
+void main() {
+    // transform: screen UV -> crop-output UV
+    vec2 c = vec2(0.5);
+    vec2 p = vUV - c - vec2(uTranslateX, uTranslateY);
+    float s = sin(-uRotate), co = cos(-uRotate);
+    p = mat2(co, -s, s, co) * p;
+    p /= vec2(uScaleX, uScaleY);
+    p = p + c;
+    // crop: crop-output UV -> source UV
+    vec2 uv = vec2(mix(uCropRect.x, uCropRect.y, p.x),
+                   mix(uCropRect.z, uCropRect.w, p.y));
+    fragColor = texture(tex0, uv);
+}
+"""
+
+
 def transform_top(target: str) -> str:
     """Transform TOP: translate/rotate/scale about a pivot. Samples the input at
     the inverse-transformed UV (clamp-to-edge outside)."""
+    # Per-component scalar uniforms (not vec2) so each can be a per-frame
+    # expression (TD parameters like scale = op('midiin1')[1]/64). One decl per
+    # line for the GLES translator's per-uniform layout injection.
     return _header(target, "fragment") + """
 in vec2 vUV;
 out vec4 fragColor;
 uniform sampler2D tex0;
-uniform float uRotate;      // radians
-uniform vec2 uTranslate;    // in uv units
-uniform vec2 uScale;
+uniform float uRotate;       // radians
+uniform float uTranslateX;
+uniform float uTranslateY;
+uniform float uScaleX;
+uniform float uScaleY;
 void main() {
     vec2 c = vec2(0.5);
-    vec2 p = vUV - c - uTranslate;
+    vec2 p = vUV - c - vec2(uTranslateX, uTranslateY);
     float s = sin(-uRotate), co = cos(-uRotate);
     p = mat2(co, -s, s, co) * p;
-    p /= uScale;
+    p /= vec2(uScaleX, uScaleY);
     fragColor = texture(tex0, p + c);
 }
 """

@@ -8,6 +8,16 @@ result-*
 # bazel
 bazel-*
 /.bazel/
+.bazel-disk-cache/
+.bazel-repo-cache/
+
+# secrets — NEVER commit deploy keys (sbc-deploy generates these locally)
+deploy/secrets/
+*deploy_key*
+secrets/
+
+# sbc-deploy build scratch (builder VM logs, gc roots)
+.sbc-build/
 
 # python
 __pycache__/

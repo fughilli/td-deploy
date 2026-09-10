@@ -31,12 +31,25 @@ POST /render   (EXPERIMENTAL — TD-as-oracle for conformance)
     Drives TouchDesigner headless to cook <op> and save a PNG. Returns image/png.
     Returns 501 with guidance if a headless render path isn't wired on this host.
 
+POST /deploy   (requires --token) — run the ONE Pi live-deploy on the HOST, async
+    JSON { host?: "tdplayer.local", keep_builder?: false, builder_disk?: "/abs/path" }
+      -> runs exactly: bazel run //deploy:tdplayer_pi3.deploy_live -- [--keep-builder] <host>
+      builder_disk sets $SBC_BUILDER_DISK (the macOS aarch64 builder VM's disk).
+    Also: {"action":"kill","id":"deploy-1"}. Returns { id, cmd, cwd }. This runs a
+    single fixed command in --workspace (NOT arbitrary exec), so a container can
+    drive the host-only deploy (the aarch64 image build needs the Mac's builder).
+GET  /deploy?id=<id>[&from=<n>]
+    Poll a job: { running, rc, elapsed, lines: [...from offset n], next, nlines }.
+    No id -> list jobs. Tail with `from` = the previous response's `next`.
+
 Config (env or flags; flags win)
     TOEEXPAND / --toeexpand   path to the toeexpand binary
     TOECOLLAPSE / --toecollapse
     TD_APP / --td-app         path to the TouchDesigner executable
-    TOXC_HOST_TOKEN / --token optional shared secret; if set, clients must send
-                              header  X-Auth-Token: <token>
+    TOXC_HOST_TOKEN / --token shared secret; clients send header X-Auth-Token.
+                              REQUIRED to enable POST /deploy.
+    TOXC_WORKSPACE / --workspace     repo checkout /deploy runs bazel in
+    TOXC_BAZEL / --bazel             path to bazel (default: PATH lookup)
 """
 
 import argparse
@@ -46,11 +59,13 @@ import io
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -122,6 +137,60 @@ def _dir_to_json(root):
     return files
 
 
+# ----------------------------------------------------------------------------- deploy jobs
+# Run the ONE Pi live-deploy on the HOST (the Mac) so the container can drive it:
+# the aarch64 image build needs the Mac's nix builder and the source tree lives
+# here. It's long-running, so it's a start/poll job model rather than one blocking
+# request. This deliberately runs a single fixed bazel command (not arbitrary
+# exec) and requires the auth token — see Handler.deploy_start.
+
+_JOBS = {}
+_JOBS_LOCK = threading.Lock()
+_JOB_SEQ = [0]
+
+# The only command this endpoint will run (plus the target host as the last arg).
+_DEPLOY_TARGET = "//deploy:tdplayer_pi3.deploy_live"
+_DEFAULT_HOST = "tdplayer.local"
+_HOST_RE = re.compile(r"^[A-Za-z0-9._-]+$")   # hostname / IPv4 — no shell metachars
+
+
+def _start_job(label, cmd, cwd, env=None):
+    with _JOBS_LOCK:
+        _JOB_SEQ[0] += 1
+        jid = "%s-%d" % (label, _JOB_SEQ[0])
+    job = {"id": jid, "label": label, "cmd": cmd, "cwd": cwd, "lines": [],
+           "rc": None, "done": False, "started": time.time(), "ended": None,
+           "proc": None}
+    with _JOBS_LOCK:
+        _JOBS[jid] = job
+
+    def _run_job():
+        try:
+            p = subprocess.Popen(
+                cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        except Exception as e:  # noqa: BLE001 - report launch failure to the client
+            with _JOBS_LOCK:
+                job["lines"].append("[exec] failed to start: %r" % (e,))
+                job["rc"] = 127
+                job["done"] = True
+                job["ended"] = time.time()
+            return
+        with _JOBS_LOCK:
+            job["proc"] = p
+        for line in p.stdout:                      # streams until the process exits
+            with _JOBS_LOCK:
+                job["lines"].append(line.rstrip("\n"))
+        p.wait()
+        with _JOBS_LOCK:
+            job["rc"] = p.returncode
+            job["done"] = True
+            job["ended"] = time.time()
+
+    threading.Thread(target=_run_job, daemon=True).start()
+    return job
+
+
 # ----------------------------------------------------------------------------- handler
 
 class Handler(BaseHTTPRequestHandler):
@@ -168,6 +237,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.health()
         if u.path == "/readfile":
             return self.readfile(parse_qs(u.query))
+        if u.path == "/deploy":
+            return self.deploy_poll(parse_qs(u.query))
         return self._send_json({"error": "not found", "path": u.path}, 404)
 
     def do_POST(self):
@@ -184,6 +255,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.collapse(q)
             if u.path == "/render":
                 return self.render()
+            if u.path == "/deploy":
+                return self.deploy_start()
         except subprocess.TimeoutExpired:
             return self._send_json({"error": "timeout"}, 504)
         except Exception as e:  # noqa: BLE001 - surface failures to the client
@@ -204,6 +277,10 @@ class Handler(BaseHTTPRequestHandler):
             "td_app": c.get("td_app"),
             "td_found": bool(c.get("td_app")),
             "candidates": _candidate_td_dirs(),
+            "deploy_enabled": bool(c.get("token")),   # /deploy requires a token
+            "deploy_target": _DEPLOY_TARGET,
+            "workspace": c.get("workspace"),
+            "bazel": (c.get("bazel") or shutil.which("bazel")),
         }
         return self._send_json(info)
 
@@ -323,6 +400,96 @@ class Handler(BaseHTTPRequestHandler):
             "how": _HEADLESS_RENDER_NOTES,
         }, 501)
 
+    # -- deploy (the one Pi live-deploy, on the host) -------------------------
+    def _deploy_gate(self):
+        """Deploy runs a build/switch on the host, so it always requires a token.
+        Returns an error dict+code to send, or None if allowed."""
+        if not self.cfg.get("token"):
+            return {"error": "deploy requires an auth token; start the bridge with"
+                            " --token <secret> (and send X-Auth-Token)"}, 403
+        return None
+
+    def deploy_start(self):
+        """POST /deploy {host?, keep_builder?, builder_disk?} — Pi live-deploy on host.
+
+        Runs exactly `bazel run //deploy:tdplayer_pi3.deploy_live -- [--keep-builder]
+        <host>` in the configured --workspace (nothing else). `builder_disk` sets
+        $SBC_BUILDER_DISK for the build (the macOS aarch64 builder VM's disk image).
+        Async: returns {id}; poll GET /deploy?id=<id>. `{"action":"kill"}` stops it.
+        """
+        gate = self._deploy_gate()
+        if gate:
+            return self._send_json(*gate)
+        req = json.loads(self._read_body() or b"{}")
+        if req.get("action") == "kill":
+            return self._deploy_kill(req.get("id"))
+        host = req.get("host") or _DEFAULT_HOST
+        if not isinstance(host, str) or not _HOST_RE.match(host):
+            return self._send_json({"error": "invalid host %r" % (host,)}, 400)
+        bazel = self.cfg.get("bazel") or shutil.which("bazel")
+        if not bazel:
+            return self._send_json({"error": "bazel not found on PATH"}, 501)
+        cwd = self.cfg.get("workspace") or os.getcwd()
+        if not os.path.isdir(os.path.join(cwd, "deploy")):
+            return self._send_json(
+                {"error": "workspace has no deploy/ dir: %s" % cwd}, 500)
+        # Optional builder disk override -> env (safe: goes in the env dict, not the
+        # shell). Inherits the bridge's env so an exported SBC_BUILDER_DISK works too.
+        env = None
+        builder_disk = req.get("builder_disk")
+        if builder_disk is not None:
+            if not (isinstance(builder_disk, str) and os.path.isabs(builder_disk)):
+                return self._send_json(
+                    {"error": "builder_disk must be an absolute path"}, 400)
+            env = os.environ.copy()
+            env["SBC_BUILDER_DISK"] = builder_disk
+        cmd = [bazel, "run", _DEPLOY_TARGET, "--"]
+        if req.get("keep_builder"):
+            cmd += ["--keep-builder"]
+        cmd += [host]
+        job = _start_job("deploy", cmd, cwd, env=env)
+        return self._send_json(
+            {"id": job["id"], "cmd": job["cmd"], "cwd": cwd,
+             "builder_disk": builder_disk})
+
+    def deploy_poll(self, q):
+        """GET /deploy?id=<id>[&from=<n>] — poll (new output lines from offset
+        `from`). No id lists deploy jobs."""
+        gate = self._deploy_gate()
+        if gate:
+            return self._send_json(*gate)
+        jid = (q.get("id", [None])[0])
+        if not jid:
+            with _JOBS_LOCK:
+                jobs = [{"id": j["id"], "running": not j["done"], "rc": j["rc"],
+                         "nlines": len(j["lines"]), "started": j["started"]}
+                        for j in _JOBS.values()]
+            return self._send_json({"jobs": jobs})
+        frm = int((q.get("from", ["0"])[0]) or 0)
+        with _JOBS_LOCK:
+            job = _JOBS.get(jid)
+            if not job:
+                return self._send_json({"error": "no such job: %s" % jid}, 404)
+            lines = job["lines"][frm:]
+            end = job["ended"] or time.time()
+            resp = {
+                "id": jid, "cmd": job["cmd"], "running": not job["done"],
+                "rc": job["rc"], "from": frm, "next": frm + len(lines),
+                "nlines": len(job["lines"]),
+                "elapsed": round(end - job["started"], 1), "lines": lines,
+            }
+        return self._send_json(resp)
+
+    def _deploy_kill(self, jid):
+        with _JOBS_LOCK:
+            job = _JOBS.get(jid)
+            proc = job["proc"] if job else None
+        if not job:
+            return self._send_json({"error": "no such job: %s" % jid}, 404)
+        if proc and job["rc"] is None:
+            proc.terminate()
+        return self._send_json({"id": jid, "killed": True})
+
 
 _HEADLESS_RENDER_NOTES = (
     "Drive TD via a generated startup script that op(<op>).save('out.png') then project.quit(). "
@@ -340,6 +507,14 @@ def main():
     ap.add_argument("--toecollapse", default=None)
     ap.add_argument("--td-app", dest="td_app", default=None)
     ap.add_argument("--token", default=os.environ.get("TOXC_HOST_TOKEN"))
+    # POST /deploy runs the ONE fixed Pi live-deploy (bazel run …deploy_live) in
+    # this workspace on the host. It requires --token (it builds/switches here).
+    ap.add_argument("--workspace",
+                    default=os.environ.get("TOXC_WORKSPACE")
+                    or os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    help="repo checkout /deploy runs bazel in (default: this file's repo)")
+    ap.add_argument("--bazel", default=os.environ.get("TOXC_BAZEL"),
+                    help="path to bazel (default: PATH lookup)")
     args = ap.parse_args()
 
     cfg = discover({
@@ -347,6 +522,8 @@ def main():
         "toecollapse": args.toecollapse,
         "td_app": args.td_app,
         "token": args.token,
+        "workspace": os.path.abspath(os.path.expanduser(args.workspace)),
+        "bazel": args.bazel,
     })
     Handler.cfg = cfg
 
@@ -356,6 +533,10 @@ def main():
     print(f"[toxc-host] TouchDesigner: {cfg.get('td_app')     or 'NOT FOUND'}")
     if cfg.get("token"):
         print("[toxc-host] auth token REQUIRED (X-Auth-Token)")
+        print(f"[toxc-host] /deploy ENABLED: {_DEPLOY_TARGET} in {cfg.get('workspace')}")
+        print(f"[toxc-host]   bazel: {cfg.get('bazel') or shutil.which('bazel') or 'NOT FOUND'}")
+    else:
+        print("[toxc-host] /deploy DISABLED (set --token to enable the Pi live-deploy)")
     print(f"[toxc-host] listening on http://{args.host}:{args.port}")
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 

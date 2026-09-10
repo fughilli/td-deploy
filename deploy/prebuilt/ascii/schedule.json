@@ -1,0 +1,223 @@
+{
+  "output": "project1/null1",
+  "target": "gles2",
+  "steps": [
+    {
+      "id": "project1/ascii/moviefilein1",
+      "op": "image_in",
+      "kind": "source",
+      "w": 88,
+      "h": 132,
+      "inputs": [],
+      "source": {
+        "type": "image",
+        "path": "assets/project1_ascii_moviefilein1.png"
+      }
+    },
+    {
+      "id": "project1/moviefilein1",
+      "op": "image_in",
+      "kind": "source",
+      "w": 1280,
+      "h": 720,
+      "inputs": [],
+      "source": {
+        "type": "image",
+        "path": "assets/project1_moviefilein1.png"
+      }
+    },
+    {
+      "id": "project1/transform1",
+      "op": "transform",
+      "kind": "shader",
+      "w": 256,
+      "h": 256,
+      "inputs": [
+        "project1/moviefilein1"
+      ],
+      "vert": "shaders/project1_transform1.vert",
+      "frag": "shaders/project1_transform1.frag",
+      "sampler_array": null,
+      "uniforms": {
+        "uCropRect": {
+          "type": "vec4",
+          "value": [
+            0.2578125,
+            0.8203125,
+            0.0,
+            1.0
+          ]
+        }
+      },
+      "time_uniforms": {
+        "uRotate": {
+          "interpreted": "op('speed1')[0] * 1000",
+          "mul": 0.017453292519943295
+        },
+        "uTranslateX": {
+          "fn": "expr0",
+          "inputs": [],
+          "mul": 1.0
+        },
+        "uTranslateY": {
+          "fn": "expr0",
+          "inputs": [],
+          "mul": 1.0
+        },
+        "uScaleX": {
+          "interpreted": "op('midiin1')[1] / 64",
+          "mul": 1.0
+        },
+        "uScaleY": {
+          "interpreted": "op('midiin1')[1] / 64",
+          "mul": 1.0
+        }
+      }
+    },
+    {
+      "id": "project1/ascii/in1",
+      "op": "passthrough",
+      "kind": "passthrough",
+      "w": 256,
+      "h": 256,
+      "inputs": [
+        "project1/transform1"
+      ]
+    },
+    {
+      "id": "project1/ascii/glsl2",
+      "op": "glsl_top",
+      "kind": "shader",
+      "w": 256,
+      "h": 256,
+      "inputs": [
+        "project1/ascii/in1"
+      ],
+      "vert": "shaders/project1_ascii_glsl2.vert",
+      "frag": "shaders/project1_ascii_glsl2.frag",
+      "sampler_array": "sTD2DInputs",
+      "uniforms": {
+        "uTD2DInfos[0].res": {
+          "type": "vec4",
+          "value": [
+            0.00390625,
+            0.00390625,
+            256.0,
+            256.0
+          ]
+        }
+      },
+      "time_uniforms": {}
+    },
+    {
+      "id": "project1/ascii/glsl3",
+      "op": "glsl_top",
+      "kind": "shader",
+      "w": 256,
+      "h": 256,
+      "inputs": [
+        "project1/ascii/glsl2",
+        "project1/ascii/moviefilein1",
+        "project1/ascii/in1"
+      ],
+      "vert": "shaders/project1_ascii_glsl3.vert",
+      "frag": "shaders/project1_ascii_glsl3.frag",
+      "sampler_array": "sTD2DInputs",
+      "uniforms": {
+        "uTD2DInfos[0].res": {
+          "type": "vec4",
+          "value": [
+            0.00390625,
+            0.00390625,
+            256.0,
+            256.0
+          ]
+        },
+        "uTD2DInfos[1].res": {
+          "type": "vec4",
+          "value": [
+            0.011363636363636364,
+            0.007575757575757576,
+            88.0,
+            132.0
+          ]
+        },
+        "uTD2DInfos[2].res": {
+          "type": "vec4",
+          "value": [
+            0.00390625,
+            0.00390625,
+            256.0,
+            256.0
+          ]
+        }
+      },
+      "time_uniforms": {}
+    },
+    {
+      "id": "project1/ascii/out2",
+      "op": "passthrough",
+      "kind": "passthrough",
+      "w": 256,
+      "h": 256,
+      "inputs": [
+        "project1/ascii/glsl3"
+      ]
+    },
+    {
+      "id": "project1/null1",
+      "op": "passthrough",
+      "kind": "passthrough",
+      "w": 256,
+      "h": 256,
+      "inputs": [
+        "project1/ascii/out2"
+      ]
+    }
+  ],
+  "exprs_lib": "exprs/libexprs.so",
+  "services": "services.json",
+  "chops": [
+    {
+      "name": "constant1",
+      "type": "constant",
+      "inputs": [],
+      "channels": [
+        "op('midiin1')[0][0]/127 - 0.5"
+      ]
+    },
+    {
+      "name": "speed1",
+      "type": "speed",
+      "inputs": [
+        "constant1"
+      ],
+      "channels": []
+    }
+  ],
+  "chops_lib": "chops/libchops.so",
+  "chops_abi": {
+    "sources": [
+      [
+        "midiin1",
+        "0"
+      ]
+    ],
+    "states": [
+      [
+        "speed1",
+        "0"
+      ]
+    ],
+    "outputs": [
+      [
+        "constant1",
+        "0"
+      ],
+      [
+        "speed1",
+        "0"
+      ]
+    ]
+  }
+}

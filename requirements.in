@@ -1,0 +1,12 @@
+# td-deploy (toxc) — top-level Python dependencies for the whole repo.
+#
+# Regenerate the fully-resolved lockfile after editing this file with:
+#     bazel run //:requirements.update
+#
+# This is the only place to add a direct dependency; requirements.lock is
+# resolved from it and is what Bazel consumes via pip.parse() in MODULE.bazel.
+numpy
+pillow
+pyopengl
+av
+pytest
