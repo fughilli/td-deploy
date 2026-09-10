@@ -28,7 +28,7 @@ mod linux {
 use std::fs::{File, OpenOptions};
 use std::os::unix::io::{AsFd, BorrowedFd};
 
-use drm::buffer::DrmFourcc;
+use drm::buffer::{Buffer, DrmFourcc};   // Buffer trait -> .pitch()
 use drm::control::dumbbuffer::DumbBuffer;
 use drm::control::{connector, crtc, framebuffer, Device as ControlDevice, Event, Mode, PageFlipFlags};
 use drm::Device;
@@ -53,6 +53,11 @@ pub struct DrmSink {
     dw: usize,
     dh: usize,
     started: bool,
+    // Cached staging frame (XRGB8888, one u32/pixel). We compose here (normal
+    // cached RAM) then bulk-copy row-by-row into the mapped dumb buffer, which is
+    // write-combined: scattered byte writes straight to it are ~50x slower than a
+    // sequential memcpy. Black letterbox bars are written once and never touched.
+    staging: Vec<u32>,
 }
 
 impl DrmSink {
@@ -103,6 +108,7 @@ impl DrmSink {
             dw,
             dh,
             started: false,
+            staging: vec![0u32; dw * dh],
         })
     }
 
@@ -114,32 +120,44 @@ impl DrmSink {
         }
         let (dw, dh) = (self.dw, self.dh);
         let idx = self.back;
+        // 1) Compose into the cached staging buffer (fast RAM). Bars stay black
+        //    (set once at init); we only rewrite the centered visible region,
+        //    which is the same rect every frame, so nothing stale leaks out.
+        let scale = (dw as f32 / w as f32).min(dh as f32 / h as f32);
+        let vw = ((w as f32 * scale) as usize).min(dw).max(1);
+        let vh = ((h as f32 * scale) as usize).min(dh).max(1);
+        let ox = (dw - vw) / 2;
+        let oy = (dh - vh) / 2;
+        for dy in 0..vh {
+            let sy = dy * h / vh;
+            let drow = (oy + dy) * dw + ox;
+            let srow = sy * w;
+            for dx in 0..vw {
+                let s = (srow + dx * w / vw) * 4;
+                // XRGB8888 (LE) = 0x00RRGGBB
+                self.staging[drow + dx] = ((rgba[s] as u32) << 16)
+                    | ((rgba[s + 1] as u32) << 8)
+                    | (rgba[s + 2] as u32);
+            }
+        }
+        // 2) Bulk-copy staging -> the write-combined dumb buffer one row at a time
+        //    (respecting pitch); sequential writes let write-combining coalesce.
+        let pitch = self.bufs[idx].pitch() as usize;
         {
             let mut map = match self.card.map_dumb_buffer(&mut self.bufs[idx]) {
                 Ok(m) => m,
                 Err(_) => return,
             };
             let buf = map.as_mut();
-            for b in buf.iter_mut() {
-                *b = 0;
-            }
-            let scale = (dw as f32 / w as f32).min(dh as f32 / h as f32);
-            let vw = ((w as f32 * scale) as usize).min(dw).max(1);
-            let vh = ((h as f32 * scale) as usize).min(dh).max(1);
-            let ox = (dw - vw) / 2;
-            let oy = (dh - vh) / 2;
-            for dy in 0..vh {
-                let sy = dy * h / vh;
-                let drow = (oy + dy) * dw;
-                let srow = sy * w;
-                for dx in 0..vw {
-                    let sx = dx * w / vw;
-                    let s = (srow + sx) * 4;
-                    let d = (drow + ox + dx) * 4;
-                    buf[d] = rgba[s + 2]; // B
-                    buf[d + 1] = rgba[s + 1]; // G
-                    buf[d + 2] = rgba[s]; // R
-                    buf[d + 3] = 0; // X
+            let row_bytes = dw * 4;
+            let src: &[u8] = unsafe {
+                std::slice::from_raw_parts(self.staging.as_ptr() as *const u8, dw * dh * 4)
+            };
+            for y in 0..dh {
+                let d0 = y * pitch;
+                if d0 + row_bytes <= buf.len() {
+                    buf[d0..d0 + row_bytes]
+                        .copy_from_slice(&src[y * row_bytes..y * row_bytes + row_bytes]);
                 }
             }
         }
