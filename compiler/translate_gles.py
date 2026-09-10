@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 
 def inject_locations(src: str) -> str:
@@ -133,17 +134,20 @@ def es2_vertex(vec3: bool) -> str:
 
 def translate_frag(path: str) -> str:
     src = inject_locations(open(path).read())
-    tmp = "/tmp/_gles_in.frag"
-    open(tmp, "w").write(src)
-    subprocess.run(
-        ["glslangValidator", "-G", tmp, "-o", "/tmp/_gles.spv"], check=True, capture_output=True
-    )
-    es = subprocess.run(
-        ["spirv-cross", "/tmp/_gles.spv", "--es", "--version", "100"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
+    # Use a real temp dir so this works off Unix too (the bundled Windows app runs
+    # this on the host); the tools are found on PATH (glslangValidator[.exe]).
+    with tempfile.TemporaryDirectory() as td:
+        frag = os.path.join(td, "in.frag")
+        spv = os.path.join(td, "out.spv")
+        with open(frag, "w") as f:
+            f.write(src)
+        subprocess.run(["glslangValidator", "-G", frag, "-o", spv], check=True, capture_output=True)
+        es = subprocess.run(
+            ["spirv-cross", spv, "--es", "--version", "100"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
     return legalize_modulo(es)
 
 

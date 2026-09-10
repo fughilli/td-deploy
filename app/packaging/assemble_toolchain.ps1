@@ -1,7 +1,7 @@
 # Assemble the Windows host cross-toolchain bundle (app\toolchain\).
 #   app\packaging\assemble_toolchain.ps1 -Mlir <dir> -Llvm <dir> -Glslang <dir> `
 #       -SpirvCross <dir> -Sysroot <dir> -Out app\toolchain
-# Lays out bin\{mlir-opt,mlir-translate,clang,clang++,ld.lld,glslang,spirv-cross}.exe
+# Lays out bin\{mlir-opt,mlir-translate,clang,clang++,ld.lld,glslangValidator,spirv-cross}.exe
 # + sysroot\ (aarch64-linux-gnu crt + libc/libm dev) for the -shared cross link.
 param(
   [Parameter(Mandatory)][string]$Mlir,
@@ -24,7 +24,7 @@ Grab "$Mlir\mlir-translate.exe"  "mlir-translate.exe"
 Grab "$Llvm\clang.exe"           "clang.exe"
 Grab "$Llvm\clang++.exe"         "clang++.exe"
 Grab "$Llvm\lld.exe"             "ld.lld.exe"
-Grab "$Glslang\glslang.exe"      "glslang.exe"
+Grab "$Glslang\glslangValidator.exe" "glslangValidator.exe"
 Grab "$SpirvCross\spirv-cross.exe" "spirv-cross.exe"
 
 Copy-Item "$Sysroot\*" "$Out\sysroot\" -Recurse -Force

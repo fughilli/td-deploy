@@ -2,7 +2,7 @@
 # Assemble the host cross-toolchain bundle the app ships (app/toolchain/):
 #
 #   toolchain/
-#     bin/{mlir-opt,mlir-translate,clang,clang++,ld.lld,glslang,spirv-cross}
+#     bin/{mlir-opt,mlir-translate,clang,clang++,ld.lld,glslangValidator,spirv-cross}
 #     sysroot/            # aarch64-unknown-linux-gnu crt + libc/libm dev
 #
 # This is the OS-scriptable part (macOS/Linux). It expects the individual pieces
@@ -32,8 +32,9 @@ copy "$STAGE/llvm/clang"    clang
 copy "$STAGE/llvm/clang++"  clang++ || true
 copy "$STAGE/llvm/ld.lld"   ld.lld
 
-# GLES shader translators (official per-OS releases).
-copy "$STAGE/glslang/glslang"          glslang
+# GLES shader translators. translate_gles.py invokes `glslangValidator` +
+# `spirv-cross`, so the bundled names must match exactly.
+copy "$STAGE/glslang/glslangValidator" glslangValidator
 copy "$STAGE/spirv-cross/spirv-cross"  spirv-cross
 
 # aarch64-linux sysroot (crt1.o/crti.o + libc.so/libm.so + headers).

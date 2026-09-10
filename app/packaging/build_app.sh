@@ -28,7 +28,7 @@ fi
 
 echo "==> electron-builder"
 cd "$app/electron"
-npm ci
+npm install
 npm run dist
 
 echo "==> artifacts in $app/electron/dist"

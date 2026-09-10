@@ -1,9 +1,10 @@
-# Package the td-deploy Studio desktop app for macOS + Windows and attach the
-# installers to a GitHub Release.
+# Build + package the td-deploy Studio desktop app for macOS (.dmg) and Windows
+# (.exe). Runs on a manual dispatch (installers uploaded as downloadable
+# artifacts) and on a release (installers also attached to the release).
 #
-# Pulls the per-OS cross-toolchain bundle from build-toolchain, freezes the Python
-# sidecar with PyInstaller, then runs electron-builder. The app pins BASE_IMAGE_TAG
-# so a fresh install's "Flash SD" pulls the matching base image (build-image.yml).
+# Each OS job pulls its cross-toolchain bundle from build-toolchain, freezes the
+# Python sidecar with PyInstaller, then runs electron-builder. BASE_IMAGE_TAG is
+# stamped so a fresh install's "Flash SD" pulls the matching base image.
 name: build-app
 
 on:
@@ -31,6 +32,11 @@ jobs:
             artifact: toolchain-windows
             build: powershell -ExecutionPolicy Bypass -File app/packaging/build_app.ps1
     runs-on: ${{ matrix.os }}
+    env:
+      # Produce unsigned installers in CI. To ship signed/notarized builds, add the
+      # cert secrets (CSC_LINK/CSC_KEY_PASSWORD, and APPLE_ID/APPLE_APP_SPECIFIC_
+      # PASSWORD/APPLE_TEAM_ID for notarization) and flip this to true.
+      CSC_IDENTITY_AUTO_DISCOVERY: false
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
@@ -52,6 +58,18 @@ jobs:
 
       - name: Build app
         run: ${{ matrix.build }}
+
+      # Always upload the installers so a manual (workflow_dispatch) run is
+      # downloadable from the run's Artifacts, not just release runs.
+      - name: Upload installers (artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: td-deploy-studio-${{ matrix.os }}
+          path: |
+            app/electron/dist/*.dmg
+            app/electron/dist/*.exe
+          if-no-files-found: warn
 
       - name: Attach installers to the release
         if: github.event_name == 'release'

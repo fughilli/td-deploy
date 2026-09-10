@@ -5,6 +5,7 @@ privileged raw-write worker (byte parity + refusing a missing device), and the
 top-level guard that refuses anything that isn't a live removable disk. All
 stdlib-only, no hardware.
 """
+
 import os
 import plistlib
 import tempfile
@@ -14,14 +15,19 @@ from deploy_engine.flasher import disks, flash, rawwrite
 
 def test_macos_parser_surfaces_external_only():
     list_pl = plistlib.dumps({"WholeDisks": ["disk4"]})
-    info4 = plistlib.dumps({
-        "Internal": False, "Ejectable": True, "MediaName": "SD Card Reader",
-        "TotalSize": 32_000_000_000, "BusProtocol": "USB",
-        "RemovableMediaOrExternalDevice": True,
-    })
+    info4 = plistlib.dumps(
+        {
+            "Internal": False,
+            "Ejectable": True,
+            "MediaName": "SD Card Reader",
+            "TotalSize": 32_000_000_000,
+            "BusProtocol": "USB",
+            "RemovableMediaOrExternalDevice": True,
+        }
+    )
     ds = disks.parse_macos(list_pl, {"disk4": info4})
     assert len(ds) == 1
-    assert ds[0].id == "/dev/rdisk4"      # raw node for fast writes
+    assert ds[0].id == "/dev/rdisk4"  # raw node for fast writes
     assert ds[0].bus == "USB"
 
 
@@ -44,17 +50,21 @@ def test_windows_parser_drops_system_disk():
 
 
 def test_windows_parser_accepts_single_object():
-    one = ('{"Number":2,"FriendlyName":"SD","Size":8000000000,'
-           '"BusType":"SD","IsSystem":false,"IsBoot":false}')
+    one = (
+        '{"Number":2,"FriendlyName":"SD","Size":8000000000,'
+        '"BusType":"SD","IsSystem":false,"IsBoot":false}'
+    )
     assert len(disks.parse_windows(one)) == 1
 
 
 def test_linux_parser_removable_only():
-    lj = ('{"blockdevices":['
-          '{"name":"sda","model":"WDC","size":500000000000,"rm":false,'
-          '"hotplug":false,"type":"disk"},'
-          '{"name":"sdb","model":"Cruzer","size":16000000000,"rm":true,'
-          '"hotplug":true,"type":"disk"}]}')
+    lj = (
+        '{"blockdevices":['
+        '{"name":"sda","model":"WDC","size":500000000000,"rm":false,'
+        '"hotplug":false,"type":"disk"},'
+        '{"name":"sdb","model":"Cruzer","size":16000000000,"rm":true,'
+        '"hotplug":true,"type":"disk"}]}'
+    )
     dl = disks.parse_linux(lj)
     assert len(dl) == 1
     assert dl[0].id == "/dev/sdb"
@@ -66,7 +76,7 @@ def test_rawwrite_byte_parity():
     prog = tempfile.mktemp()
     with open(img, "wb") as f:
         f.write(os.urandom(20 << 20))
-    open(dev, "wb").close()          # the device already exists in the real world
+    open(dev, "wb").close()  # the device already exists in the real world
     assert rawwrite.raw_write(img, dev, prog) == 0
     assert open(img, "rb").read() == open(dev, "rb").read()
     lines = open(prog).read().splitlines()

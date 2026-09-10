@@ -24,7 +24,7 @@ if (-not (Test-Path "$app\toolchain")) {
 
 Write-Host "==> electron-builder"
 Push-Location "$app\electron"
-npm ci
+npm install
 npm run dist
 Pop-Location
 
