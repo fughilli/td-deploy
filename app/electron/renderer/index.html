@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
+  <title>td-deploy Studio</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>td-deploy&nbsp;Studio</h1>
+    <span id="status-dot" class="dot idle" title="idle"></span>
+  </header>
+
+  <section class="card">
+    <div class="row">
+      <button id="pick">Choose .toe…</button>
+      <span id="toe-path" class="path muted">No project selected</span>
+    </div>
+    <div class="row">
+      <label class="toggle">
+        <input type="checkbox" id="watch" /> Watch — auto-deploy on save
+      </label>
+      <button id="deploy" class="primary" disabled>Deploy now</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div id="phase" class="phase">Ready</div>
+    <div class="bar"><div id="bar-fill"></div></div>
+  </section>
+
+  <section class="card settings">
+    <div class="row">
+      <label>Pi host <input id="pi" type="text" value="tdplayer.local" /></label>
+      <label>Target
+        <select id="target">
+          <option value="gles2" selected>gles2 (Pi VC4)</option>
+          <option value="gles">gles (Pi4/5)</option>
+          <option value="desktop_gl">desktop_gl</option>
+        </select>
+      </label>
+    </div>
+    <div class="row">
+      <label class="grow">SSH key <input id="key" type="text" placeholder="deploy/secrets/deploy_key (default)" /></label>
+      <button id="pick-key">…</button>
+    </div>
+    <div class="row">
+      <button id="flash" disabled title="Phase 4">Flash SD card…</button>
+    </div>
+  </section>
+
+  <section class="card log-card">
+    <div class="log-head">Log</div>
+    <pre id="log"></pre>
+  </section>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

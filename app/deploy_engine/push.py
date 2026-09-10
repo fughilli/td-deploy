@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import time
 
 from . import _paths
@@ -38,20 +39,20 @@ def push(art_dir: str, pi_host: str, *, user: str = "root", key: str | None = No
     ssh = _ssh_base(key)
 
     progress.phase("push", 0.0, f"{target}:{staging}")
-    subprocess.run(ssh + [target, f"mkdir -p {REMOTE_BASE}"], check=True)
+    subprocess.run(ssh + [target, f"mkdir -p {REMOTE_BASE}"], check=True, stdout=sys.stderr)
 
     src = art_dir.rstrip("/") + "/"
     ssh_cmd = " ".join(_ssh_base(key))
     if shutil.which("rsync"):
         subprocess.run(["rsync", "-a", "--delete", "-e", ssh_cmd, src, f"{target}:{staging}/"],
-                       check=True)
+                       check=True, stdout=sys.stderr)
     else:  # Windows fallback: scp -r (no --delete; staging is fresh each time)
         progress.log("rsync not found; scp -r fallback")
-        subprocess.run(ssh + [target, f"mkdir -p {staging}"], check=True)
+        subprocess.run(ssh + [target, f"mkdir -p {staging}"], check=True, stdout=sys.stderr)
         scp = ["scp", "-r", "-i", key, "-o", "IdentitiesOnly=yes",
                "-o", "StrictHostKeyChecking=accept-new"]
         for entry in os.listdir(art_dir):
-            subprocess.run(scp + [os.path.join(art_dir, entry), f"{target}:{staging}/"], check=True)
+            subprocess.run(scp + [os.path.join(art_dir, entry), f"{target}:{staging}/"], check=True, stdout=sys.stderr)
 
     progress.phase("restart", 0.0, service)
     # world-readable (the service runs as the tdplayer user), atomic swap, restart,
@@ -62,6 +63,6 @@ def push(art_dir: str, pi_host: str, *, user: str = "root", key: str | None = No
         f"systemctl restart {service} && "
         f"ls -1dt {REMOTE_BASE}/staging-* 2>/dev/null | tail -n +{keep + 1} | xargs -r rm -rf"
     )
-    subprocess.run(ssh + [target, remote], check=True)
+    subprocess.run(ssh + [target, remote], check=True, stdout=sys.stderr)
     progress.phase("restart", 1.0, "live")
     return staging

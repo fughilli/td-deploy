@@ -1,0 +1,55 @@
+:root {
+  --bg: #14161a; --card: #1d2027; --edge: #2b2f39; --fg: #e7e9ee;
+  --muted: #8b909c; --accent: #4f8cff; --ok: #37c06a; --err: #ff5f6b;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; font: 13px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+  background: var(--bg); color: var(--fg); padding: 14px; user-select: none;
+}
+header { display: flex; align-items: center; gap: 10px; margin: 2px 4px 12px; }
+h1 { font-size: 16px; font-weight: 650; margin: 0; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+.dot.idle { background: var(--muted); }
+.dot.busy { background: var(--accent); animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+
+.card { background: var(--card); border: 1px solid var(--edge); border-radius: 10px;
+  padding: 12px; margin-bottom: 10px; }
+.row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.row:first-child { margin-top: 0; }
+.grow { flex: 1; }
+
+button {
+  background: #262a33; color: var(--fg); border: 1px solid var(--edge);
+  border-radius: 7px; padding: 7px 12px; font-size: 13px; cursor: pointer;
+}
+button:hover { border-color: #3a4150; }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; margin-left: auto; }
+button.primary:disabled { background: #2b3140; border-color: var(--edge); color: var(--muted); }
+
+label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+label.grow { flex: 1; }
+input[type=text], select {
+  background: #0f1116; color: var(--fg); border: 1px solid var(--edge);
+  border-radius: 6px; padding: 5px 8px; font-size: 13px;
+}
+label.grow input { flex: 1; width: 100%; }
+.toggle { color: var(--fg); }
+
+.path { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.muted { color: var(--muted); }
+
+.phase { font-size: 13px; margin-bottom: 8px; color: var(--fg); }
+.bar { height: 8px; background: #0f1116; border-radius: 5px; overflow: hidden; }
+#bar-fill { height: 100%; width: 0%; background: var(--accent); transition: width .18s ease; }
+
+.log-card { flex: 1; }
+.log-head { color: var(--muted); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .06em; margin-bottom: 6px; }
+#log { margin: 0; max-height: 180px; overflow: auto; font-family: ui-monospace, Menlo,
+  Consolas, monospace; font-size: 11.5px; color: #c4c8d2; white-space: pre-wrap; user-select: text; }
+#log .ok { color: var(--ok); }
+#log .err { color: var(--err); }

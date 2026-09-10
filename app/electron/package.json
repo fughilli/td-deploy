@@ -1,0 +1,25 @@
+{
+  "name": "td-deploy-studio",
+  "productName": "td-deploy Studio",
+  "version": "0.1.0",
+  "description": "Compile a TouchDesigner .toe and live-deploy it to a Raspberry Pi",
+  "main": "main.js",
+  "author": "fughilli",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^31.3.0"
+  },
+  "build": {
+    "appId": "com.fughilli.tddeploystudio",
+    "productName": "td-deploy Studio",
+    "files": ["main.js", "preload.js", "renderer/**"],
+    "extraResources": [
+      { "from": "../dist/sidecar", "to": "sidecar" }
+    ],
+    "mac": { "category": "public.app-category.developer-tools", "target": "dmg" },
+    "win": { "target": "nsis" }
+  }
+}

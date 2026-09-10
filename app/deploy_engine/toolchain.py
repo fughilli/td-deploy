@@ -15,8 +15,13 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 
 from . import _paths
+
+# Tool chatter (nix, clang, glslang) must never touch stdout — the GUI sidecar
+# uses stdout for its JSON protocol. Route it to stderr.
+_STDERR = {"stdout": sys.stderr}
 
 
 class Toolchain:
@@ -42,14 +47,14 @@ class NixToolchain(Toolchain):
         self._env = {**os.environ, "PATH": "/nix/var/nix/profiles/default/bin:" + os.environ.get("PATH", "")}
 
     def run_llvm_script(self, script: str) -> None:
-        subprocess.run([self._shell, "bash", "-c", script], check=True, env=self._env)
+        subprocess.run([self._shell, "bash", "-c", script], check=True, env=self._env, **_STDERR)
 
     def run_gles(self, art_dir: str) -> None:
         translate = os.path.join(self.repo, "compiler", "translate_gles.py")
         subprocess.run(
             ["nix", "shell", "nixpkgs#glslang", "nixpkgs#spirv-cross", "nixpkgs#python3",
              "--command", "python3", translate, art_dir],
-            check=True, env=self._env,
+            check=True, env=self._env, **_STDERR,
         )
 
 
@@ -66,9 +71,9 @@ class BundledToolchain(Toolchain):
 
     def run_llvm_script(self, script: str) -> None:
         env = {**os.environ, "PATH": os.path.join(self.tools, "bin") + os.pathsep + os.environ.get("PATH", "")}
-        subprocess.run(["bash", "-c", script], check=True, env=env)
+        subprocess.run(["bash", "-c", script], check=True, env=env, **_STDERR)
 
     def run_gles(self, art_dir: str) -> None:
         translate = os.path.join(_paths.REPO_ROOT, "compiler", "translate_gles.py")
         env = {**os.environ, "PATH": os.path.join(self.tools, "bin") + os.pathsep + os.environ.get("PATH", "")}
-        subprocess.run(["python3", translate, art_dir], check=True, env=env)
+        subprocess.run(["python3", translate, art_dir], check=True, env=env, **_STDERR)
