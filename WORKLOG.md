@@ -2,6 +2,40 @@
 
 Newest first. See `docs/design/tox-to-pi.md` for the full design.
 
+## 2026-09-10 — On-Pi runtime: DRM/KMS HDMI, CHOP engine, perf counters (branch bazel-top-level)
+
+The whole td-deploy stack runs on a Pi 3 (tdplayer.local, deploy from the Mac via
+`bazel run //deploy:tdplayer_pi3.deploy_live -- tdplayer.local`; the runtime is
+cross-compiled to aarch64-linux-gnu via a nixpkgs cross-clang cc toolchain —
+`//runtime_rs/cross`, NOT the host, else a macOS deploy ships a Mach-O).
+
+Shipped this session (all on branch `bazel-top-level`, PR #1):
+- **Native DRM/KMS HDMI sink** (`runtime_rs/src/sink.rs`) — double-buffered +
+  vblank page-flip (tear-free), aspect-fit blit to the display, no video
+  encoding. `drm` crate (Linux-only dep + no-op stub for other hosts). Needs
+  `CAP_SYS_ADMIN` + `video`/`render` groups (set in `deploy/nix/apps.nix`).
+- **Lazy MJPEG** — encode only while a web client is on `:8788`; DRM scans out
+  every frame regardless.
+- **CHOP-eval engine + expr interpreter** — the Twister→`constant1`→`speed1`
+  (integrate)→`transform1.uRotate` chain. `expr.rs` (fasteval + a hand-rolled
+  TD-syntax preprocessor for `op('N')[i]`/`absTime`, pre-compiled per-frame);
+  `Renderer::eval_chops` runs the CHOP DAG (topo) into the store before the
+  shader uniforms read it. MIDI stored RAW 0-127 + indexed keys
+  (`op('midiin1')[i]`→i-th CC). Importer `_collect_chops` walks the CHOP DAG
+  feeding any `op('X')` and emits it (`schedule.json["chops"]`, via `graph.chops`).
+- **Per-node perf counters** (`GET /stats` JSON + ~5s journal log; `TOXC_PROFILE=1`
+  for glFinish-accurate per-step GPU) — labels chop:eval / top:<node> / readback /
+  encode / present / frame.
+- **Design doc** `docs/design/fused-chop-top-mlir.md` — investigation of unifying
+  CHOP+TOP in the tox MLIR dialect + cross-CPU/GPU fusion, profile-guided by /stats.
+
+State / caveats: the banana renders + HDMI is tear-free on-device; the ascii
+artifact is baked from `deploy/prebuilt/ascii` (bridge-compiled with
+`--set-file project1/moviefilein1=…/Banana.tif`). **UNVERIFIED on hardware:** the
+Twister actually spinning the banana (needs the physical MFT + encoders in
+ABSOLUTE 0-127 mode) and the perf counters live — user to test. sbc-deploy vmnet
+design = PR #17 (separate repo). MLIR CHOP+TOP fusion is a follow-up (design only).
+
 ## 2026-09-09 — Bazel is the top-level driver + SD-image targets (repo → td-deploy)
 
 Made Bazel drive the whole project and added Raspberry Pi SD-image / live-deploy
