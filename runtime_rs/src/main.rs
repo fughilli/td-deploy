@@ -409,6 +409,16 @@ fn make_gl(target: &str) -> (egl::DynamicInstance<egl::EGL1_5>, egl::Display, gl
             None => std::ptr::null(),
         })
     };
+    // Report the GL renderer so we can tell VC4 (hardware) from llvmpipe
+    // (software) on the target from the journal. Surfaceless EGL uses the
+    // GPU's DRM render node unless LIBGL_ALWAYS_SOFTWARE=1 forces llvmpipe.
+    unsafe {
+        let rend = gl.get_parameter_string(glow::RENDERER);
+        let ver = gl.get_parameter_string(glow::VERSION);
+        let sw = rend.contains("llvmpipe") || rend.contains("softpipe") || rend.contains("swrast");
+        eprintln!("[gl] target={target} renderer={rend:?} version={ver:?} {}",
+                  if sw { "(SOFTWARE)" } else { "(hardware)" });
+    }
     (egl, display, gl)
 }
 

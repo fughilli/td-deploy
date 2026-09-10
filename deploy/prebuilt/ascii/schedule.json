@@ -1,6 +1,6 @@
 {
   "output": "project1/null1",
-  "target": "desktop_gl",
+  "target": "gles2",
   "steps": [
     {
       "id": "project1/ascii/moviefilein1",

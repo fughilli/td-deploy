@@ -22,10 +22,14 @@ let
   # Baked output config for this image.
   port = 8788;
   fps = 30;
-  # Force Mesa llvmpipe (CPU GL): required on the Pi 3 (VC4 = GLES2-only, can't
-  # run these desktop/GLES3 shaders in HARDWARE) and safe on the Pi 5. Flip to
-  # false on a Pi 5 with a gles2 artifact to use the V3D GPU.
-  softwareGL = true;
+  # GL backend. With a `target=gles2` artifact (shaders translated to GLSL ES 1.00
+  # by compiler/translate_gles.py → shaders_gles/), the Pi 3's VC4 GPU CAN run the
+  # graph in HARDWARE — that's the point of the GLESv2 transpiler backend. Keep
+  # this false so surfaceless EGL binds the GPU's DRM render node (llvmpipe is only
+  # used when LIBGL_ALWAYS_SOFTWARE=1). Set true only to force CPU GL (a desktop_gl
+  # /gles3 artifact on a board with no compatible GPU, or to A/B against llvmpipe).
+  # The runtime logs `[gl] renderer=…` so the journal shows VC4 vs llvmpipe.
+  softwareGL = false;
 
   glLibs = [ pkgs.mesa pkgs.libglvnd pkgs.libdrm ];
   mlir = pkgs.llvmPackages_18;
