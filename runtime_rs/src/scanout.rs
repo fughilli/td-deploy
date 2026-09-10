@@ -66,6 +66,7 @@ mod linux {
     type FnCreateDevice = unsafe extern "C" fn(i32) -> *mut GbmDevice;
     type FnSurfaceCreate =
         unsafe extern "C" fn(*mut GbmDevice, u32, u32, u32, u32) -> *mut GbmSurface;
+    type FnSurfaceDestroy = unsafe extern "C" fn(*mut GbmSurface);
     type FnLockFront = unsafe extern "C" fn(*mut GbmSurface) -> *mut GbmBo;
     type FnReleaseBuffer = unsafe extern "C" fn(*mut GbmSurface, *mut GbmBo);
     type FnBoU32 = unsafe extern "C" fn(*mut GbmBo) -> u32;
@@ -76,6 +77,7 @@ mod linux {
         _lib: Library,
         create_device: FnCreateDevice,
         surface_create: FnSurfaceCreate,
+        surface_destroy: FnSurfaceDestroy,
         lock_front: FnLockFront,
         release_buffer: FnReleaseBuffer,
         bo_get_stride: FnBoU32,
@@ -89,6 +91,8 @@ mod linux {
                 .ok()?;
             let create_device = *lib.get::<FnCreateDevice>(b"gbm_create_device\0").ok()?;
             let surface_create = *lib.get::<FnSurfaceCreate>(b"gbm_surface_create\0").ok()?;
+            let surface_destroy =
+                *lib.get::<FnSurfaceDestroy>(b"gbm_surface_destroy\0").ok()?;
             let lock_front =
                 *lib.get::<FnLockFront>(b"gbm_surface_lock_front_buffer\0").ok()?;
             let release_buffer =
@@ -99,12 +103,22 @@ mod linux {
                 _lib: lib,
                 create_device,
                 surface_create,
+                surface_destroy,
                 lock_front,
                 release_buffer,
                 bo_get_stride,
                 bo_get_handle,
             })
         }
+    }
+
+    // The EGL state bound to the current gbm surface. Recreated on a mode change.
+    struct GlState {
+        egl: egl::DynamicInstance<egl::EGL1_5>,
+        dpy: egl::Display,
+        ctx: egl::Context,
+        cfg: egl::Config,
+        esurf: egl::Surface,
     }
 
     // A gbm bo described to drm's add_framebuffer.
@@ -142,7 +156,8 @@ mod linux {
         prev_bo: *mut GbmBo,
         fbs: HashMap<u32, framebuffer::Handle>, // gem handle -> fb (bo's are recycled)
         started: bool,
-        probe_ctr: u32, // hotplug re-probe throttle while headless
+        probe_ctr: u32, // hotplug re-probe throttle
+        gl: Option<GlState>, // EGL bound to `surf` (set by init_gl; swapped on hotplug)
     }
 
     // Force-probe connectors for a connected display with a usable mode + crtc.
@@ -266,6 +281,7 @@ mod linux {
                 fbs: HashMap::new(),
                 started: false,
                 probe_ctr: 0,
+                gl: None,
             })
         }
 
@@ -279,14 +295,7 @@ mod linux {
         /// Build the EGL context on the GBM platform + a window surface on our gbm
         /// surface, so GL renders straight into scanout-capable buffers. Returns
         /// the loaded glow context + the EGL handles (kept alive by the caller).
-        pub fn init_gl(
-            &self,
-        ) -> (
-            egl::DynamicInstance<egl::EGL1_5>,
-            egl::Display,
-            egl::Surface,
-            glow::Context,
-        ) {
+        pub fn init_gl(&mut self) -> glow::Context {
             const EGL_PLATFORM_GBM_KHR: egl::Enum = 0x31D7;
             const EGL_OPENGL_ES2_BIT: egl::Int = 0x0004;
             let egl =
@@ -369,7 +378,107 @@ mod linux {
                     if sw { "(SOFTWARE)" } else { "(hardware)" }
                 );
             }
-            (egl, dpy, surface, gl)
+            self.gl = Some(GlState { egl, dpy, ctx, cfg, esurf: surface });
+            gl
+        }
+
+        /// eglSwapBuffers the rendered frame onto the gbm surface's back buffer.
+        pub fn swap(&self) {
+            if let Some(g) = &self.gl {
+                let _ = g.egl.swap_buffers(g.dpy, g.esurf);
+            }
+        }
+
+        /// Re-probe for a display and (re)configure scanout for it — including
+        /// recreating the gbm + EGL surface at the display's mode if it differs
+        /// from the current one. Makes HDMI hotplug (and a mode change) work
+        /// without a restart. Throttled; call once per frame.
+        pub fn poll_hotplug(&mut self) {
+            self.probe_ctr = self.probe_ctr.wrapping_add(1);
+            if let Some(co) = self.conn {
+                // Connected: cheap state check (no EDID force) for a disconnect.
+                if self.probe_ctr % 120 != 0 {
+                    return;
+                }
+                if let Ok(info) = self.card.get_connector(co, false) {
+                    if info.state() != connector::State::Connected {
+                        eprintln!("[scanout] HDMI disconnected");
+                        self.conn = None;
+                        self.crtc = None;
+                        self.mode = None;
+                        self.started = false;
+                    }
+                }
+                return;
+            }
+            // Headless: look for a newly-attached display (force EDID probe).
+            if self.probe_ctr % 30 != 0 {
+                return;
+            }
+            let res = match self.card.resource_handles() {
+                Ok(r) => r,
+                Err(_) => return,
+            };
+            if let Some((cr, co, m)) = probe_connector(&self.card, &res, 0) {
+                let (mw, mh) = (m.size().0 as u32, m.size().1 as u32);
+                if mw != self.dw || mh != self.dh {
+                    eprintln!("[scanout] HDMI {}x{} -> recreating surface", mw, mh);
+                    self.recreate_surface(mw, mh);
+                } else {
+                    eprintln!("[scanout] HDMI connected — scanning out {}x{}", mw, mh);
+                }
+                self.crtc = Some(cr);
+                self.conn = Some(co);
+                self.mode = Some(m);
+                self.started = false; // force a fresh set_crtc
+            }
+        }
+
+        // Tear down the current gbm + EGL window surface and build new ones at
+        // (dw,dh), rebinding the GL context. The EGL context/config/display stay.
+        fn recreate_surface(&mut self, dw: u32, dh: u32) {
+            let g = match self.gl.as_mut() {
+                Some(g) => g,
+                None => return,
+            };
+            // Release any buffer we still hold on the old surface, then unbind it.
+            if !self.prev_bo.is_null() {
+                unsafe { (self.gbm.release_buffer)(self.surf, self.prev_bo) };
+                self.prev_bo = std::ptr::null_mut();
+            }
+            let _ = g.egl.make_current(g.dpy, None, None, Some(g.ctx));
+            let _ = g.egl.destroy_surface(g.dpy, g.esurf);
+            unsafe { (self.gbm.surface_destroy)(self.surf) };
+            // Stale framebuffers referenced the old bos; drop the cache.
+            for (_h, fb) in self.fbs.drain() {
+                let _ = self.card.destroy_framebuffer(fb);
+            }
+            let surf = unsafe {
+                (self.gbm.surface_create)(
+                    self.dev,
+                    dw,
+                    dh,
+                    GBM_FORMAT_XRGB8888,
+                    GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING,
+                )
+            };
+            if surf.is_null() {
+                eprintln!("[scanout] gbm_surface_create {dw}x{dh} failed on hotplug");
+                return;
+            }
+            self.surf = surf;
+            let esurf = unsafe {
+                g.egl.create_window_surface(g.dpy, g.cfg, surf as egl::NativeWindowType, None)
+            };
+            match esurf {
+                Ok(s) => {
+                    g.esurf = s;
+                    let _ = g.egl.make_current(g.dpy, Some(s), Some(s), Some(g.ctx));
+                    self.dw = dw;
+                    self.dh = dh;
+                }
+                Err(e) => eprintln!("[scanout] create_window_surface on hotplug failed: {e:?}"),
+            }
         }
 
         /// After the caller has eglSwapBuffers'd, present the freshly rendered
@@ -379,32 +488,6 @@ mod linux {
             let bo = unsafe { (self.gbm.lock_front)(self.surf) };
             if bo.is_null() {
                 return;
-            }
-            // Hotplug: while headless, re-probe periodically for a display that
-            // matches our surface size, then start scanning out.
-            if self.conn.is_none() {
-                self.probe_ctr = self.probe_ctr.wrapping_add(1);
-                if self.probe_ctr % 60 == 0 {
-                    if let Ok(res) = self.card.resource_handles() {
-                        if let Some((cr, co, m)) = probe_connector(&self.card, &res, 0) {
-                            if m.size().0 as u32 == self.dw && m.size().1 as u32 == self.dh {
-                                eprintln!(
-                                    "[scanout] HDMI connected — scanning out {}x{}",
-                                    self.dw, self.dh
-                                );
-                                self.crtc = Some(cr);
-                                self.conn = Some(co);
-                                self.mode = Some(m);
-                                self.started = false;
-                            } else {
-                                eprintln!(
-                                    "[scanout] HDMI up at {}x{} but surface is {}x{} — restart to match",
-                                    m.size().0, m.size().1, self.dw, self.dh
-                                );
-                            }
-                        }
-                    }
-                }
             }
             let handle = (unsafe { (self.gbm.bo_get_handle)(bo) } & 0xffff_ffff) as u32;
             let pitch = unsafe { (self.gbm.bo_get_stride)(bo) };

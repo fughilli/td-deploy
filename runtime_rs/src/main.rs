@@ -1066,31 +1066,26 @@ fn stream(dir: &str, port: u16, fps: f64, target: &str) {
     // buffer — no readback). Fall back to surfaceless GL + the dumb-buffer sink,
     // else MJPEG only.
     let mut sc = scanout::Scanout::open();
-    let egl;
-    let dpy;
     let gl;
-    let surf;
-    let mut drm;
-    if let Some(s) = &sc {
-        let (e, d, sf, g) = s.init_gl();
-        egl = e;
-        dpy = d;
-        gl = g;
-        surf = Some(sf);
-        drm = None;
-    } else {
-        println!("[scanout] no GBM/HDMI — surfaceless GL + dumb-buffer sink / MJPEG");
-        let (e, d, g) = make_gl(target);
-        egl = e;
-        dpy = d;
-        gl = g;
-        surf = None;
-        drm = sink::DrmSink::open();
-        if drm.is_none() {
-            println!("[sink] no DRM/HDMI output (headless or no permission) — MJPEG only");
+    let mut fallback_egl = None; // keeps the surfaceless EGL alive on the fallback path
+    let mut drm = None;
+    match sc.as_mut() {
+        Some(s) => {
+            gl = s.init_gl(); // scanout owns its EGL (so it can recreate on hotplug)
+        }
+        None => {
+            println!("[scanout] no GBM/HDMI — surfaceless GL + dumb-buffer sink / MJPEG");
+            let (e, _d, g) = make_gl(target);
+            gl = g;
+            fallback_egl = Some(e);
+            drm = sink::DrmSink::open();
+            if drm.is_none() {
+                println!("[sink] no DRM/HDMI output (headless or no permission) — MJPEG only");
+            }
         }
     }
-    let hdmi = surf.is_some() || drm.is_some();
+    let _ = &fallback_egl; // keep-alive only
+    let hdmi = sc.is_some() || drm.is_some();
 
     let mut r = Renderer::new(&gl, dir);
     let prof = r.prof();
@@ -1112,15 +1107,20 @@ fn stream(dir: &str, port: u16, fps: f64, target: &str) {
             thread::sleep(Duration::from_millis(100));
             continue;
         }
+        // HDMI hotplug: pick up a newly-attached display (or a mode change) and
+        // reconfigure scanout, before we render this frame.
+        if let Some(s) = sc.as_mut() {
+            s.poll_hotplug();
+        }
         let t = start.elapsed().as_secs_f64();
         let tf = Instant::now();
         r.cook(t); // graph passes into FBOs (no readback)
 
         // HDMI, zero-copy: GPU-blit the final texture into the scanout surface.
-        if let (Some(sf), Some(s)) = (&surf, &mut sc) {
+        if let Some(s) = sc.as_mut() {
             let tp = Instant::now();
             r.present_scanout(s.dw as i32, s.dh as i32);
-            let _ = egl.swap_buffers(dpy, *sf);
+            s.swap();
             let tc = Instant::now();
             prof_add(&prof, "present:blit", tp.elapsed().as_secs_f64());
             s.flip(); // page-flip the freshly rendered bo + vblank wait
