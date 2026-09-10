@@ -502,6 +502,8 @@ struct Renderer<'a> {
     uniform_progs: HashMap<(usize, String), expr::Program>,
     speed_state: RefCell<HashMap<(String, usize), f64>>,
     last_t: Cell<f64>,
+    prof: Prof,
+    profile_gpu: bool,
 }
 
 // A CHOP with its constant channel exprs pre-compiled (fasteval).
@@ -517,6 +519,48 @@ fn chop_get(store: &Chops, name: &str, chan: &str) -> f64 {
 }
 fn chop_set(store: &Chops, name: &str, chan: &str, v: f64) {
     store.lock().unwrap().entry(name.to_string()).or_default().insert(chan.to_string(), v);
+}
+
+// ---------------- performance counters ----------------
+// Per-compute-node timing, accumulated on the target so we can see where the
+// frame budget goes (and later do profile-guided fusion). Labels: "chop:eval",
+// "top:<node>", "readback", "encode", "present", "frame". Exposed at /stats
+// (JSON) and logged periodically. GPU work on llvmpipe lands mostly at readback
+// unless TOXC_PROFILE forces a glFinish per step for accurate per-step attribution.
+type Prof = Arc<Mutex<std::collections::BTreeMap<String, (f64, u64)>>>;
+
+fn prof_add(p: &Prof, label: &str, secs: f64) {
+    let mut m = p.lock().unwrap();
+    let e = m.entry(label.to_string()).or_insert((0.0, 0));
+    e.0 += secs * 1000.0; // store milliseconds
+    e.1 += 1;
+}
+
+fn prof_json(p: &Prof) -> String {
+    let m = p.lock().unwrap();
+    let mut out = String::from("{\n");
+    let n = m.len();
+    for (i, (k, (tot, cnt))) in m.iter().enumerate() {
+        let avg = if *cnt > 0 { tot / *cnt as f64 } else { 0.0 };
+        out.push_str(&format!(
+            "  \"{k}\": {{\"avg_ms\": {avg:.3}, \"count\": {cnt}, \"total_ms\": {tot:.1}}}{}\n",
+            if i + 1 < n { "," } else { "" }
+        ));
+    }
+    out.push('}');
+    out
+}
+
+fn prof_summary(p: &Prof) -> String {
+    let m = p.lock().unwrap();
+    let mut rows: Vec<(String, f64, u64)> = m.iter().map(|(k, (t, c))| (k.clone(), *t, *c)).collect();
+    rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut s = String::from("[profile]");
+    for (k, tot, cnt) in rows.iter().take(8) {
+        let avg = if *cnt > 0 { tot / *cnt as f64 } else { 0.0 };
+        s.push_str(&format!(" {k}={avg:.2}ms"));
+    }
+    s
 }
 
 // Resolve a shader path, redirecting to the translated ES1.00 set on gles2.
@@ -570,9 +614,15 @@ impl<'a> Renderer<'a> {
             gles2, quad: None,
             chop_progs, uniform_progs,
             speed_state: RefCell::new(HashMap::new()), last_t: Cell::new(0.0),
+            prof: Arc::new(Mutex::new(Default::default())),
+            profile_gpu: std::env::var("TOXC_PROFILE").is_ok(),
         };
         r.setup();
         r
+    }
+
+    fn prof(&self) -> Prof {
+        self.prof.clone()
     }
 
     // Evaluate the control-rate CHOP DAG (dependency order) into the store, so
@@ -676,7 +726,9 @@ impl<'a> Renderer<'a> {
 
     fn render(&mut self, t: f64) -> (Vec<u8>, i32, i32) {
         let gl = self.gl;
+        let tc = Instant::now();
         self.eval_chops(t); // control-rate pass -> store, before the shader uniforms read it
+        prof_add(&self.prof, "chop:eval", tc.elapsed().as_secs_f64());
         for (si, st) in self.sched.steps.iter().enumerate() {
             if st.kind == "passthrough" {
                 if let Some(src) = st.inputs.first() {
@@ -685,6 +737,7 @@ impl<'a> Renderer<'a> {
                     self.size.insert(st.id.clone(), b);
                 }
             } else if st.kind == "shader" {
+                let ts = Instant::now();
                 unsafe {
                     gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo[&st.id]));
                     gl.viewport(0, 0, st.w, st.h);
@@ -749,11 +802,18 @@ impl<'a> Renderer<'a> {
                     } else {
                         gl.draw_arrays(glow::TRIANGLES, 0, 3);
                     }
+                    // Accurate per-step GPU time needs a finish (opt-in — it stalls
+                    // the pipeline); otherwise the deferred work lands at readback.
+                    if self.profile_gpu {
+                        gl.finish();
+                    }
                 }
+                prof_add(&self.prof, &format!("top:{}", st.id), ts.elapsed().as_secs_f64());
             }
         }
         let (ow, oh) = self.size[&self.sched.output];
         let mut raw = vec![0u8; (ow * oh * 4) as usize];
+        let tr = Instant::now();
         unsafe {
             let f = gl.create_framebuffer().unwrap();
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f));
@@ -762,6 +822,7 @@ impl<'a> Renderer<'a> {
             gl.read_pixels(0, 0, ow, oh, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(&mut raw));
             gl.delete_framebuffer(f);
         }
+        prof_add(&self.prof, "readback", tr.elapsed().as_secs_f64());
         (flip_vert(&raw, ow as usize, oh as usize), ow, oh)
     }
 }
@@ -782,13 +843,14 @@ align-items:center;justify-content:center;height:100vh'>\
 
 // Count of clients currently pulling frames. The render loop only renders +
 // encodes while this is > 0, so an idle box (no viewer) spends no CPU/GPU.
-fn serve_http(port: u16, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<AtomicUsize>) {
+fn serve_http(port: u16, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<AtomicUsize>, prof: Prof) {
     let l = TcpListener::bind(("0.0.0.0", port)).expect("bind http");
-    println!("[stream] native MJPEG on http://0.0.0.0:{port}/");
+    println!("[stream] native MJPEG on http://0.0.0.0:{port}/  (perf counters at /stats)");
     for c in l.incoming().flatten() {
         let latest = latest.clone();
         let clients = clients.clone();
-        thread::spawn(move || handle_conn(c, latest, clients));
+        let prof = prof.clone();
+        thread::spawn(move || handle_conn(c, latest, clients, prof));
     }
 }
 
@@ -800,12 +862,18 @@ impl Drop for ClientGuard {
     }
 }
 
-fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<AtomicUsize>) {
+fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<AtomicUsize>, prof: Prof) {
     let mut buf = [0u8; 2048];
     let n = s.read(&mut buf).unwrap_or(0);
     let req = String::from_utf8_lossy(&buf[..n]);
     let path = req.split_whitespace().nth(1).unwrap_or("/");
-    if path.starts_with("/stream") {
+    if path.starts_with("/stats") {
+        // Per-node performance counters (JSON) — where the frame budget goes.
+        let body = prof_json(&prof);
+        let hdr = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\n\r\n", body.len());
+        let _ = s.write_all(hdr.as_bytes());
+        let _ = s.write_all(body.as_bytes());
+    } else if path.starts_with("/stream") {
         clients.fetch_add(1, Ordering::Relaxed);
         let _guard = ClientGuard(clients.clone()); // wakes the render loop; drop pauses it
         if s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-cache\r\n\r\n").is_err() {
@@ -839,12 +907,14 @@ fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<Atomi
 
 fn stream(gl: &glow::Context, dir: &str, port: u16, fps: f64) {
     let mut r = Renderer::new(gl, dir);
+    let prof = r.prof();
     let latest: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let clients: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
     {
         let latest = latest.clone();
         let clients = clients.clone();
-        thread::spawn(move || serve_http(port, latest, clients));
+        let prof = prof.clone();
+        thread::spawn(move || serve_http(port, latest, clients, prof));
     }
     // HDMI output: scan out straight to the display (no encoding). None when
     // headless / no display / no modeset permission — then it's MJPEG-only.
@@ -854,6 +924,7 @@ fn stream(gl: &glow::Context, dir: &str, port: u16, fps: f64) {
     }
     let start = Instant::now();
     let period = Duration::from_secs_f64(1.0 / fps.max(1.0));
+    let mut last_log = Instant::now();
     loop {
         let has_client = clients.load(Ordering::Relaxed) > 0;
         // Render when the HDMI display is attached OR a web client is watching;
@@ -864,13 +935,17 @@ fn stream(gl: &glow::Context, dir: &str, port: u16, fps: f64) {
             continue;
         }
         let t = start.elapsed().as_secs_f64();
+        let tf = Instant::now();
         let (buf, w, h) = r.render(t);
         // HDMI: present every frame directly, no round-trip through encoding.
         if let Some(d) = &mut drm {
+            let tp = Instant::now();
             d.present(&buf, w as usize, h as usize);
+            prof_add(&prof, "present", tp.elapsed().as_secs_f64());
         }
         // Web: encode a JPEG only while someone is actually connected.
         if has_client {
+            let te = Instant::now();
             let mut rgb = Vec::with_capacity((w * h * 3) as usize);
             for px in buf.chunks_exact(4) {
                 rgb.extend_from_slice(&px[..3]);
@@ -880,6 +955,13 @@ fn stream(gl: &glow::Context, dir: &str, port: u16, fps: f64) {
                 .encode(&rgb, w as u32, h as u32, image::ExtendedColorType::Rgb8)
                 .unwrap();
             *latest.lock().unwrap() = jpg;
+            prof_add(&prof, "encode", te.elapsed().as_secs_f64());
+        }
+        prof_add(&prof, "frame", tf.elapsed().as_secs_f64());
+        // Periodic profile summary to the journal (every ~5s).
+        if last_log.elapsed().as_secs_f64() >= 5.0 {
+            println!("{}", prof_summary(&prof));
+            last_log = Instant::now();
         }
         let ft = start.elapsed().as_secs_f64() - t;
         if let Some(s) = period.checked_sub(Duration::from_secs_f64(ft.max(0.0))) {
