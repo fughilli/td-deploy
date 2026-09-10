@@ -6,7 +6,9 @@ Full TD Python is out of scope; this evaluates simple arithmetic over a small,
 safe namespace (absTime, math) with builtins disabled. Unsupported/failing
 expressions fall back to a default so a frame still renders.
 """
+
 from __future__ import annotations
+
 import math
 
 
@@ -18,16 +20,28 @@ class _AbsTime:
 
 
 _SAFE = {
-    "math": math, "pi": math.pi, "sin": math.sin, "cos": math.cos, "tan": math.tan,
-    "abs": abs, "min": min, "max": max, "pow": pow, "sqrt": math.sqrt,
-    "radians": math.radians, "degrees": math.degrees, "floor": math.floor,
-    "ceil": math.ceil, "mod": math.fmod,
+    "math": math,
+    "pi": math.pi,
+    "sin": math.sin,
+    "cos": math.cos,
+    "tan": math.tan,
+    "abs": abs,
+    "min": min,
+    "max": max,
+    "pow": pow,
+    "sqrt": math.sqrt,
+    "radians": math.radians,
+    "degrees": math.degrees,
+    "floor": math.floor,
+    "ceil": math.ceil,
+    "mod": math.fmod,
 }
 
 
 class _ChopAccessor:
     """Backs `op('name')['chan']` in parameter expressions, reading live values
     from a ChopStore (OSC/MIDI). Returns 0.0 when unset / no store."""
+
     def __init__(self, store, name):
         self._store, self._name = store, name
 
@@ -43,8 +57,7 @@ def eval_expr(expr, t: float, frame: int, default: float = 0.0, chops=None) -> f
     s = str(expr).strip().strip('"').strip("'")
     if s == "":
         return default
-    ns = {**_SAFE, "absTime": _AbsTime(t, frame),
-          "op": lambda name: _ChopAccessor(chops, name)}
+    ns = {**_SAFE, "absTime": _AbsTime(t, frame), "op": lambda name: _ChopAccessor(chops, name)}
     try:
         return float(eval(s, {"__builtins__": {}}, ns))
     except Exception:
@@ -65,7 +78,7 @@ def value_or_expr(raw: str, default: float) -> object:
     if q != -1:
         end = s.find('"', q + 1)
         if end != -1:
-            return s[q + 1:end]
+            return s[q + 1 : end]
     toks = s.split()
     tok = toks[0] if toks else ""
     try:

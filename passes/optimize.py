@@ -13,9 +13,11 @@ Each pass mutates the graph and appends human-readable notes to `report`.
 The op-specific knowledge lives in small handlers keyed by `node.op`, mirroring
 the kernel-registry design so coverage grows by adding entries, not editing passes.
 """
+
 from __future__ import annotations
 
 import math
+
 from ir.graph import Graph
 
 
@@ -49,9 +51,13 @@ def infer_format(g: Graph, report: list[str], out_res: int = 256) -> None:
             n.out_type = dict(src.out_type)
         else:
             raise ValueError(f"{nid}: op {n.op!r} has no inputs and declares no format")
-    report.append("infer_format: " + ", ".join(
-        f"{nid.split('/')[-1]}={n.out_type['w']}x{n.out_type['h']}"
-        for nid, n in g.nodes.items()))
+    report.append(
+        "infer_format: "
+        + ", ".join(
+            f"{nid.split('/')[-1]}={n.out_type['w']}x{n.out_type['h']}"
+            for nid, n in g.nodes.items()
+        )
+    )
 
 
 def _gaussian_weights(sigma: float, cap: int = 20) -> tuple[int, list[float]]:
@@ -71,7 +77,8 @@ def constant_fold(g: Graph, report: list[str]) -> None:
             n.params["_weights"] = weights
             report.append(
                 f"constant_fold: {nid} sigma={sigma} -> radius={radius}, "
-                f"{2*radius+1} weights (baked)")
+                f"{2*radius+1} weights (baked)"
+            )
 
 
 def optimize(g: Graph, out_res: int = 256) -> list[str]:

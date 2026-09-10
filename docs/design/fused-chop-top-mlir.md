@@ -2,7 +2,7 @@
 
 **Status:** Investigation / design (2026-09-10). Extends
 [`compiler-backend.md`](compiler-backend.md) (the `tox` dialect + lowering) with a
-concrete plan for optimizing *across* the CHOP↔TOP (CPU↔GPU) boundary, and ties
+concrete plan for optimizing _across_ the CHOP↔TOP (CPU↔GPU) boundary, and ties
 it to the on-target performance counters (`/stats`).
 
 ## 1. The problem
@@ -16,8 +16,8 @@ Data crosses the boundary in **both directions**, often repeatedly in one graph:
 
 - **CHOP → TOP** — a CHOP value drives a TOP parameter (our banana:
   `midiin1 → constant1 → speed1 → transform1.uRotate`). Today that's a shader
-  *uniform* written each frame.
-- **TOP → CHOP** — an *analysis* CHOP reads a reduced TOP (average luminance,
+  _uniform_ written each frame.
+- **TOP → CHOP** — an _analysis_ CHOP reads a reduced TOP (average luminance,
   histogram, a picked pixel) → feeds it back into control logic.
 - **CHOP ↔ TOP round-trips** — the two above chained (analyze a TOP → compute →
   drive another TOP), sometimes several hops.
@@ -29,8 +29,8 @@ analysis) CPU readbacks:
   hand-rolled per-frame CHOP eval (`Renderer::eval_chops`).
 - TOPs: **GLSL** shaders run by the GL runtime.
 
-Because fasteval is a **runtime interpreter**, the CHOP computation is *opaque to
-the compiler*. Nothing can be optimized across the boundary: a constant CHOP
+Because fasteval is a **runtime interpreter**, the CHOP computation is _opaque to
+the compiler_. Nothing can be optimized across the boundary: a constant CHOP
 can't be folded into a shader, a CHOP→TOP→CHOP round-trip can't be collapsed, and
 adjacent TOP passes can't be fused with the control logic that feeds them. **This
 is the ceiling the current architecture hits, and why we want one IR.**
@@ -39,7 +39,7 @@ is the ceiling the current architecture hits, and why we want one IR.**
 
 Put **both CHOPs and TOPs in one IR** — the existing `tox` dialect — so the
 compiler sees the whole computation and can transform across the boundary
-*before* deciding what runs where. MLIR is built for exactly this: multiple
+_before_ deciding what runs where. MLIR is built for exactly this: multiple
 dialects (control/CPU: `arith`/`math`/`linalg`/`vector`; image/GPU:
 `gpu`/`spirv`/`linalg-on-tensors`) coexisting and being progressively lowered,
 with a `gpu` dialect that models the **host/device split explicitly**
@@ -57,7 +57,7 @@ then run cross-boundary passes.
 
 1. **CHOP→TOP uniform specialization / constant folding.** A CHOP subgraph
    feeding a TOP uniform: if it folds to a constant (or a cheap function of
-   `absTime`), *inline it into the shader* (specialize the SPIR-V), removing a
+   `absTime`), _inline it into the shader_ (specialize the SPIR-V), removing a
    uniform write and enabling downstream shader constant-folding. If it's
    genuinely dynamic (MIDI-driven), still **fuse the whole CHOP chain into one
    compiled CPU function** (constant→speed→math → a single `arith`/`math` kernel)
@@ -101,16 +101,16 @@ then run cross-boundary passes.
 ```
 
 Key idea: **placement + fusion happen on the unified graph, before the CPU/GPU
-split.** The split is an *output* of the cost model, not a fixed rule ("CHOP =
+split.** The split is an _output_ of the cost model, not a fixed rule ("CHOP =
 CPU, TOP = GPU"). On a real GPU (Pi 5 V3D) the boundary is physical (bus
 transfers matter); on **llvmpipe (Pi 3)** GPU==CPU, so the boundary is mostly
-*dispatch + readback overhead* — fusion still wins (fewer passes, fewer
+_dispatch + readback overhead_ — fusion still wins (fewer passes, fewer
 readbacks, one compiled kernel), it just weights the cost model differently.
 
 ## 5. Profile-guided optimization (why the perf counters exist)
 
 The placement/fusion decisions need a **cost model**, and the best cost data is
-*measured on the target*. The per-node counters just added
+_measured on the target_. The per-node counters just added
 (`runtime_rs/src/main.rs`, `GET /stats`) give exactly that: `chop:eval`,
 `top:<node>` (per pass, `TOXC_PROFILE=1` for glFinish-accurate GPU time),
 `readback`, `encode`, `present`, `frame`.
@@ -124,6 +124,7 @@ compile (cold cost model) → deploy → collect /stats on the real board
 ```
 
 Concrete uses of the profile:
+
 - A `top:<node>` that dominates → candidate for fusion with its neighbour or a
   cheaper lowering (e.g. separable blur, mip reduction).
 - A large `readback` relative to `frame` → a TOP→CHOP analysis that should be a
@@ -131,7 +132,7 @@ Concrete uses of the profile:
 - `chop:eval` non-trivial → fuse the CHOP DAG into one compiled kernel (opt #1).
 - The measured costs become edge/node weights the placement pass minimizes
   (min-cut style: partition the graph to minimize `Σ compute + Σ boundary
-  transfer`).
+transfer`).
 
 ## 6. Relationship to fasteval
 
@@ -154,7 +155,7 @@ it from single exprs to the whole CHOP DAG (constant/speed/math/… as `tox` ops
   CHOP→uniform scalar edge). `compiler/chop_to_tox.py` emits the DAG from the
   importer's `chops` JSON; it round-trips through `toxc-opt`
   (`compiler/nix/shell.sh compiler/build/tools/toxc-opt/toxc-opt <(python3
-  compiler/chop_to_tox.py deploy/prebuilt/ascii/schedule.json)`). Hermetic test:
+compiler/chop_to_tox.py deploy/prebuilt/ascii/schedule.json)`). Hermetic test:
   `//compiler:test_chop_to_tox`. No optimization yet — structural parity with the
   runtime CHOP eval.
 - **P1 — CHOP fusion + compile. ✅ lowering landed (2026-09-10).**
@@ -162,7 +163,7 @@ it from single exprs to the whole CHOP DAG (constant/speed/math/… as `tox` ops
   function `@chops(%t,%dt,%frame, <sources…>, <speed-states-in…>) -> (<outputs…>)`
   — every channel is an SSA value, so the store only crosses the ABI for live
   sources, the loop-carried Speed accumulators, and the outputs (a Speed output
-  *is* its next-frame state). Constant exprs lower through the M1 arith/math path
+  _is_ its next-frame state). Constant exprs lower through the M1 arith/math path
   (extended for integer/double `op('X')[c][s]` indices); Speed = `state + in*dt`;
   Null/Select = SSA passthrough. It compiles mlir-opt → mlir-translate → clang →
   `.so` and is **bit-parity (|Δ|≤1e-9) vs the reference evaluator**
@@ -184,7 +185,7 @@ it from single exprs to the whole CHOP DAG (constant/speed/math/… as `tox` ops
   a Crop feeding **only** a Transform is two single-tap coordinate remaps, so they
   compose into one pass (source → crop-UV → transform-UV → one sample), dropping
   the crop's FBO. The ascii graph went 4 shader passes → 3; verified bit-faithful
-  on-device (banana identical) and `//:fusion_test`. *Next:* the general case —
+  on-device (banana identical) and `//:fusion_test`. _Next:_ the general case —
   `glsl2` (Sobel, a neighbour-sampling GLSL TOP) feeds only `glsl3` (ASCII), so
   inline glsl2's fragment into glsl3 (glsl3 recomputes the 3×3 Sobel of its input
   in-place) to drop the glsl2 FBO → 2 passes. That needs shader-body inlining
@@ -210,7 +211,7 @@ it from single exprs to the whole CHOP DAG (constant/speed/math/… as `tox` ops
   (`compiler/translate_gles.py`, glslang + SPIRV-Cross). The fused GPU side plugs
   into it.
 - **Feedback/state.** The `tox.feedback` loop-carried model (`@cook(%state) ->
-  (%out, %state')`) already covers integrators like the Speed CHOP; the CHOP
+(%out, %state')`) already covers integrators like the Speed CHOP; the CHOP
   integrator (our `speed1`) is the CPU-side instance of the same pattern.
 - **Correctness gate.** The Python reference runtime stays the conformance oracle
   at every phase (bit-diff the fused output vs the reference), same as M2.

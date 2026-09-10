@@ -8,6 +8,7 @@ transpiled MLIR to aarch64 shared libs and translate the shaders to GLSL ES.
 Same command sequence as compiler/build_exprs.sh + the in-image runCommand, but
 driven by a Toolchain (native in dev, aarch64-cross in the shipped app).
 """
+
 from __future__ import annotations
 
 import os
@@ -15,8 +16,12 @@ import os
 from .progress import Progress
 from .toolchain import Toolchain
 
-_MLIR_LOWER = ["--convert-math-to-llvm", "--convert-arith-to-llvm",
-               "--convert-func-to-llvm", "--reconcile-unrealized-casts"]
+_MLIR_LOWER = [
+    "--convert-math-to-llvm",
+    "--convert-arith-to-llvm",
+    "--convert-func-to-llvm",
+    "--reconcile-unrealized-casts",
+]
 
 
 def _build_so(tc: Toolchain, art: str, name: str, progress: Progress) -> bool:
@@ -28,11 +33,13 @@ def _build_so(tc: Toolchain, art: str, name: str, progress: Progress) -> bool:
     os.makedirs(out, exist_ok=True)
     low, ll, so = (os.path.join(out, f) for f in ("low.mlir", f"{name}.ll", f"lib{name}.so"))
     progress.log(f"codegen {name}.mlir -> {name}/lib{name}.so")
-    tc.run_pipeline([
-        ["mlir-opt", mlir, *_MLIR_LOWER, "-o", low],
-        ["mlir-translate", low, "--mlir-to-llvmir", "-o", ll],
-        ["clang", *tc.clang_flags, "-O2", "-shared", "-fPIC", ll, "-o", so, "-lm"],
-    ])
+    tc.run_pipeline(
+        [
+            ["mlir-opt", mlir, *_MLIR_LOWER, "-o", low],
+            ["mlir-translate", low, "--mlir-to-llvmir", "-o", ll],
+            ["clang", *tc.clang_flags, "-O2", "-shared", "-fPIC", ll, "-o", so, "-lm"],
+        ]
+    )
     return True
 
 

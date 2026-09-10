@@ -53,12 +53,13 @@ start the aarch64 builder first: `bazel run @sbc_deploy//:linux_builder`.
 outputs as `build_data` and hands them to the Nix flake (`deploy/nix`) through
 sbc-deploy's `sbcBuildData` (keyed by basename):
 
-| Bazel target | key | role |
-|---|---|---|
-| `//deploy:toxc_artifact` | `toxc_artifact` | portable artifact: `schedule.json` + `shaders/` + `assets/` + `exprs.mlir` + `services.json` (arch-independent) |
-| `//runtime_rs:toxc_runtime` | `toxc_runtime` | the dynamic aarch64 Rust runtime |
+| Bazel target                | key             | role                                                                                                            |
+| --------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
+| `//deploy:toxc_artifact`    | `toxc_artifact` | portable artifact: `schedule.json` + `shaders/` + `assets/` + `exprs.mlir` + `services.json` (arch-independent) |
+| `//runtime_rs:toxc_runtime` | `toxc_runtime`  | the dynamic aarch64 Rust runtime                                                                                |
 
 `deploy/nix/apps.nix` then, at image-build time:
+
 1. **finishes the artifact for aarch64** — compiles `exprs.mlir → exprs/libexprs.so`
    with the image's own LLVM 18 + clang (the Bazel-emitted artifact is
    arch-independent on purpose; the native `.so` must match the Pi).

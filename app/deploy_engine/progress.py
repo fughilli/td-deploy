@@ -4,6 +4,7 @@ A deploy is a fixed sequence of phases; each phase reports a 0..1 fraction and l
 lines. `Progress` is a tiny sink the engine calls; the CLI prints, the sidecar
 serializes to JSON lines for Electron.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,14 +12,14 @@ from typing import Callable
 
 # Ordered phases of a full deploy, with a rough weight for an overall bar.
 PHASES: list[tuple[str, float]] = [
-    ("expand", 0.10),    # toeexpand the .toe
-    ("import", 0.05),    # tree -> IR
+    ("expand", 0.10),  # toeexpand the .toe
+    ("import", 0.05),  # tree -> IR
     ("optimize", 0.05),  # graph passes
-    ("lower", 0.05),     # IR -> plan (shaders)
-    ("emit", 0.10),      # write artifact (schedule/shaders/assets/mlir)
-    ("finish", 0.35),    # host codegen: mlir->.so (aarch64) + gles translate
-    ("push", 0.20),      # rsync artifact to the Pi
-    ("restart", 0.10),   # swap + restart service
+    ("lower", 0.05),  # IR -> plan (shaders)
+    ("emit", 0.10),  # write artifact (schedule/shaders/assets/mlir)
+    ("finish", 0.35),  # host codegen: mlir->.so (aarch64) + gles translate
+    ("push", 0.20),  # rsync artifact to the Pi
+    ("restart", 0.10),  # swap + restart service
 ]
 _PHASE_ORDER = {name: i for i, (name, _) in enumerate(PHASES)}
 
@@ -27,6 +28,7 @@ _PHASE_ORDER = {name: i for i, (name, _) in enumerate(PHASES)}
 class Progress:
     """Callbacks: `on_event(phase, frac, message)` for progress, `on_log(line)` for
     free-text log. Defaults print nothing (engine stays quiet unless wired up)."""
+
     on_event: Callable[[str, float, str], None] = lambda phase, frac, msg: None
     on_log: Callable[[str], None] = lambda line: None
 
@@ -47,6 +49,7 @@ class Progress:
 
 def cli_progress(verbose: bool = True) -> Progress:
     """A Progress that prints phase transitions + logs to stdout."""
+
     def ev(phase: str, frac: float, msg: str) -> None:
         pct = int(100 * Progress().overall(phase, frac))
         print(f"[{pct:3d}%] {phase:<9} {msg}")

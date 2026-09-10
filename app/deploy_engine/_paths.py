@@ -5,6 +5,7 @@ Works both from the repo checkout and, later, from a PyInstaller bundle where th
 compiler modules are collected next to the engine (REPO_ROOT resolves to the
 bundle root via sys._MEIPASS in that case).
 """
+
 from __future__ import annotations
 
 import os

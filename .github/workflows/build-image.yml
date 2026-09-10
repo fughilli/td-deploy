@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to attach the image to"
+        description: 'Release tag to attach the image to'
         required: true
 
 permissions:
@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   image:
-    runs-on: ubuntu-24.04-arm      # native aarch64 -> no cross/QEMU
+    runs-on: ubuntu-24.04-arm # native aarch64 -> no cross/QEMU
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }

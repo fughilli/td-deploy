@@ -4,6 +4,7 @@ Verify the expr transpiler: transpile -> lower (mlir-opt) -> LLVM IR
 the Python reference evaluator (runtime.expr.eval_expr) over sample inputs.
 Run inside compiler/nix/shell.sh (needs mlir-opt/translate/clang + python3).
 """
+
 import ctypes
 import os
 import subprocess
@@ -11,12 +12,17 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from expr_transpile import transpile          # noqa: E402
-from runtime.expr import eval_expr            # noqa: E402
-from runtime.services import ChopStore        # noqa: E402
+from expr_transpile import transpile  # noqa: E402
 
-LOWER = ["--convert-math-to-llvm", "--convert-arith-to-llvm",
-         "--convert-func-to-llvm", "--reconcile-unrealized-casts"]
+from runtime.expr import eval_expr  # noqa: E402
+from runtime.services import ChopStore  # noqa: E402
+
+LOWER = [
+    "--convert-math-to-llvm",
+    "--convert-arith-to-llvm",
+    "--convert-func-to-llvm",
+    "--reconcile-unrealized-casts",
+]
 
 
 def build(mlir: str, fname: str) -> str:
@@ -49,7 +55,7 @@ EXPRS = [
     "op('osc1')['rot'] * 2 + 1",
     "(absTime.seconds + op('osc1')['x']) / 2 - 3",
     "sin(absTime.seconds) * op('lfo')['amp']",
-    "me.time.frame",          # unsupported -> fallback
+    "me.time.frame",  # unsupported -> fallback
 ]
 SAMPLES = [(0.5,), (1.25,), (3.0,), (0.7, 0.4), (2.0,)]
 
@@ -67,14 +73,18 @@ for i, expr in enumerate(EXPRS):
     fn.argtypes = [ctypes.c_double] * len(inputs)
     # sample values: cycle a couple of test vectors per input arity
     import itertools
+
     passed = True
     for vec in itertools.islice(itertools.product([0.5, 1.25, 3.0, 0.7], repeat=len(inputs)), 8):
         native = fn(*[ctypes.c_double(v) for v in vec])
         expect = ref(expr, inputs, vec)
         if abs(native - expect) > 1e-6:
-            print(f"[{i}] MISMATCH {expr!r} inputs={inputs} vec={vec}: "
-                  f"native={native} ref={expect}")
-            passed = False; ok = False
+            print(
+                f"[{i}] MISMATCH {expr!r} inputs={inputs} vec={vec}: "
+                f"native={native} ref={expect}"
+            )
+            passed = False
+            ok = False
     print(f"[{i}] {'OK  ' if passed else 'FAIL'} {expr!r}  inputs={inputs}")
 
 print("\nALL PASS" if ok else "\nFAILURES")

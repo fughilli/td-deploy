@@ -18,6 +18,7 @@ the DAG into one compiled kernel; see the design doc.
 
 Pure Python (no MLIR needed to emit); round-trips through toxc-opt.
 """
+
 from __future__ import annotations
 
 import re
@@ -46,7 +47,7 @@ def _oprefs(exprs) -> list[str]:
 def emit(chops: list[dict], *, source_width: int = 16, func_name: str = "chops") -> str:
     """Return a `tox` MLIR module string for the CHOP DAG."""
     defined = {c["name"] for c in chops}
-    width: dict[str, int] = {}   # ssa name (sans %) -> channel count
+    width: dict[str, int] = {}  # ssa name (sans %) -> channel count
     lines: list[str] = []
 
     # External sources: any op('X') referenced by a channel expr that isn't a
@@ -84,7 +85,8 @@ def emit(chops: list[dict], *, source_width: int = 16, func_name: str = "chops")
                 chstr = ", ".join(_mlir_str(x) for x in chans)
                 lines.append(
                     f"  {res} = tox.chop_expr({operands}) [{chstr}] : "
-                    f"({intypes}) -> !tox.chop<{n}>")
+                    f"({intypes}) -> !tox.chop<{n}>"
+                )
             width[rkey] = n
 
         elif typ == "speed":
@@ -92,7 +94,8 @@ def emit(chops: list[dict], *, source_width: int = 16, func_name: str = "chops")
             n = w(src)
             lines.append(
                 f"  {res} = tox.chop_speed {_ssa(src)} : "
-                f"(!tox.chop<{w(src)}>) -> !tox.chop<{n}>")
+                f"(!tox.chop<{w(src)}>) -> !tox.chop<{n}>"
+            )
             width[rkey] = n
 
         elif typ in _PASSTHROUGH and inputs:
@@ -100,7 +103,8 @@ def emit(chops: list[dict], *, source_width: int = 16, func_name: str = "chops")
             n = w(src)
             lines.append(
                 f"  {res} = tox.chop_select {_ssa(src)} : "
-                f"(!tox.chop<{w(src)}>) -> !tox.chop<{n}>")
+                f"(!tox.chop<{w(src)}>) -> !tox.chop<{n}>"
+            )
             width[rkey] = n
 
         else:
@@ -111,13 +115,12 @@ def emit(chops: list[dict], *, source_width: int = 16, func_name: str = "chops")
             n = len(chans) or (w(inputs[0]) if inputs else 1)
             chstr = ", ".join(_mlir_str(x) for x in chans)
             lines.append(
-                f"  {res} = tox.chop_expr({operands}) [{chstr}] : "
-                f"({intypes}) -> !tox.chop<{n}>")
+                f"  {res} = tox.chop_expr({operands}) [{chstr}] : " f"({intypes}) -> !tox.chop<{n}>"
+            )
             width[rkey] = n
 
     body = "\n".join(lines)
-    return (f"module {{\n  func.func @{func_name}() {{\n{body}\n"
-            f"    return\n  }}\n}}\n")
+    return f"module {{\n  func.func @{func_name}() {{\n{body}\n" f"    return\n  }}\n}}\n"
 
 
 def _mlir_str(s: str) -> str:
@@ -127,6 +130,7 @@ def _mlir_str(s: str) -> str:
 if __name__ == "__main__":
     import json
     import sys
+
     src = sys.argv[1] if len(sys.argv) > 1 else "/dev/stdin"
     obj = json.load(open(src))
     chops = obj.get("chops", obj) if isinstance(obj, dict) else obj

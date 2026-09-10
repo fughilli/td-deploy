@@ -21,16 +21,27 @@ Channel semantics match runtime_rs eval_chops / the fasteval preprocess:
 Unsupported constant exprs raise Unsupported so the caller can keep that CHOP on
 the fasteval path (partial lowering) — parity is preserved either way.
 """
+
 from __future__ import annotations
 
 import ast
 import math
 
-_BINOPS = {ast.Add: "arith.addf", ast.Sub: "arith.subf",
-           ast.Mult: "arith.mulf", ast.Div: "arith.divf"}
-_FUNCS = {"sin": "math.sin", "cos": "math.cos", "tan": "math.tan",
-          "sqrt": "math.sqrt", "floor": "math.floor", "ceil": "math.ceil",
-          "abs": "math.absf"}
+_BINOPS = {
+    ast.Add: "arith.addf",
+    ast.Sub: "arith.subf",
+    ast.Mult: "arith.mulf",
+    ast.Div: "arith.divf",
+}
+_FUNCS = {
+    "sin": "math.sin",
+    "cos": "math.cos",
+    "tan": "math.tan",
+    "sqrt": "math.sqrt",
+    "floor": "math.floor",
+    "ceil": "math.ceil",
+    "abs": "math.absf",
+}
 _PASSTHROUGH = {"null", "select", "out", "output"}
 
 
@@ -40,24 +51,32 @@ class Unsupported(Exception):
 
 def _san(s: str) -> str:
     import re
+
     return re.sub(r"[^A-Za-z0-9_]", "_", s)
 
 
 def _is_op_call(n) -> bool:
-    return (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-            and n.func.id == "op" and n.args
-            and isinstance(n.args[0], ast.Constant)
-            and isinstance(n.args[0].value, str))
+    return (
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "op"
+        and n.args
+        and isinstance(n.args[0], ast.Constant)
+        and isinstance(n.args[0].value, str)
+    )
 
 
 def _index_str(sl) -> str:
-    if isinstance(sl, ast.Index):        # py<3.9
+    if isinstance(sl, ast.Index):  # py<3.9
         sl = sl.value
     if isinstance(sl, ast.Constant):
         v = sl.value
         return str(int(v)) if isinstance(v, (int, float)) else str(v)
-    if isinstance(sl, ast.UnaryOp) and isinstance(sl.op, ast.USub) \
-            and isinstance(sl.operand, ast.Constant):
+    if (
+        isinstance(sl, ast.UnaryOp)
+        and isinstance(sl.op, ast.USub)
+        and isinstance(sl.operand, ast.Constant)
+    ):
         return str(-int(sl.operand.value))
     raise Unsupported("non-constant channel index")
 
@@ -67,7 +86,7 @@ def _op_ref(node):
     if not isinstance(node, ast.Subscript):
         return None
     inner = node.value
-    if _is_op_call(inner):                                   # op('X')[c]
+    if _is_op_call(inner):  # op('X')[c]
         return inner.args[0].value, _index_str(node.slice)
     if isinstance(inner, ast.Subscript) and _is_op_call(inner.value):
         return inner.value.args[0].value, _index_str(inner.slice)  # op('X')[c][s]
@@ -76,14 +95,17 @@ def _op_ref(node):
 
 class _Fn:
     """Emits SSA into a shared function body; resolves op()/absTime to SSA."""
+
     def __init__(self, env: dict, t_ssa: str, frame_ssa: str):
         self.lines: list[str] = []
         self.n = 0
-        self.env = env            # (name, chan) -> ssa ; sources+states pre-bound
+        self.env = env  # (name, chan) -> ssa ; sources+states pre-bound
         self.t, self.frame = t_ssa, frame_ssa
 
     def _fresh(self) -> str:
-        v = f"%v{self.n}"; self.n += 1; return v
+        v = f"%v{self.n}"
+        self.n += 1
+        return v
 
     def _const(self, val: float) -> str:
         v = self._fresh()
@@ -96,17 +118,25 @@ class _Fn:
                 raise Unsupported(f"constant {node.value!r}")
             return self._const(node.value)
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-            a = self.emit(node.operand); v = self._fresh()
-            self.lines.append(f"{v} = arith.negf {a} : f64"); return v
+            a = self.emit(node.operand)
+            v = self._fresh()
+            self.lines.append(f"{v} = arith.negf {a} : f64")
+            return v
         if isinstance(node, ast.BinOp):
             if isinstance(node.op, ast.Pow):
-                a = self.emit(node.left); b = self.emit(node.right); v = self._fresh()
-                self.lines.append(f"{v} = math.powf {a}, {b} : f64"); return v
+                a = self.emit(node.left)
+                b = self.emit(node.right)
+                v = self._fresh()
+                self.lines.append(f"{v} = math.powf {a}, {b} : f64")
+                return v
             op = _BINOPS.get(type(node.op))
             if not op:
                 raise Unsupported(f"binop {type(node.op).__name__}")
-            a = self.emit(node.left); b = self.emit(node.right); v = self._fresh()
-            self.lines.append(f"{v} = {op} {a}, {b} : f64"); return v
+            a = self.emit(node.left)
+            b = self.emit(node.right)
+            v = self._fresh()
+            self.lines.append(f"{v} = {op} {a}, {b} : f64")
+            return v
         if isinstance(node, ast.Name):
             if node.id == "pi":
                 return self._const(math.pi)
@@ -123,8 +153,10 @@ class _Fn:
         if isinstance(node, ast.Call):
             fn = node.func.id if isinstance(node.func, ast.Name) else None
             if fn in _FUNCS and len(node.args) == 1:
-                a = self.emit(node.args[0]); v = self._fresh()
-                self.lines.append(f"{v} = {_FUNCS[fn]} {a} : f64"); return v
+                a = self.emit(node.args[0])
+                v = self._fresh()
+                self.lines.append(f"{v} = {_FUNCS[fn]} {a} : f64")
+                return v
             raise Unsupported(f"call {fn!r}")
         if isinstance(node, ast.Subscript):
             ref = _op_ref(node)
@@ -167,13 +199,13 @@ def lower(chops: list[dict], func_name: str = "chops"):
 
     env: dict[tuple[str, str], str] = {}
     args = ["%t: f64", "%dt: f64", "%frame: f64"]
-    for (n, ch) in sources:
+    for n, ch in sources:
         a = f"%src_{_san(n)}_{_san(ch)}"
         env[(n, ch)] = a
         args.append(f"{a}: f64")
-    for (n, ch) in states:
+    for n, ch in states:
         a = f"%st_{_san(n)}_{_san(ch)}"
-        env[("__state__", n)] = a          # carried-in accumulator
+        env[("__state__", n)] = a  # carried-in accumulator
         args.append(f"{a}: f64")
 
     fn = _Fn(env, "%t", "%frame")
@@ -194,14 +226,15 @@ def lower(chops: list[dict], func_name: str = "chops"):
             iv = env.get((inps[0], "0")) if inps else None
             if iv is None:
                 iv = fn._const(0.0)
-            m = fn._fresh(); fn.lines.append(f"{m} = arith.mulf {iv}, %dt : f64")
+            m = fn._fresh()
+            fn.lines.append(f"{m} = arith.mulf {iv}, %dt : f64")
             s = fn._fresh()
             fn.lines.append(f"{s} = arith.addf {env[('__state__', name)]}, {m} : f64")
             bind(name, "0", s)
         else:
             inps = c.get("inputs") or []
             iv = env.get((inps[0], "0")) if inps else fn._const(0.0)
-            bind(name, "0", iv)            # passthrough: alias the SSA value
+            bind(name, "0", iv)  # passthrough: alias the SSA value
 
     if not outputs:
         raise Unsupported("empty CHOP DAG")
@@ -209,10 +242,12 @@ def lower(chops: list[dict], func_name: str = "chops"):
     ret_ty = ", ".join("f64" for _ in outputs)
     ret_ty = ret_ty if len(outputs) == 1 else f"({ret_ty})"
     body = "\n    ".join(fn.lines)
-    mlir = (f"func.func @{func_name}({', '.join(args)}) -> {ret_ty} {{\n"
-            f"    {body}\n"
-            f"    return {ret_ssa} : {', '.join('f64' for _ in outputs)}\n"
-            f"}}\n")
+    mlir = (
+        f"func.func @{func_name}({', '.join(args)}) -> {ret_ty} {{\n"
+        f"    {body}\n"
+        f"    return {ret_ssa} : {', '.join('f64' for _ in outputs)}\n"
+        f"}}\n"
+    )
     mlir += _wrapper(abi_of(sources, states, outputs), func_name)
     return mlir, abi_of(sources, states, outputs)
 
@@ -238,23 +273,22 @@ def _wrapper(abi: dict, func_name: str) -> str:
     lines = [f"llvm.func @{func_name}_v(%in: !llvm.ptr, %out: !llvm.ptr) {{"]
     argv = []
     for i in range(n_in):
-        lines.append(f"  %pi{i} = llvm.getelementptr %in[{i}] : "
-                     f"(!llvm.ptr) -> !llvm.ptr, f64")
+        lines.append(f"  %pi{i} = llvm.getelementptr %in[{i}] : " f"(!llvm.ptr) -> !llvm.ptr, f64")
         lines.append(f"  %ai{i} = llvm.load %pi{i} : !llvm.ptr -> f64")
         argv.append(f"%ai{i}")
     intys = ", ".join("f64" for _ in range(n_in))
     outtys = ", ".join("f64" for _ in range(n_out))
     if n_out == 1:
-        lines.append(f"  %r = func.call @{func_name}({', '.join(argv)}) : "
-                     f"({intys}) -> f64")
+        lines.append(f"  %r = func.call @{func_name}({', '.join(argv)}) : " f"({intys}) -> f64")
         res = ["%r"]
     else:
-        lines.append(f"  %r:{n_out} = func.call @{func_name}({', '.join(argv)}) : "
-                     f"({intys}) -> ({outtys})")
+        lines.append(
+            f"  %r:{n_out} = func.call @{func_name}({', '.join(argv)}) : "
+            f"({intys}) -> ({outtys})"
+        )
         res = [f"%r#{i}" for i in range(n_out)]
     for i in range(n_out):
-        lines.append(f"  %po{i} = llvm.getelementptr %out[{i}] : "
-                     f"(!llvm.ptr) -> !llvm.ptr, f64")
+        lines.append(f"  %po{i} = llvm.getelementptr %out[{i}] : " f"(!llvm.ptr) -> !llvm.ptr, f64")
         lines.append(f"  llvm.store {res[i]}, %po{i} : f64, !llvm.ptr")
     lines.append("  llvm.return")
     lines.append("}")
@@ -264,6 +298,7 @@ def _wrapper(abi: dict, func_name: str) -> str:
 if __name__ == "__main__":
     import json
     import sys
+
     obj = json.load(open(sys.argv[1]))
     chops = obj.get("chops", obj) if isinstance(obj, dict) else obj
     mlir, abi = lower(chops)

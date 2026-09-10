@@ -55,12 +55,11 @@ on-device (banana identical) + `//:fusion_test`. The general `glsl2→glsl3`
 GPU headroom, not fps, since the frame is vblank-locked). Also: `cli.py` now sends
 the host bridge's `X-Auth-Token` (the bridge requires a token now).
 
-
-
 ## 2026-09-10 (2) — VC4 GPU acceleration + fused-graph P0 (branch bazel-top-level)
 
 **VC4 hardware GL.** The GLESv2 transpiler backend is now stood up in the deploy,
 so the Pi 3 renders the graph on its VideoCore-IV GPU instead of llvmpipe:
+
 - The ascii artifact is compiled `target=gles2` and its shaders are translated to
   GLSL ES 1.00 (`compiler/translate_gles.py`: desktop GLSL → glslang → SPIR-V →
   spirv-cross `--es --version 100` → `%` legalization) into `shaders_gles/`, baked
@@ -76,6 +75,7 @@ so the Pi 3 renders the graph on its VideoCore-IV GPU instead of llvmpipe:
 
 **Fused CHOP+TOP MLIR — P0 (one graph).** The `tox` dialect now represents the
 CHOP DAG next to the TOPs (`docs/design/fused-chop-top-mlir.md` §7):
+
 - New `!tox.chop<N>` type + ops `chop_source`/`chop_constant`/`chop_expr`/
   `chop_speed`/`chop_select`/`chop_sample` (`compiler/include/Tox/*.td`).
 - `compiler/chop_to_tox.py` emits the DAG from the importer's `chops` JSON; it
@@ -112,6 +112,7 @@ cross-compiled to aarch64-linux-gnu via a nixpkgs cross-clang cc toolchain —
 `//runtime_rs/cross`, NOT the host, else a macOS deploy ships a Mach-O).
 
 Shipped this session (all on branch `bazel-top-level`, PR #1):
+
 - **Native DRM/KMS HDMI sink** (`runtime_rs/src/sink.rs`) — double-buffered +
   vblank page-flip (tear-free), aspect-fit blit to the display, no video
   encoding. `drm` crate (Linux-only dep + no-op stub for other hosts). Needs
@@ -149,7 +150,7 @@ the `toxc` compiler name is unchanged (module, `//:toxc`, MLIR dialect).
   (pinned nixpkgs 25.05 for Mesa), and a `git_override` on `@sbc_deploy`. Needed
   `.bazelrc: common --experimental_isolated_extension_usages` (sbc_deploy uses it).
 - **Python pipeline** as a library graph in the root BUILD (`//ir //importer
-  //passes //lowering //runtime //runtime_expr`, all `imports=["."]` for the flat
+//passes //lowering //runtime //runtime_expr`, all `imports=["."]` for the flat
   layout), `//:toxc` py_binary, `//:expand` (.toe→IR), `//compiler:emit` + the
   `build_exprs`/`build_shaders_gles` nix tools, and a hermetic `//:pipeline_test`.
 - **Rust runtime** `//runtime_rs:toxc_runtime` (rust_binary). NB: it `dlopen`s
@@ -194,6 +195,7 @@ Still stub: `crop` (passthrough). Non-animated sources uploaded once (no video d
 (Sobel `glsl2`, ASCII sprite-lookup `glsl3`) execute on Mesa GL via a TD-compat shim.
 
 **toeexpand format (reverse-engineered, see importer/samples/ascii_project):**
+
 - `<op>.n`: line1 `Family:type`; `inputs { idx \t src }` = wiring; `flags … display on`
   marks the output TOP; `<op>.parm` = `name mode value…`.
 - GLSL TOP `.parm` has `pixeldat <datname>`; the DAT's `<name>.text` holds the shader,
@@ -219,12 +221,13 @@ Toolchain is Nix-hermetic but wrapped by an sh_binary (not rules_nixpkgs build-h
 ## 2026-09-05 — Host bridge + downstream pipeline validated end-to-end
 
 **Built:**
+
 - `hostbridge/td_host_server.py` — zero-dep Mac HTTP bridge to `toeexpand`/`toecollapse`
   (+ experimental TD render). Endpoints `/health`, `/expand`, `/collapse`, `/render`.
   Robust to unknown toeexpand output layout (captures whatever it produces). Smoke-tested
   in-container (health/routing/auth/501-when-missing all green). **User runs it on the Mac.**
 - Full **downstream pipeline** (everything after import), on the `image → GLSL gaussian blur
-  → display` slice: `ir/graph.py` (typed IR + delay-edge/topo model) → `passes/optimize.py`
+→ display` slice: `ir/graph.py` (typed IR + delay-edge/topo model) → `passes/optimize.py`
   (dead-node-elim, infer_format, constant_fold: sigma→radius+weights baked into GLSL) →
   `lowering/` (GLSL codegen + desktop-GL⇄GLES `#version` shim) → `runtime/` two backends.
 - **Two runtime backends cross-validate**: real offscreen OpenGL (EGL-surfaceless / Mesa
@@ -246,6 +249,7 @@ Pi/HDMI sink + sbc-deploy. `--target gles` shaders are emitted but not yet run o
 a Raspberry Pi (TD removed from the deployment path).
 
 **Key findings this session:**
+
 - **TDXN is the wrong import path** — it needs a live TouchDesigner runtime via MCP tools and
   drops GLSL/feedback detail. Verified against the Embody/tdxn spec.
 - **`toeexpand`** (TD-bundled CLI) is the real import path: a standalone file transform
@@ -258,6 +262,7 @@ a Raspberry Pi (TD removed from the deployment path).
 (custom `tox` dialect) · import via `toeexpand`.
 
 **Next (M0, gating — do before designing further):**
+
 1. Confirm `toeexpand` runs headless on Linux without a license/GPU; document its real output
    directory/file layout (couldn't find this in public docs).
 2. Confirm EGL + GLES 3.1 offscreen render works on the target Pi.

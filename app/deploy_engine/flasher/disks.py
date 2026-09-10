@@ -7,23 +7,24 @@ filters to external/USB/SD before a device is ever shown to the user, and the
 parsers are split from the command execution so they can be unit-tested against
 captured `diskutil`/`Get-Disk`/`lsblk` output with no hardware.
 """
+
 from __future__ import annotations
 
 import json
 import plistlib
 import subprocess
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Optional
 
 
 @dataclass
 class Disk:
-    id: str          # device path to write: /dev/rdiskN, \\.\PhysicalDriveN, /dev/sdX
-    name: str        # human label (model / volume name)
-    size: int        # bytes
+    id: str  # device path to write: /dev/rdiskN, \\.\PhysicalDriveN, /dev/sdX
+    name: str  # human label (model / volume name)
+    size: int  # bytes
     removable: bool  # always True for anything we surface
-    bus: str = ""    # USB / SD / internal ...
+    bus: str = ""  # USB / SD / internal ...
 
     @property
     def size_gb(self) -> float:
@@ -46,26 +47,29 @@ def parse_macos(list_plist: bytes, info_plists: dict[str, bytes]) -> list[Disk]:
     out: list[Disk] = []
     for dev in top.get("WholeDisks", []):
         info = plistlib.loads(info_plists[dev])
-        if info.get("Internal", True):        # hard guard: never internal disks
+        if info.get("Internal", True):  # hard guard: never internal disks
             continue
         if not info.get("RemovableMediaOrExternalDevice", info.get("Ejectable", True)):
             continue
         name = info.get("MediaName") or info.get("IORegistryEntryName") or dev
-        out.append(Disk(
-            id=f"/dev/r{dev}",                 # raw node = much faster writes
-            name=str(name),
-            size=int(info.get("TotalSize") or info.get("Size") or 0),
-            removable=True,
-            bus=str(info.get("BusProtocol", "")),
-        ))
+        out.append(
+            Disk(
+                id=f"/dev/r{dev}",  # raw node = much faster writes
+                name=str(name),
+                size=int(info.get("TotalSize") or info.get("Size") or 0),
+                removable=True,
+                bus=str(info.get("BusProtocol", "")),
+            )
+        )
     return out
 
 
 def _list_macos() -> list[Disk]:
     list_plist = _run(["diskutil", "list", "-plist", "external", "physical"]).encode()
     top = plistlib.loads(list_plist)
-    infos = {dev: _run(["diskutil", "info", "-plist", dev]).encode()
-             for dev in top.get("WholeDisks", [])}
+    infos = {
+        dev: _run(["diskutil", "info", "-plist", dev]).encode() for dev in top.get("WholeDisks", [])
+    }
     return parse_macos(list_plist, infos)
 
 
@@ -82,15 +86,17 @@ def parse_windows(js: str) -> list[Disk]:
         data = [data]
     out: list[Disk] = []
     for d in data:
-        if d.get("IsSystem") or d.get("IsBoot"):   # hard guard
+        if d.get("IsSystem") or d.get("IsBoot"):  # hard guard
             continue
-        out.append(Disk(
-            id=f"\\\\.\\PhysicalDrive{d['Number']}",
-            name=str(d.get("FriendlyName") or f"Disk {d['Number']}"),
-            size=int(d.get("Size") or 0),
-            removable=True,
-            bus=str(d.get("BusType", "")),
-        ))
+        out.append(
+            Disk(
+                id=f"\\\\.\\PhysicalDrive{d['Number']}",
+                name=str(d.get("FriendlyName") or f"Disk {d['Number']}"),
+                size=int(d.get("Size") or 0),
+                removable=True,
+                bus=str(d.get("BusType", "")),
+            )
+        )
     return out
 
 
@@ -108,13 +114,15 @@ def parse_linux(js: str) -> list[Disk]:
             continue
         if not (d.get("rm") or d.get("hotplug")):  # hard guard: removable only
             continue
-        out.append(Disk(
-            id=f"/dev/{d['name']}",
-            name=str(d.get("model") or d["name"]).strip(),
-            size=int(d.get("size") or 0),
-            removable=True,
-            bus="usb" if d.get("hotplug") else "",
-        ))
+        out.append(
+            Disk(
+                id=f"/dev/{d['name']}",
+                name=str(d.get("model") or d["name"]).strip(),
+                size=int(d.get("size") or 0),
+                removable=True,
+                bus="usb" if d.get("hotplug") else "",
+            )
+        )
     return out
 
 

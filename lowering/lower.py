@@ -13,10 +13,12 @@ Step kinds:
 Both backends read the same plan: the GL backend uses `vertex`/`fragment`, the
 CPU reference uses `op`+`params`. GL-only ops (glsl_top) have no CPU kernel.
 """
+
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+
 from ir.graph import Graph
 from lowering import shaders
 from runtime.expr import value_or_expr
@@ -38,13 +40,13 @@ def _crop_edge(params, name, unit_name, size, default):
 class Step:
     node_id: str
     op: str
-    kind: str                       # "source" | "shader" | "passthrough"
-    target: dict                    # {"w","h","fmt"}
+    kind: str  # "source" | "shader" | "passthrough"
+    target: dict  # {"w","h","fmt"}
     inputs: list[str] = field(default_factory=list)
     vertex: str | None = None
     fragment: str | None = None
-    sampler_array: str | None = None    # e.g. "sTD2DInputs" (else bind tex0,tex1,..)
-    uniforms: dict = field(default_factory=dict)   # exact-GLSL-name -> (type, value)
+    sampler_array: str | None = None  # e.g. "sTD2DInputs" (else bind tex0,tex1,..)
+    uniforms: dict = field(default_factory=dict)  # exact-GLSL-name -> (type, value)
     # per-frame uniforms: name -> {"expr": <literal|expr str>, "mul": float}
     time_uniforms: dict = field(default_factory=dict)
     params: dict = field(default_factory=dict)
@@ -71,11 +73,17 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
 
     if n.op == "gaussian_blur":
         radius, weights = n.params["_radius"], n.params["_weights"]
-        return Step(nid, n.op, "shader", ot, inputs=inputs,
-                    vertex=shaders.vertex(target),
-                    fragment=shaders.gaussian_blur(target, radius, weights),
-                    uniforms={"uResolution": ("vec2", [float(ot["w"]), float(ot["h"])])},
-                    params={"_radius": radius, "_weights": weights})
+        return Step(
+            nid,
+            n.op,
+            "shader",
+            ot,
+            inputs=inputs,
+            vertex=shaders.vertex(target),
+            fragment=shaders.gaussian_blur(target, radius, weights),
+            uniforms={"uResolution": ("vec2", [float(ot["w"]), float(ot["h"])])},
+            params={"_radius": radius, "_weights": weights},
+        )
 
     if n.op == "glsl_top":
         src = n.params.get("_shader") or shaders.passthrough(target)
@@ -84,11 +92,18 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
             it = g.nodes[src_id].out_type
             w, h = float(it["w"]), float(it["h"])
             uniforms[f"uTD2DInfos[{i}].res"] = ("vec4", [1.0 / w, 1.0 / h, w, h])
-        return Step(nid, n.op, "shader", ot, inputs=inputs,
-                    vertex=shaders.vertex_td(target),
-                    fragment=shaders.td_glsl_top(target, len(inputs), src),
-                    sampler_array="sTD2DInputs", uniforms=uniforms,
-                    params=dict(n.params))
+        return Step(
+            nid,
+            n.op,
+            "shader",
+            ot,
+            inputs=inputs,
+            vertex=shaders.vertex_td(target),
+            fragment=shaders.td_glsl_top(target, len(inputs), src),
+            sampler_array="sTD2DInputs",
+            uniforms=uniforms,
+            params=dict(n.params),
+        )
 
     if n.op == "crop":
         it = g.nodes[inputs[0]].out_type if inputs else {"w": 1, "h": 1}
@@ -97,36 +112,50 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
         right = _crop_edge(n.params, "cropright", "croprightunit", iw, 1.0)
         bottom = _crop_edge(n.params, "cropbottom", "cropbottomunit", ih, 0.0)
         top = _crop_edge(n.params, "croptop", "croptopunit", ih, 1.0)
-        return Step(nid, n.op, "shader", ot, inputs=inputs,
-                    vertex=shaders.vertex(target),
-                    fragment=shaders.crop_top(target),
-                    uniforms={"uCropRect": ("vec4", [left, right, bottom, top])},
-                    params=dict(n.params))
+        return Step(
+            nid,
+            n.op,
+            "shader",
+            ot,
+            inputs=inputs,
+            vertex=shaders.vertex(target),
+            fragment=shaders.crop_top(target),
+            uniforms={"uCropRect": ("vec4", [left, right, bottom, top])},
+            params=dict(n.params),
+        )
 
     if n.op == "transform":
+
         def _p(names, default):
             for nm in names:
                 if nm in n.params:
                     return value_or_expr(n.params[nm], default)  # float OR expr string
             return default
+
         # Every transform component can be a per-frame TD expression (e.g. scale =
         # op('midiin1')[1]/64), so lower them ALL as time-uniforms (evaluated each
         # frame via the compiled/interpreted expr path), like rotate. TD names:
         # translate tx/ty, rotate, per-axis Scale sx/sy, "Uniform Scale" scale.
-        rot = _p(["rotate", "r"], 0.0)         # degrees
-        uscale = _p(["scale"], 1.0)            # uniform-scale multiplier
+        rot = _p(["rotate", "r"], 0.0)  # degrees
+        uscale = _p(["scale"], 1.0)  # uniform-scale multiplier
         usc = float(uscale) if isinstance(uscale, (int, float)) else 1.0
-        return Step(nid, n.op, "shader", ot, inputs=inputs,
-                    vertex=shaders.vertex(target),
-                    fragment=shaders.transform_top(target),
-                    time_uniforms={
-                        "uRotate": {"expr": rot, "mul": math.pi / 180.0},
-                        "uTranslateX": {"expr": _p(["tx", "translatex"], 0.0), "mul": 1.0},
-                        "uTranslateY": {"expr": _p(["ty", "translatey"], 0.0), "mul": 1.0},
-                        "uScaleX": {"expr": _p(["sx", "scalex"], 1.0), "mul": usc},
-                        "uScaleY": {"expr": _p(["sy", "scaley"], 1.0), "mul": usc},
-                    },
-                    params=dict(n.params))
+        return Step(
+            nid,
+            n.op,
+            "shader",
+            ot,
+            inputs=inputs,
+            vertex=shaders.vertex(target),
+            fragment=shaders.transform_top(target),
+            time_uniforms={
+                "uRotate": {"expr": rot, "mul": math.pi / 180.0},
+                "uTranslateX": {"expr": _p(["tx", "translatex"], 0.0), "mul": 1.0},
+                "uTranslateY": {"expr": _p(["ty", "translatey"], 0.0), "mul": 1.0},
+                "uScaleX": {"expr": _p(["sx", "scalex"], 1.0), "mul": usc},
+                "uScaleY": {"expr": _p(["sy", "scaley"], 1.0), "mul": usc},
+            },
+            params=dict(n.params),
+        )
 
     if n.op in PASSTHROUGH_OPS:
         return Step(nid, n.op, "passthrough", ot, inputs=inputs, params=dict(n.params))
@@ -157,8 +186,8 @@ def _fuse_coord_remaps(steps: list[Step], target: str) -> list[Step]:
         if consumers.get(c.node_id) != [t.node_id] or len(c.inputs) != 1:
             continue
         t.fragment = shaders.crop_transform_top(target)
-        t.uniforms = {**c.uniforms, **t.uniforms}   # uCropRect + uTranslate/uScale
-        t.inputs = list(c.inputs)                    # sample the source directly
+        t.uniforms = {**c.uniforms, **t.uniforms}  # uCropRect + uTranslate/uScale
+        t.inputs = list(c.inputs)  # sample the source directly
         t.params = {**c.params, **t.params, "_fused_from": c.node_id}
         drop.add(c.node_id)
     return [s for s in steps if s.node_id not in drop]

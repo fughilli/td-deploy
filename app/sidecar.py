@@ -31,6 +31,7 @@ frozen binary flashes as root without shipping a separate interpreter.
 All engine work runs on a single worker thread (coalescing: rapid saves collapse to
 one deploy); stdout writes are serialized so events never interleave.
 """
+
 from __future__ import annotations
 
 import json
@@ -64,8 +65,11 @@ def _base_image_tag() -> str:
     """The base image tag this build was stamped with (build_app writes version.json
     next to the frozen bundle / repo root); 'latest' when unstamped."""
     from deploy_engine import _paths
-    for cand in (os.path.join(_paths.REPO_ROOT, "version.json"),
-                 os.path.join(os.path.dirname(os.path.abspath(__file__)), "version.json")):
+
+    for cand in (
+        os.path.join(_paths.REPO_ROOT, "version.json"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "version.json"),
+    ):
         try:
             with open(cand) as f:
                 return json.load(f).get("base_image_tag") or "latest"
@@ -77,9 +81,13 @@ def _base_image_tag() -> str:
 class Sidecar:
     def __init__(self) -> None:
         self.settings = {
-            "pi": "tdplayer.local", "target": "gles2", "key": None,
-            "set_file": [], "bridge": os.environ.get("TOXC_HOST"),
-            "user": "root", "base_image_tag": _base_image_tag(),
+            "pi": "tdplayer.local",
+            "target": "gles2",
+            "key": None,
+            "set_file": [],
+            "bridge": os.environ.get("TOXC_HOST"),
+            "user": "root",
+            "base_image_tag": _base_image_tag(),
         }
         self.toe: str | None = None
         self._deploy_req = threading.Event()
@@ -90,9 +98,15 @@ class Sidecar:
     # --- progress -> stdout events ---
     def _progress(self) -> Progress:
         return Progress(
-            on_event=lambda ph, fr, msg: emit({
-                "type": "progress", "phase": ph, "frac": fr,
-                "overall": _overall(ph, fr), "message": msg}),
+            on_event=lambda ph, fr, msg: emit(
+                {
+                    "type": "progress",
+                    "phase": ph,
+                    "frac": fr,
+                    "overall": _overall(ph, fr),
+                    "message": msg,
+                }
+            ),
             on_log=lambda line: emit({"type": "log", "line": line.rstrip()}),
         )
 
@@ -107,9 +121,16 @@ class Sidecar:
             s = dict(self.settings)
             emit({"type": "start", "toe": toe})
             try:
-                res = deploy(toe, s["pi"], target=s["target"], set_file=s["set_file"],
-                             bridge=s["bridge"], user=s["user"], key=s["key"],
-                             progress=self._progress())
+                res = deploy(
+                    toe,
+                    s["pi"],
+                    target=s["target"],
+                    set_file=s["set_file"],
+                    bridge=s["bridge"],
+                    user=s["user"],
+                    key=s["key"],
+                    progress=self._progress(),
+                )
                 emit({"type": "done", "ok": True, "staging": res["staging"]})
             except Exception as e:  # noqa: BLE001 - surface every failure to the UI
                 emit({"type": "error", "message": str(e)})
@@ -150,27 +171,36 @@ class Sidecar:
     # --- SD flashing (own thread; download base image then raw-write) ---
     def _flash_worker(self, disk_id: str, tag: str, image: str | None) -> None:
         from deploy_engine import download, flasher
+
         try:
             disk = flasher.require_removable(disk_id)  # confirm before any work
             emit({"type": "flash_start", "disk": disk.to_dict(), "tag": tag})
             if not image:
                 emit({"type": "log", "line": f"fetching base image {tag}"})
                 image = download.fetch_base_image(
-                    tag, on_progress=lambda f, m: emit({
-                        "type": "flash_progress", "stage": "download", "frac": f, "message": m}))
+                    tag,
+                    on_progress=lambda f, m: emit(
+                        {"type": "flash_progress", "stage": "download", "frac": f, "message": m}
+                    ),
+                )
             emit({"type": "log", "line": f"writing {image} -> {disk.name}"})
-            flasher.flash(image, disk_id, on_progress=lambda f, m: emit({
-                "type": "flash_progress", "stage": "write", "frac": f, "message": m}))
+            flasher.flash(
+                image,
+                disk_id,
+                on_progress=lambda f, m: emit(
+                    {"type": "flash_progress", "stage": "write", "frac": f, "message": m}
+                ),
+            )
             emit({"type": "flash_done", "disk": disk.to_dict()})
         except Exception as e:  # noqa: BLE001 - surface to UI
             emit({"type": "flash_error", "message": str(e)})
 
     def start_flash(self, disk_id: str, tag: str, image: str | None) -> None:
-        threading.Thread(target=self._flash_worker,
-                         args=(disk_id, tag, image), daemon=True).start()
+        threading.Thread(target=self._flash_worker, args=(disk_id, tag, image), daemon=True).start()
 
     def list_disks(self) -> None:
         from deploy_engine import flasher
+
         try:
             emit({"type": "disks", "disks": [d.to_dict() for d in flasher.list_disks()]})
         except Exception as e:  # noqa: BLE001
@@ -208,6 +238,7 @@ def main() -> int:
     # writer and nothing else. Must be handled before anything touches stdout.
     if len(sys.argv) >= 2 and sys.argv[1] == "--raw-write":
         from deploy_engine.flasher import rawwrite
+
         return rawwrite.main(sys.argv[2:])
 
     sc = Sidecar()

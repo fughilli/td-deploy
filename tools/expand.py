@@ -6,6 +6,7 @@ hermetic: it uploads the `.toe`/`.tox` to the Mac TouchDesigner host bridge
 (`toeexpand`, default host.docker.internal:8770) and imports the result. Commit
 the emitted `.json` and build from it with `bazel run //:toxc -- <that>.json ...`.
 """
+
 from __future__ import annotations
 
 import argparse

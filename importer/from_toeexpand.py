@@ -27,6 +27,7 @@ This importer:
 Scope (M1): the TOP render path. Non-TOP inputs to GLSL (CHOP/DAT uniforms) are
 noted in the coverage report and skipped.
 """
+
 from __future__ import annotations
 
 import os
@@ -36,7 +37,6 @@ from dataclasses import dataclass, field
 
 from ir.graph import Graph, Node, Port
 
-
 # --- TD op type -> toxc kernel -------------------------------------------------
 # value None = structural passthrough (identity on input 0).
 OP_MAP = {
@@ -45,22 +45,22 @@ OP_MAP = {
     ("TOP", "crop"): "crop",
     ("TOP", "transform"): "transform",
     ("TOP", "level"): "level",
-    ("TOP", "in"): None,       # COMP input  -> passthrough after flattening
-    ("TOP", "out"): None,      # COMP output -> passthrough
-    ("TOP", "null"): None,     # null        -> passthrough (often the display node)
+    ("TOP", "in"): None,  # COMP input  -> passthrough after flattening
+    ("TOP", "out"): None,  # COMP output -> passthrough
+    ("TOP", "null"): None,  # null        -> passthrough (often the display node)
 }
 
 
 # --- raw file parsing ----------------------------------------------------------
 @dataclass
 class RawOp:
-    path: str                       # full path id, e.g. "project1/ascii/glsl2"
-    family: str                     # TOP / CHOP / SOP / DAT / COMP...
-    optype: str                     # crop / glsl / moviefilein / ...
+    path: str  # full path id, e.g. "project1/ascii/glsl2"
+    family: str  # TOP / CHOP / SOP / DAT / COMP...
+    optype: str  # crop / glsl / moviefilein / ...
     inputs: list[tuple[int, str]] = field(default_factory=list)  # (index, relname)
     flags: dict = field(default_factory=dict)
-    params: dict = field(default_factory=dict)   # name -> value token(s)
-    text: str | None = None         # payload text (for text DATs)
+    params: dict = field(default_factory=dict)  # name -> value token(s)
+    text: str | None = None  # payload text (for text DATs)
 
 
 def _parse_n(text: str) -> tuple[str, str, list[tuple[int, str]], dict]:
@@ -77,11 +77,14 @@ def _parse_n(text: str) -> tuple[str, str, list[tuple[int, str]], dict]:
             while j < len(toks):
                 t = toks[j]
                 if j + 1 < len(toks) and toks[j + 1] in ("on", "off"):
-                    flags[t] = toks[j + 1] == "on"; j += 2
+                    flags[t] = toks[j + 1] == "on"
+                    j += 2
                 elif j + 1 < len(toks) and toks[j + 1].lstrip("-").isdigit():
-                    flags[t] = int(toks[j + 1]); j += 2
+                    flags[t] = int(toks[j + 1])
+                    j += 2
                 else:
-                    flags[t] = True; j += 1
+                    flags[t] = True
+                    j += 1
         elif ln == "inputs":
             i += 2  # skip 'inputs' and '{'
             while i < len(lines) and lines[i].strip() != "}":
@@ -116,9 +119,9 @@ def _strip_dat_text(raw: bytes) -> str:
     star = raw.find(b"*")
     if star != -1:
         for p in range(star + 1, min(star + 64, len(raw) - 4)):
-            (L,) = struct.unpack(">I", raw[p:p + 4])
+            (L,) = struct.unpack(">I", raw[p : p + 4])
             if p + 4 + L == len(raw):
-                return raw[p + 4:].decode("utf-8", "replace")
+                return raw[p + 4 :].decode("utf-8", "replace")
     # fallback: drop the first line and a leading '*'
     body = raw.split(b"\n", 1)[-1]
     return body.lstrip(b"*").decode("utf-8", "replace")
@@ -227,7 +230,7 @@ def _param_expr(raw) -> str:
         if a != -1:
             b = s.find(q, a + 1)
             if b != -1:
-                return s[a + 1:b]
+                return s[a + 1 : b]
     toks = s.split()
     return toks[0] if toks else "0"
 
@@ -236,6 +239,7 @@ def _collect_chops(ops: dict) -> list:
     """Import the CHOP DAG feeding any op('X') reference in a param expr, in
     dependency (topo) order. Services (oscin/midiin) are excluded — the runtime
     reads them live. constant: per-channel exprs; speed/math/null: passthrough."""
+
     def resolve(name):
         for p, op in ops.items():
             if op.family == "CHOP" and (p == name or p.endswith("/" + name)):
@@ -299,7 +303,8 @@ def import_dir(dirroot: str) -> ImportResult:
     sink = None
     for p, op in ops.items():
         if op.family == "TOP" and op.flags.get("display"):
-            sink = p; break
+            sink = p
+            break
     if sink is None:
         raise ValueError("no display TOP found (no 'display on' flag)")
 
@@ -353,12 +358,18 @@ def import_dir(dirroot: str) -> ImportResult:
             path_val = fv[0] if fv else None
             params["path"] = path_val
             if path_val and not os.path.isfile(path_val):
-                coverage.append(f"{path}: asset {path_val!r} not local -> testcard "
-                                f"substitute (add a bridge /readfile to fetch host assets)")
+                coverage.append(
+                    f"{path}: asset {path_val!r} not local -> testcard "
+                    f"substitute (add a bridge /readfile to fetch host assets)"
+                )
 
         nodes[path] = Node(
-            id=path, op=(kernel or "passthrough"), family="TOP",
-            params=params, inputs=[Port(node=s) for s in top_ins])
+            id=path,
+            op=(kernel or "passthrough"),
+            family="TOP",
+            params=params,
+            inputs=[Port(node=s) for s in top_ins],
+        )
 
     # Collect I/O CHOP services (OSC/MIDI In) — they live outside the TOP render
     # DAG but feed parameter expressions like op('oscin1')['ch'].
@@ -367,12 +378,19 @@ def import_dir(dirroot: str) -> ImportResult:
         if op.family == "CHOP" and op.optype in ("oscin", "midiin"):
             name = p.split("/")[-1]
             if op.optype == "oscin":
-                services.append({"type": "oscin", "name": name,
-                                 "port": int(float(op.params.get("port", "7000").split()[0]))
-                                 if op.params.get("port") else 7000})
+                services.append(
+                    {
+                        "type": "oscin",
+                        "name": name,
+                        "port": (
+                            int(float(op.params.get("port", "7000").split()[0]))
+                            if op.params.get("port")
+                            else 7000
+                        ),
+                    }
+                )
             else:
-                services.append({"type": "midiin", "name": name,
-                                 "device": op.params.get("device")})
+                services.append({"type": "midiin", "name": name, "device": op.params.get("device")})
             coverage.append(f"service: {op.optype} {name} -> {services[-1]}")
 
     # Control-rate CHOP DAG feeding parameter exprs (op('speed1')[0] etc.). The
@@ -386,9 +404,10 @@ def import_dir(dirroot: str) -> ImportResult:
     g = Graph(output=sink, nodes=nodes, services=services, chops=chops)
     g.validate()
 
-    supported = sum(1 for n in nodes.values() if n.op != "passthrough" or True)
-    covline = (f"nodes in render path: {len(nodes)}; "
-               f"unsupported op types (degraded to passthrough): "
-               f"{sorted(unsupported) or 'none'}")
+    covline = (
+        f"nodes in render path: {len(nodes)}; "
+        f"unsupported op types (degraded to passthrough): "
+        f"{sorted(unsupported) or 'none'}"
+    )
     coverage.insert(0, covline)
     return ImportResult(g, coverage, sink)

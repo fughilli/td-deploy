@@ -11,19 +11,19 @@ name: build-toolchain
 
 on:
   workflow_dispatch:
-  workflow_call:            # invoked by build-app
+  workflow_call: # invoked by build-app
   push:
-    paths: [ "compiler/nix/**", "app/packaging/**", ".github/workflows/build-toolchain.yml" ]
+    paths: ['compiler/nix/**', 'app/packaging/**', '.github/workflows/build-toolchain.yml']
 
 env:
-  LLVM_VERSION: "18.1.8"
-  GLSLANG_VERSION: "14.3.0"
-  SPIRV_CROSS_VERSION: "vulkan-sdk-1.3.290.0"
+  LLVM_VERSION: '18.1.8'
+  GLSLANG_VERSION: '14.3.0'
+  SPIRV_CROSS_VERSION: 'vulkan-sdk-1.3.290.0'
 
 jobs:
   # ---------------------------------------------------------------- macOS -------
   macos:
-    runs-on: macos-14        # arm64
+    runs-on: macos-14 # arm64
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }

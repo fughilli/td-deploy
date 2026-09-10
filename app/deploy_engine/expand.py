@@ -7,6 +7,7 @@ used when there's no local toeexpand — so the engine is testable without TD.
 toeexpand discovery is ported from hostbridge/td_host_server.py; toeexpand exits
 rc=1 on SUCCESS (prints "expanded into …" on stderr) — not an error.
 """
+
 from __future__ import annotations
 
 import glob
@@ -22,12 +23,13 @@ from .progress import Progress
 
 # --- local toeexpand discovery (ported from td_host_server._candidate_td_dirs) ---
 
+
 def _candidate_td_dirs() -> list[str]:
     pats = [
-        "/Applications/TouchDesigner*.app/Contents/MacOS",            # macOS
+        "/Applications/TouchDesigner*.app/Contents/MacOS",  # macOS
         "/Applications/Derivative/TouchDesigner*.app/Contents/MacOS",
-        "C:/Program Files/Derivative/TouchDesigner*/bin",             # Windows
-        os.path.expanduser("~/TouchDesigner*/bin"),                   # Linux-ish
+        "C:/Program Files/Derivative/TouchDesigner*/bin",  # Windows
+        os.path.expanduser("~/TouchDesigner*/bin"),  # Linux-ish
     ]
     out: list[str] = []
     for p in pats:
@@ -69,6 +71,7 @@ def _expand_local(exe: str, toe_path: str, workdir: str, progress: Progress) -> 
 
 # --- bridge fallback (ported from cli.py) ---
 
+
 def _host_token() -> str | None:
     t = os.environ.get("TOXC_HOST_TOKEN")
     if t:
@@ -105,8 +108,13 @@ def _expand_bridge(toe_path: str, workdir: str, bridge: str, progress: Progress)
     return _find_dir(workdir)
 
 
-def expand(toe_path: str, workdir: str | None = None, *, bridge: str | None = None,
-           progress: Progress = Progress()) -> str:
+def expand(
+    toe_path: str,
+    workdir: str | None = None,
+    *,
+    bridge: str | None = None,
+    progress: Progress = Progress(),
+) -> str:
     """Return the path to the expanded `*.dir`. Prefers local toeexpand; falls back
     to the bridge when no local toeexpand and `bridge` is given."""
     workdir = workdir or tempfile.mkdtemp(prefix="toxc_expand_")
@@ -116,6 +124,4 @@ def expand(toe_path: str, workdir: str | None = None, *, bridge: str | None = No
         return _expand_local(exe, toe_path, workdir, progress)
     if bridge:
         return _expand_bridge(toe_path, workdir, bridge, progress)
-    raise RuntimeError(
-        "toeexpand not found (install TouchDesigner) and no --bridge fallback given"
-    )
+    raise RuntimeError("toeexpand not found (install TouchDesigner) and no --bridge fallback given")

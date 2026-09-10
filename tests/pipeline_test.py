@@ -4,12 +4,13 @@ Loads the committed demo graph, runs the optimizer and the GLSL lowering, and
 asserts the plan comes out with real render steps + shader code. This is the
 green coverage that `bazel test //...` runs with zero native dependencies.
 """
+
 import os
 import unittest
 
 from ir.graph import Graph
-from passes.optimize import optimize
 from lowering.lower import lower
+from passes.optimize import optimize
 
 
 def _find(rel: str) -> str:

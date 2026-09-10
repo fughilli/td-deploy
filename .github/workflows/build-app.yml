@@ -36,9 +36,9 @@ jobs:
         with: { submodules: recursive }
 
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
+        with: { python-version: '3.12' }
       - uses: actions/setup-node@v4
-        with: { node-version: "20" }
+        with: { node-version: '20' }
 
       - name: Fetch toolchain bundle
         uses: actions/download-artifact@v4

@@ -8,6 +8,7 @@ Compiles the .toe, finishes it for aarch64 on THIS host, and live-updates the Pi
 In the dev container (no local toeexpand) pass --bridge to expand via the Mac host
 bridge; on a machine with TouchDesigner it's found automatically.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,18 +27,32 @@ def main() -> int:
     ap.add_argument("--target", choices=["desktop_gl", "gles", "gles2"], default="gles2")
     ap.add_argument("--res", type=int, default=256)
     ap.add_argument("--set-file", action="append", default=[], metavar="NODE=PATH")
-    ap.add_argument("--bridge", default=os.environ.get("TOXC_HOST"),
-                    help="host bridge for toeexpand when TD isn't local (dev)")
+    ap.add_argument(
+        "--bridge",
+        default=os.environ.get("TOXC_HOST"),
+        help="host bridge for toeexpand when TD isn't local (dev)",
+    )
     ap.add_argument("--user", default="root")
-    ap.add_argument("--key", default=None, help="ssh deploy key (default deploy/secrets/deploy_key)")
+    ap.add_argument(
+        "--key", default=None, help="ssh deploy key (default deploy/secrets/deploy_key)"
+    )
     ap.add_argument("--service", default="sbc-tdplayer")
     ap.add_argument("--keep-artifact", default=None, help="write the artifact here (keep it)")
     args = ap.parse_args()
 
-    res = deploy(args.toe, args.pi, target=args.target, res=args.res,
-                 set_file=args.set_file, bridge=args.bridge, user=args.user,
-                 key=args.key, service=args.service, artifact_dir=args.keep_artifact,
-                 progress=cli_progress())
+    res = deploy(
+        args.toe,
+        args.pi,
+        target=args.target,
+        res=args.res,
+        set_file=args.set_file,
+        bridge=args.bridge,
+        user=args.user,
+        key=args.key,
+        service=args.service,
+        artifact_dir=args.keep_artifact,
+        progress=cli_progress(),
+    )
     print(f"[done] live on {args.pi}: {res['staging']}")
     return 0
 

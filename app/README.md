@@ -12,7 +12,7 @@ faster than the Pi3); the Pi just runs the finished artifact.
 
 ## How it fits together
 
-```
+```text
 Electron UI  ──stdin/stdout JSON──▶  Python sidecar (frozen)
 (renderer)                             │
                                        ├─ deploy_engine.compile   (.toe → optimized artifact + MLIR)
@@ -22,7 +22,7 @@ Electron UI  ──stdin/stdout JSON──▶  Python sidecar (frozen)
 ```
 
 - `deploy_engine/` — the pipeline, reusing the repo's compiler (`ir/ passes/
-  lowering/ importer/ compiler/`) exactly as the dev CLI does. stdlib only; the
+lowering/ importer/ compiler/`) exactly as the dev CLI does. stdlib only; the
   toolchain is pluggable (`NixToolchain` in dev, `BundledToolchain` in the app).
 - `sidecar.py` — the long-lived process Electron talks to (JSON-lines). Also the
   elevated raw-write worker via `--raw-write` (the frozen binary is its own

@@ -5,6 +5,7 @@ old staging dirs. The deploy key logs in as root, so no on-Pi sudo is needed.
   /var/lib/tdplayer/staging-<ts>/   <- rsync target
   /var/lib/tdplayer/current         -> staging-<ts>   (atomic ln -sfn)
 """
+
 from __future__ import annotations
 
 import os
@@ -25,13 +26,29 @@ def default_key() -> str:
 
 
 def _ssh_base(key: str) -> list[str]:
-    return ["ssh", "-i", key, "-o", "IdentitiesOnly=yes",
-            "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10"]
+    return [
+        "ssh",
+        "-i",
+        key,
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=10",
+    ]
 
 
-def push(art_dir: str, pi_host: str, *, user: str = "root", key: str | None = None,
-         service: str = DEFAULT_SERVICE, keep: int = 3,
-         progress: Progress = Progress()) -> str:
+def push(
+    art_dir: str,
+    pi_host: str,
+    *,
+    user: str = "root",
+    key: str | None = None,
+    service: str = DEFAULT_SERVICE,
+    keep: int = 3,
+    progress: Progress = Progress(),
+) -> str:
     key = key or default_key()
     target = f"{user}@{pi_host}"
     ts = time.strftime("%Y%m%d-%H%M%S")
@@ -44,15 +61,30 @@ def push(art_dir: str, pi_host: str, *, user: str = "root", key: str | None = No
     src = art_dir.rstrip("/") + "/"
     ssh_cmd = " ".join(_ssh_base(key))
     if shutil.which("rsync"):
-        subprocess.run(["rsync", "-a", "--delete", "-e", ssh_cmd, src, f"{target}:{staging}/"],
-                       check=True, stdout=sys.stderr)
+        subprocess.run(
+            ["rsync", "-a", "--delete", "-e", ssh_cmd, src, f"{target}:{staging}/"],
+            check=True,
+            stdout=sys.stderr,
+        )
     else:  # Windows fallback: scp -r (no --delete; staging is fresh each time)
         progress.log("rsync not found; scp -r fallback")
         subprocess.run(ssh + [target, f"mkdir -p {staging}"], check=True, stdout=sys.stderr)
-        scp = ["scp", "-r", "-i", key, "-o", "IdentitiesOnly=yes",
-               "-o", "StrictHostKeyChecking=accept-new"]
+        scp = [
+            "scp",
+            "-r",
+            "-i",
+            key,
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+        ]
         for entry in os.listdir(art_dir):
-            subprocess.run(scp + [os.path.join(art_dir, entry), f"{target}:{staging}/"], check=True, stdout=sys.stderr)
+            subprocess.run(
+                scp + [os.path.join(art_dir, entry), f"{target}:{staging}/"],
+                check=True,
+                stdout=sys.stderr,
+            )
 
     progress.phase("restart", 0.0, service)
     # world-readable (the service runs as the tdplayer user), atomic swap, restart,

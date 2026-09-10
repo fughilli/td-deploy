@@ -12,6 +12,7 @@ GLSL -> GLSL ES). Two implementations:
 finish.py builds a pipeline of argv commands; each toolchain runs them its own way.
 Only the tool resolution + clang cross flags differ.
 """
+
 from __future__ import annotations
 
 import os
@@ -29,6 +30,7 @@ _STDERR = {"stdout": sys.stderr}
 class Toolchain:
     """Interface. clang_flags are appended to the clang codegen invocation (cross
     target/sysroot for the bundled toolchain; empty for a native build)."""
+
     clang_flags: list[str] = []
 
     def run_pipeline(self, commands: list[list[str]]) -> None:
@@ -47,7 +49,10 @@ class NixToolchain(Toolchain):
     def __init__(self, repo_root: str | None = None):
         self.repo = repo_root or _paths.REPO_ROOT
         self._shell = os.path.join(self.repo, "compiler", "nix", "shell.sh")
-        self._env = {**os.environ, "PATH": "/nix/var/nix/profiles/default/bin:" + os.environ.get("PATH", "")}
+        self._env = {
+            **os.environ,
+            "PATH": "/nix/var/nix/profiles/default/bin:" + os.environ.get("PATH", ""),
+        }
 
     def run_pipeline(self, commands: list[list[str]]) -> None:
         # One nix shell for the whole pipeline (fast): join argv into a bash script.
@@ -57,9 +62,20 @@ class NixToolchain(Toolchain):
     def run_gles(self, art_dir: str) -> None:
         translate = os.path.join(self.repo, "compiler", "translate_gles.py")
         subprocess.run(
-            ["nix", "shell", "nixpkgs#glslang", "nixpkgs#spirv-cross", "nixpkgs#python3",
-             "--command", "python3", translate, art_dir],
-            check=True, env=self._env, **_STDERR,
+            [
+                "nix",
+                "shell",
+                "nixpkgs#glslang",
+                "nixpkgs#spirv-cross",
+                "nixpkgs#python3",
+                "--command",
+                "python3",
+                translate,
+                art_dir,
+            ],
+            check=True,
+            env=self._env,
+            **_STDERR,
         )
 
 
@@ -67,6 +83,7 @@ class BundledToolchain(Toolchain):
     """Phase 3: direct bundled binaries + aarch64 cross flags. tools_dir holds
     bin/{mlir-opt,mlir-translate,clang,ld.lld,glslang,spirv-cross} + sysroot/.
     No shell — each command is a direct subprocess, so this runs on Windows."""
+
     def __init__(self, tools_dir: str, triple: str = "aarch64-unknown-linux-gnu"):
         self.tools = tools_dir
         self.bindir = os.path.join(tools_dir, "bin")
@@ -99,6 +116,7 @@ class BundledToolchain(Toolchain):
         os.environ["PATH"] = self.bindir + os.pathsep + old
         try:
             import translate_gles  # from compiler/, put on path by ensure_on_path
+
             translate_gles.main(art_dir)
         finally:
             os.environ["PATH"] = old

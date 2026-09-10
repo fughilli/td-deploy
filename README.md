@@ -1,6 +1,7 @@
 # td-deploy — TouchDesigner `.tox` → Raspberry Pi compiler
 
-> Built on **`toxc`**, the TOX Compiler — the CLI/Bazel target (`//:toxc`) and MLIR dialect keep the `toxc` name.
+> Built on **`toxc`**, the TOX Compiler — the CLI/Bazel target (`//:toxc`) and MLIR
+> dialect keep the `toxc` name.
 
 Compile a TouchDesigner project into a native real-time media graph that runs on a
 Raspberry Pi, with TouchDesigner removed from the deployment path. See the full
@@ -48,7 +49,7 @@ live-deploy). The `toxc` compiler name is unchanged; only the repo/project is
 
 ## Layout
 
-```
+```text
 hostbridge/td_host_server.py   Mac-side HTTP bridge to toeexpand/TD
 ir/graph.py                    typed operator-graph IR (JSON) — importer target
 passes/optimize.py             fold / infer_format / dead-node-elim
@@ -78,14 +79,18 @@ preview is Pi-faithful. Rendering on macOS is intentionally unsupported (you'll 
 clear error, not a crash); view the stream instead.
 
 Start (or restart) the stream **inside the container**:
+
 ```sh
 tools/stream.sh /workspace/ascii_project.toe          # convenience: kills old, starts new
 # equivalently: nix/dev.sh python3 -m cli <project.tox> --stream --port 8788 [--fps N --res N]
 ```
+
 View on the **Mac** (nothing to run there):
-```
+
+```text
 http://toxc.$CLAUDE_SERVICE_INSTANCE.claude.localhost/     (fallback: ...:8484/)
 ```
+
 It's MJPEG on a wall-clock timebase, so animated params (e.g. a Transform's
 `rotate = absTime.seconds*10`) move live. Routes: `/` viewer, `/stream`, `/frame.jpg`,
 `/stats`. `--res 256` trades resolution for fps. After you re-export a `.tox`, re-run

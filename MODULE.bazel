@@ -11,7 +11,10 @@ The compiler itself keeps the `toxc` name (this module, the //:toxc target, and
 the MLIR dialect); only the repo/project is `td-deploy`.
 """
 
-module(name = "toxc", version = "0.1.0")
+module(
+    name = "toxc",
+    version = "0.1.0",
+)
 
 # ---------------------------------------------------------------------------
 # Core language rules
@@ -73,6 +76,7 @@ use_repo(rust, "rust_toolchains")
 # transitioned runtime build and never hijacks host C++ (this container is itself
 # aarch64-linux). The runtime is pure Rust, so cc only runs the final link.
 register_toolchains("//runtime_rs/cross:cross_cc_toolchain")
+
 register_toolchains("@rust_toolchains//:all")
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
@@ -108,17 +112,22 @@ nix_pkg = use_extension("@rules_nixpkgs_core//extensions:package.bzl", "nix_pkg"
 [
     nix_pkg.attr(
         attr = a,
-        repo = "@nixpkgs",
         build_file_content = """\
 package(default_visibility = ["//visibility:public"])
 filegroup(name = "lib", srcs = glob(["lib/**"]))
 filegroup(name = "bin", srcs = glob(["bin/**"], allow_empty = True))
 filegroup(name = "all", srcs = glob(["**"]))
 """,
+        repo = "@nixpkgs",
     )
-    for a in ["mesa", "libglvnd", "libdrm"]
+    for a in [
+        "mesa",
+        "libglvnd",
+        "libdrm",
+    ]
 ]
-use_repo(nix_pkg, "mesa", "libglvnd", "libdrm")
+
+use_repo(nix_pkg, "libdrm", "libglvnd", "mesa")
 
 # Cross cc for the aarch64-linux-gnu runtime link: nixpkgs' cross clang wrapper
 # (pkgsCross.aarch64-multiplatform.clangStdenv.cc) — clang + the aarch64 glibc
@@ -130,7 +139,11 @@ use_repo(nix_pkg, "mesa", "libglvnd", "libdrm")
 nix_pkg.expr(
     name = "aarch64_cc",
     attr = "aarch64_cc",
-    repo = "@nixpkgs",
+    build_file_content = """\
+package(default_visibility = ["//visibility:public"])
+filegroup(name = "all", srcs = glob(["**"]))
+filegroup(name = "cc", srcs = ["bin/cc"])
+""",
     # makeWrapper a STABLE bin/cc that execs the real cross clang wrapper by
     # absolute path. The wrapper's binary is target-prefixed only when host !=
     # target (aarch64-unknown-linux-gnu-cc on a Darwin host; plain cc on the
@@ -148,11 +161,7 @@ in
   '';
 }
 """,
-    build_file_content = """\
-package(default_visibility = ["//visibility:public"])
-filegroup(name = "all", srcs = glob(["**"]))
-filegroup(name = "cc", srcs = ["bin/cc"])
-""",
+    repo = "@nixpkgs",
 )
 use_repo(nix_pkg, "aarch64_cc")
 

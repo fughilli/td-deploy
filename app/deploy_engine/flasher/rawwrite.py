@@ -11,6 +11,7 @@ Entry points:
   * re-invoked through the frozen sidecar via its `--raw-write` flag (so the
     elevated process is the same signed binary, no external python needed).
 """
+
 from __future__ import annotations
 
 import os
@@ -28,7 +29,8 @@ def raw_write(image: str, device: str, progress_file: str) -> int:
     dst = os.open(device, flags)
     try:
         with open(image, "rb") as src, open(progress_file, "w") as pf:
-            pf.write(f"0 {total}\n"); pf.flush()
+            pf.write(f"0 {total}\n")
+            pf.flush()
             while True:
                 chunk = src.read(CHUNK)
                 if not chunk:
@@ -37,7 +39,8 @@ def raw_write(image: str, device: str, progress_file: str) -> int:
                 while off < len(chunk):
                     off += os.write(dst, chunk[off:])
                 done += len(chunk)
-                pf.write(f"{done} {total}\n"); pf.flush()
+                pf.write(f"{done} {total}\n")
+                pf.flush()
         os.fsync(dst)
     finally:
         os.close(dst)

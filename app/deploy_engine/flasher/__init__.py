@@ -12,6 +12,7 @@ Safety model:
   * The actual byte-copy runs in a minimal elevated worker (rawwrite.py); this
     module stays unprivileged and just tails the worker's progress file.
 """
+
 from __future__ import annotations
 
 import os
@@ -36,7 +37,7 @@ def _device_hint(disk: Disk) -> Optional[str]:
     """OS-specific pre-write handle: mac wants /dev/diskN to unmount, win wants the
     disk number, linux nothing."""
     if sys.platform == "darwin":
-        return disk.id.replace("/dev/r", "/dev/")   # rdiskN -> diskN for unmountDisk
+        return disk.id.replace("/dev/r", "/dev/")  # rdiskN -> diskN for unmountDisk
     if sys.platform.startswith("win"):
         m = re.search(r"(\d+)$", disk.id)
         return m.group(1) if m else None
@@ -82,8 +83,9 @@ def _tail_progress(path: str, proc: subprocess.Popen, on_progress: OnProgress) -
         time.sleep(0.2)
     rc = proc.wait()
     if not done and rc != 0:
-        raise RuntimeError(f"flash worker exited with code {rc} "
-                           "(elevation cancelled or write failed)")
+        raise RuntimeError(
+            f"flash worker exited with code {rc} " "(elevation cancelled or write failed)"
+        )
 
 
 def flash(image: str, disk_id: str, *, on_progress: OnProgress = _noop) -> Disk:
@@ -94,7 +96,7 @@ def flash(image: str, disk_id: str, *, on_progress: OnProgress = _noop) -> Disk:
     """
     if not os.path.exists(image):
         raise FileNotFoundError(image)
-    disk = require_removable(disk_id)            # hard guard, re-checked live
+    disk = require_removable(disk_id)  # hard guard, re-checked live
     on_progress(0.0, f"preparing {disk.name} ({disk.size_gb:.1f} GB)")
 
     pfd, progress_file = tempfile.mkstemp(prefix="tdflash_", suffix=".progress")

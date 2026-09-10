@@ -12,7 +12,9 @@ attribute-based fullscreen-quad vertex shader matching each fragment's vUV arity
 Writes <artifact>/shaders_gles/<id>.{vert,frag}. Run in a shell with glslang +
 spirv-cross + python3 (see build_shaders_gles.sh).
 """
+
 from __future__ import annotations
+
 import json
 import os
 import re
@@ -35,11 +37,13 @@ def inject_locations(src: str) -> str:
             continue
         m = re.match(r"^uniform\s+sampler\w+\s+(\w+)(\[\d+\])?;", s)
         if m:
-            out.append(f"layout(binding={binding}) {s}"); binding += 1
+            out.append(f"layout(binding={binding}) {s}")
+            binding += 1
             continue
         m = re.match(r"^uniform\s+\w+\s+(\w+)(\[\d+\])?;", s)
         if m:
-            out.append(f"layout(location={loc}) {s}"); loc += 1
+            out.append(f"layout(location={loc}) {s}")
+            loc += 1
             continue
         out.append(line)
     return "\n".join(out) + "\n"
@@ -100,7 +104,7 @@ def legalize_modulo(src: str) -> str:
         i = t.index(" % ")
         ls = _match_operand_left(t, i)
         re_ = _match_operand_right(t, i + 3)
-        left, right = t[ls:i], t[i + 3:re_]
+        left, right = t[ls:i], t[i + 3 : re_]
         t = t[:ls] + f"imod({left.strip()}, {right.strip()})" + t[re_:]
     helper = "int imod(int a, int b) { return a - (a / b) * b; }\n"
     # insert helper after the precision lines
@@ -116,23 +120,30 @@ def legalize_modulo(src: str) -> str:
 def es2_vertex(vec3: bool) -> str:
     ty = "vec3" if vec3 else "vec2"
     uv = "vec3(aPos * 0.5 + 0.5, 0.0)" if vec3 else "(aPos * 0.5 + 0.5)"
-    return ("#version 100\n"
-            "attribute vec2 aPos;\n"
-            f"varying {ty} vUV;\n"
-            "void main() {\n"
-            f"    vUV = {uv};\n"
-            "    gl_Position = vec4(aPos, 0.0, 1.0);\n"
-            "}\n")
+    return (
+        "#version 100\n"
+        "attribute vec2 aPos;\n"
+        f"varying {ty} vUV;\n"
+        "void main() {\n"
+        f"    vUV = {uv};\n"
+        "    gl_Position = vec4(aPos, 0.0, 1.0);\n"
+        "}\n"
+    )
 
 
 def translate_frag(path: str) -> str:
     src = inject_locations(open(path).read())
     tmp = "/tmp/_gles_in.frag"
     open(tmp, "w").write(src)
-    subprocess.run(["glslangValidator", "-G", tmp, "-o", "/tmp/_gles.spv"], check=True,
-                   capture_output=True)
-    es = subprocess.run(["spirv-cross", "/tmp/_gles.spv", "--es", "--version", "100"],
-                        check=True, capture_output=True, text=True).stdout
+    subprocess.run(
+        ["glslangValidator", "-G", tmp, "-o", "/tmp/_gles.spv"], check=True, capture_output=True
+    )
+    es = subprocess.run(
+        ["spirv-cross", "/tmp/_gles.spv", "--es", "--version", "100"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
     return legalize_modulo(es)
 
 

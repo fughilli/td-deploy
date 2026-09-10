@@ -12,10 +12,10 @@ native pieces live in their own packages: //compiler (MLIR/GLES), //runtime_rs
   bazel test //...
 """
 
-load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@pypi//:requirements.bzl", "requirement")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 load("@rules_python//python:pip.bzl", "compile_pip_requirements")
-load("@pypi//:requirements.bzl", "requirement")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 
 package(default_visibility = ["//visibility:public"])
 

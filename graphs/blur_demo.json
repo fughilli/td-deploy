@@ -14,14 +14,14 @@
       "op": "gaussian_blur",
       "family": "TOP",
       "params": { "sigma": 4.0 },
-      "inputs": [ { "node": "src", "index": 0 } ]
+      "inputs": [{ "node": "src", "index": 0 }]
     },
     {
       "id": "display",
       "op": "out_display",
       "family": "TOP",
       "params": { "sink": "hdmi" },
-      "inputs": [ { "node": "blur", "index": 0 } ]
+      "inputs": [{ "node": "blur", "index": 0 }]
     }
   ]
 }

@@ -9,6 +9,7 @@ to a disk.
 stdlib only. Progress is reported through a plain `on_progress(frac, msg)` callback
 so this is independent of the deploy `Progress` phase machinery.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -30,7 +31,7 @@ def _noop(_frac: float, _msg: str) -> None:
 @dataclass
 class Asset:
     name: str
-    url: str            # browser_download_url
+    url: str  # browser_download_url
     size: int
     digest: Optional[str]  # "sha256:..." if GitHub reports one, else None
 
@@ -48,11 +49,14 @@ class Release:
 
 
 def _get(url: str, accept: str = "application/vnd.github+json") -> bytes:
-    req = urllib.request.Request(url, headers={
-        "Accept": accept,
-        "User-Agent": "td-deploy-studio",
-        "X-GitHub-Api-Version": "2022-11-28",
-    })
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": accept,
+            "User-Agent": "td-deploy-studio",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
     tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if tok:
         req.add_header("Authorization", f"Bearer {tok}")
@@ -65,8 +69,12 @@ def get_release(tag: str = "latest", repo: str = REPO) -> Release:
     ref = "latest" if tag == "latest" else f"tags/{tag}"
     data = json.loads(_get(_API.format(repo=repo, ref=ref)))
     assets = [
-        Asset(name=a["name"], url=a["browser_download_url"], size=int(a.get("size", 0)),
-              digest=a.get("digest"))
+        Asset(
+            name=a["name"],
+            url=a["browser_download_url"],
+            size=int(a.get("size", 0)),
+            digest=a.get("digest"),
+        )
         for a in data.get("assets", [])
     ]
     return Release(tag=data.get("tag_name", tag), assets=assets)
@@ -115,15 +123,18 @@ def _expected_sha(rel: Release, img: Asset) -> Optional[str]:
 
 
 def default_cache_dir() -> str:
-    base = (os.environ.get("XDG_CACHE_HOME")
-            or os.path.join(os.path.expanduser("~"), ".cache"))
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
     return os.path.join(base, "td-deploy-studio", "images")
 
 
-def fetch_base_image(tag: str = "latest", *, repo: str = REPO,
-                     cache_dir: Optional[str] = None,
-                     on_progress: OnProgress = _noop,
-                     verify: bool = True) -> str:
+def fetch_base_image(
+    tag: str = "latest",
+    *,
+    repo: str = REPO,
+    cache_dir: Optional[str] = None,
+    on_progress: OnProgress = _noop,
+    verify: bool = True,
+) -> str:
     """Download (or reuse cached) verified base `.img` for `tag`; return its path.
 
     A cached image whose sha256 already matches the release is returned without

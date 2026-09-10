@@ -1,5 +1,6 @@
 """Compile-check translated shaders under a real Mesa GLES 2.0 context (proves
 Pi3/VC4 compatibility — same Mesa GLSL-ES-1.00 frontend). Usage: check_gles2.py <dir>"""
+
 import glob
 import os
 import sys
@@ -14,14 +15,25 @@ dpy = EGL.eglGetPlatformDisplay(SURFACELESS, EGL.EGL_DEFAULT_DISPLAY, None)
 EGL.eglInitialize(dpy, EGL.EGLint(), EGL.EGLint())
 EGL.eglBindAPI(EGL.EGL_OPENGL_ES_API)
 cfg_attrs = (EGL.EGLint * 9)(
-    EGL.EGL_SURFACE_TYPE, EGL.EGL_PBUFFER_BIT,
-    EGL.EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-    EGL.EGL_RED_SIZE, 8, EGL.EGL_GREEN_SIZE, 8, EGL.EGL_NONE)
+    EGL.EGL_SURFACE_TYPE,
+    EGL.EGL_PBUFFER_BIT,
+    EGL.EGL_RENDERABLE_TYPE,
+    EGL_OPENGL_ES2_BIT,
+    EGL.EGL_RED_SIZE,
+    8,
+    EGL.EGL_GREEN_SIZE,
+    8,
+    EGL.EGL_NONE,
+)
 cfg = (EGL.EGLConfig * 1)()
 n = EGL.EGLint()
 EGL.eglChooseConfig(dpy, cfg_attrs, cfg, 1, n)
-ctx = EGL.eglCreateContext(dpy, cfg[0], EGL.EGL_NO_CONTEXT,
-                           (EGL.EGLint * 3)(EGL.EGL_CONTEXT_MAJOR_VERSION, 2, EGL.EGL_NONE))
+ctx = EGL.eglCreateContext(
+    dpy,
+    cfg[0],
+    EGL.EGL_NO_CONTEXT,
+    (EGL.EGLint * 3)(EGL.EGL_CONTEXT_MAJOR_VERSION, 2, EGL.EGL_NONE),
+)
 EGL.eglMakeCurrent(dpy, EGL.EGL_NO_SURFACE, EGL.EGL_NO_SURFACE, ctx)
 print("context:", GL.glGetString(GL.GL_VERSION).decode())
 print("GLSL   :", GL.glGetString(GL.GL_SHADING_LANGUAGE_VERSION).decode())
