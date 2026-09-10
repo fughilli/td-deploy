@@ -2,6 +2,36 @@
 
 Newest first. See `docs/design/tox-to-pi.md` for the full design.
 
+## 2026-09-10 (3) — Zero-copy GPU→HDMI (GBM scanout) + present 124ms→0.65ms
+
+The dumb-buffer HDMI sink read the GPU's finished frame back to the CPU and copied
+it into ~uncached scanout memory — ~111ms/frame (~4-7fps), while all GPU compute
+was ~1.5ms. Replaced it with **zero-copy GBM scanout**: the VC4 renders straight
+into a gbm surface's buffer objects, page-flipped on the CRTC — no readback, no
+CPU copy.
+
+- `runtime_rs/src/scanout.rs` — GBM: dlopen'd libgbm (no build-time link, like
+  libEGL), `gbm_device` on card0 + a SCANOUT|RENDERING surface, EGL
+  `EGL_PLATFORM_GBM` window surface, `flip()` = lock front bo → `add_framebuffer`
+  (bo wrapped for the `drm` crate) → page-flip → vblank wait → release prev bo.
+  Hotplug-aware: comes up headless at 1280x720 if no display and scans out when
+  one appears. Linux-only + a stub elsewhere.
+- `main.rs` — `render()` split into `cook()` (graph passes) + `readback()`; new
+  `present_scanout()` GPU-blits the final texture into the surface (aspect-fit).
+  `stream()` builds its own context (GBM scanout, else surfaceless + dumb-buffer
+  sink); readback only when the sink or a web client needs pixels.
+- Bring-up (deploy+profile on the Pi): `GBM_BACKENDS_PATH`/`LIBGL_DRIVERS_PATH` →
+  mesa (the split `mesa-libgbm` loader can't find the vc4 backend otherwise);
+  fixed the XR24 fourcc (0x34325258) + pick the EGL config by `NATIVE_VISUAL_ID`
+  (else BAD_MATCH). apps.nix adds libgbm to `LD_LIBRARY_PATH`.
+- **Measured on-device:** present 238→124 (dumb)→**0.65ms** (GBM); frame **2.3ms**
+  headless (~431fps unthrottled) — with a live display it's vblank-locked ~60fps.
+  Graph renders correctly through the GBM VC4 context (banana verified). **User to
+  confirm the HDMI picture** when the display is on (it was off during bring-up;
+  hotplug handles it) — incl. vertical orientation of the scanout blit.
+
+
+
 ## 2026-09-10 (2) — VC4 GPU acceleration + fused-graph P0 (branch bazel-top-level)
 
 **VC4 hardware GL.** The GLESv2 transpiler backend is now stood up in the deploy,
