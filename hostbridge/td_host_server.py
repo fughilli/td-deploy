@@ -31,12 +31,26 @@ POST /render   (EXPERIMENTAL — TD-as-oracle for conformance)
     Drives TouchDesigner headless to cook <op> and save a PNG. Returns image/png.
     Returns 501 with guidance if a headless render path isn't wired on this host.
 
+POST /exec     (requires --allow-exec) — run bazel/git on the HOST, async
+    JSON { tool: "bazel"|"git", args: [...] }  e.g.
+      {"tool":"bazel","args":["run","//deploy:tdplayer_pi3.deploy_live","--","tdplayer.local"]}
+      {"tool":"git","args":["pull"]}
+      {"action":"kill","id":"bazel-3"}
+    Returns { id, cmd, cwd }. Runs in --workspace; only the allowlisted tool +
+    subcommand is permitted. Lets a container drive host-only builds/deploys.
+GET  /exec?id=<id>[&from=<n>]
+    Poll a job: { running, rc, elapsed, lines: [...from offset n], next, nlines }.
+    No id -> list jobs. Tail with `from` = the previous response's `next`.
+
 Config (env or flags; flags win)
     TOEEXPAND / --toeexpand   path to the toeexpand binary
     TOECOLLAPSE / --toecollapse
     TD_APP / --td-app         path to the TouchDesigner executable
     TOXC_HOST_TOKEN / --token optional shared secret; if set, clients must send
                               header  X-Auth-Token: <token>
+    TOXC_ALLOW_EXEC / --allow-exec   enable POST /exec (off by default; RCE surface)
+    TOXC_WORKSPACE / --workspace     repo checkout /exec runs bazel/git in
+    TOXC_BAZEL / --bazel             path to bazel (default: PATH lookup)
 """
 
 import argparse
@@ -51,6 +65,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -122,6 +137,64 @@ def _dir_to_json(root):
     return files
 
 
+# ----------------------------------------------------------------------------- exec jobs
+# Run bazel/git ON THE HOST (the Mac) so the container can drive deploys + builds
+# it can't run itself (the aarch64 image build needs the Mac's nix builder, and
+# the source tree lives here). Long-running, so it's a start/poll job model rather
+# than one blocking request. Gated behind --allow-exec (it's an RCE surface); only
+# an allowlisted tool + subcommand runs, always in the configured workspace dir.
+
+_JOBS = {}
+_JOBS_LOCK = threading.Lock()
+_JOB_SEQ = [0]
+
+# tool -> allowed first argument (subcommand). Args are passed as a list (no shell).
+_TOOL_SUBCMDS = {
+    "bazel": {"run", "build", "test", "query", "cquery", "aquery", "clean",
+              "info", "version", "mod", "fetch", "shutdown"},
+    "git": {"pull", "fetch", "status", "log", "rev-parse", "diff", "show",
+            "checkout", "switch", "branch", "stash", "remote", "reset"},
+}
+
+
+def _start_job(tool, tool_bin, args, cwd):
+    with _JOBS_LOCK:
+        _JOB_SEQ[0] += 1
+        jid = "%s-%d" % (tool, _JOB_SEQ[0])
+    cmd = [tool_bin] + list(args)
+    job = {"id": jid, "tool": tool, "cmd": cmd, "cwd": cwd, "lines": [],
+           "rc": None, "done": False, "started": time.time(), "ended": None,
+           "proc": None}
+    with _JOBS_LOCK:
+        _JOBS[jid] = job
+
+    def _run_job():
+        try:
+            p = subprocess.Popen(
+                cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1)
+        except Exception as e:  # noqa: BLE001 - report launch failure to the client
+            with _JOBS_LOCK:
+                job["lines"].append("[exec] failed to start: %r" % (e,))
+                job["rc"] = 127
+                job["done"] = True
+                job["ended"] = time.time()
+            return
+        with _JOBS_LOCK:
+            job["proc"] = p
+        for line in p.stdout:                      # streams until the process exits
+            with _JOBS_LOCK:
+                job["lines"].append(line.rstrip("\n"))
+        p.wait()
+        with _JOBS_LOCK:
+            job["rc"] = p.returncode
+            job["done"] = True
+            job["ended"] = time.time()
+
+    threading.Thread(target=_run_job, daemon=True).start()
+    return job
+
+
 # ----------------------------------------------------------------------------- handler
 
 class Handler(BaseHTTPRequestHandler):
@@ -168,6 +241,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.health()
         if u.path == "/readfile":
             return self.readfile(parse_qs(u.query))
+        if u.path == "/exec":
+            return self.exec_poll(parse_qs(u.query))
         return self._send_json({"error": "not found", "path": u.path}, 404)
 
     def do_POST(self):
@@ -184,6 +259,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.collapse(q)
             if u.path == "/render":
                 return self.render()
+            if u.path == "/exec":
+                return self.exec_start()
         except subprocess.TimeoutExpired:
             return self._send_json({"error": "timeout"}, 504)
         except Exception as e:  # noqa: BLE001 - surface failures to the client
@@ -204,6 +281,9 @@ class Handler(BaseHTTPRequestHandler):
             "td_app": c.get("td_app"),
             "td_found": bool(c.get("td_app")),
             "candidates": _candidate_td_dirs(),
+            "exec_allowed": bool(c.get("allow_exec")),
+            "workspace": c.get("workspace"),
+            "bazel": (c.get("tools", {}).get("bazel") or shutil.which("bazel")),
         }
         return self._send_json(info)
 
@@ -323,6 +403,82 @@ class Handler(BaseHTTPRequestHandler):
             "how": _HEADLESS_RENDER_NOTES,
         }, 501)
 
+    # -- exec (bazel/git on the host) -----------------------------------------
+    def exec_start(self):
+        """POST /exec  {tool, args[, action]} — run bazel/git on the host, async.
+
+        Body JSON:
+          {"tool": "bazel", "args": ["run", "//deploy:tdplayer_pi3.deploy_live",
+                                     "--", "tdplayer.local"]}
+          {"tool": "git",   "args": ["pull"]}
+          {"action": "kill", "id": "bazel-3"}
+        Returns {id, cmd, cwd}; poll GET /exec?id=<id>. Runs in the configured
+        workspace; only the allowlisted tool + subcommand is permitted.
+        """
+        if not self.cfg.get("allow_exec"):
+            return self._send_json(
+                {"error": "exec disabled; start the bridge with --allow-exec"}, 403)
+        req = json.loads(self._read_body() or b"{}")
+        if req.get("action") == "kill":
+            return self._exec_kill(req.get("id"))
+        tool = req.get("tool")
+        args = req.get("args") or []
+        if tool not in _TOOL_SUBCMDS:
+            return self._send_json(
+                {"error": "tool must be one of %s" % sorted(_TOOL_SUBCMDS)}, 400)
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            return self._send_json({"error": "args must be a list of strings"}, 400)
+        if not args or args[0] not in _TOOL_SUBCMDS[tool]:
+            return self._send_json(
+                {"error": "%s subcommand must be one of %s"
+                          % (tool, sorted(_TOOL_SUBCMDS[tool]))}, 400)
+        tool_bin = self.cfg.get("tools", {}).get(tool) or shutil.which(tool)
+        if not tool_bin:
+            return self._send_json({"error": "%s not found on PATH" % tool}, 501)
+        cwd = self.cfg.get("workspace") or os.getcwd()
+        if not os.path.isdir(cwd):
+            return self._send_json({"error": "workspace not a dir: %s" % cwd}, 500)
+        job = _start_job(tool, tool_bin, args, cwd)
+        return self._send_json({"id": job["id"], "cmd": job["cmd"], "cwd": cwd})
+
+    def exec_poll(self, q):
+        """GET /exec?id=<id>[&from=<n>] — poll a job (returns new output lines from
+        offset `from`). GET /exec with no id lists jobs."""
+        if not self.cfg.get("allow_exec"):
+            return self._send_json(
+                {"error": "exec disabled; start the bridge with --allow-exec"}, 403)
+        jid = (q.get("id", [None])[0])
+        if not jid:
+            with _JOBS_LOCK:
+                jobs = [{"id": j["id"], "tool": j["tool"], "running": not j["done"],
+                         "rc": j["rc"], "nlines": len(j["lines"]),
+                         "started": j["started"]} for j in _JOBS.values()]
+            return self._send_json({"jobs": jobs})
+        frm = int((q.get("from", ["0"])[0]) or 0)
+        with _JOBS_LOCK:
+            job = _JOBS.get(jid)
+            if not job:
+                return self._send_json({"error": "no such job: %s" % jid}, 404)
+            lines = job["lines"][frm:]
+            end = job["ended"] or time.time()
+            resp = {
+                "id": jid, "cmd": job["cmd"], "running": not job["done"],
+                "rc": job["rc"], "from": frm, "next": frm + len(lines),
+                "nlines": len(job["lines"]),
+                "elapsed": round(end - job["started"], 1), "lines": lines,
+            }
+        return self._send_json(resp)
+
+    def _exec_kill(self, jid):
+        with _JOBS_LOCK:
+            job = _JOBS.get(jid)
+            proc = job["proc"] if job else None
+        if not job:
+            return self._send_json({"error": "no such job: %s" % jid}, 404)
+        if proc and job["rc"] is None:
+            proc.terminate()
+        return self._send_json({"id": jid, "killed": True})
+
 
 _HEADLESS_RENDER_NOTES = (
     "Drive TD via a generated startup script that op(<op>).save('out.png') then project.quit(). "
@@ -340,6 +496,17 @@ def main():
     ap.add_argument("--toecollapse", default=None)
     ap.add_argument("--td-app", dest="td_app", default=None)
     ap.add_argument("--token", default=os.environ.get("TOXC_HOST_TOKEN"))
+    # Host exec (bazel/git in the workspace) — off unless --allow-exec, since it
+    # can run repo targets (e.g. deploy scripts) on this machine.
+    ap.add_argument("--allow-exec", action="store_true",
+                    default=bool(os.environ.get("TOXC_ALLOW_EXEC")),
+                    help="enable POST /exec to run bazel/git in the workspace")
+    ap.add_argument("--workspace",
+                    default=os.environ.get("TOXC_WORKSPACE")
+                    or os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    help="repo checkout /exec runs bazel/git in (default: this file's repo)")
+    ap.add_argument("--bazel", default=os.environ.get("TOXC_BAZEL"),
+                    help="path to bazel (default: PATH lookup)")
     args = ap.parse_args()
 
     cfg = discover({
@@ -347,6 +514,9 @@ def main():
         "toecollapse": args.toecollapse,
         "td_app": args.td_app,
         "token": args.token,
+        "allow_exec": args.allow_exec,
+        "workspace": os.path.abspath(os.path.expanduser(args.workspace)),
+        "tools": {"bazel": args.bazel} if args.bazel else {},
     })
     Handler.cfg = cfg
 
@@ -354,6 +524,14 @@ def main():
     print(f"[toxc-host] toeexpand   : {cfg.get('toeexpand')  or 'NOT FOUND'}")
     print(f"[toxc-host] toecollapse : {cfg.get('toecollapse') or 'NOT FOUND'}")
     print(f"[toxc-host] TouchDesigner: {cfg.get('td_app')     or 'NOT FOUND'}")
+    if cfg.get("allow_exec"):
+        print(f"[toxc-host] EXEC ENABLED (bazel/git) in {cfg.get('workspace')}")
+        print(f"[toxc-host]   bazel: {cfg.get('tools', {}).get('bazel') or shutil.which('bazel') or 'NOT FOUND'}")
+        if not cfg.get("token"):
+            print("[toxc-host]   WARNING: /exec is open (no --token set) — anyone on"
+                  " the LAN can run bazel/git here. Set --token for safety.")
+    else:
+        print("[toxc-host] exec disabled (pass --allow-exec to enable POST /exec)")
     if cfg.get("token"):
         print("[toxc-host] auth token REQUIRED (X-Auth-Token)")
     print(f"[toxc-host] listening on http://{args.host}:{args.port}")
