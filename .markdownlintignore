@@ -1,0 +1,4 @@
+# Long-form design specs use one-paragraph-per-line authoring; don't rewrap them.
+docs/design/
+.claude/
+.claude-container-overlay/

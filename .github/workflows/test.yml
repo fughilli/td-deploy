@@ -1,0 +1,109 @@
+# Presubmit CI: lint everything (prek) and run the test suite (Bazel), plus a fast
+# stdlib-only check of the desktop-app engine. Runs on PRs and pushes to main.
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint: the same prek binary + .pre-commit-config.yaml the local commit hook
+  # uses, so the gate is byte-for-byte identical in both places.
+  # ---------------------------------------------------------------------------
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install prek
+        run: python -m pip install 'prek==0.4.12'
+
+      # prek caches its hook toolchains under ~/.cache/prek; key on the config so
+      # they're rebuilt only when the hook set changes.
+      - name: Cache prek hook environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/prek
+          key: prek-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+          restore-keys: prek-${{ runner.os }}-
+
+      - name: Run lints (prek)
+        run: prek run --all-files --show-diff-on-failure --color=always
+
+  # ---------------------------------------------------------------------------
+  # App engine tests: the deploy_engine flasher/download logic is stdlib-only, so
+  # test it directly with pytest — no Nix/Bazel, no Pillow/PyAV. Fast signal on
+  # the safety-critical SD-flashing code.
+  # ---------------------------------------------------------------------------
+  app-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python -m pip install pytest
+
+      - name: Run app engine tests
+        working-directory: app
+        run: python -m pytest tests -q
+
+  # ---------------------------------------------------------------------------
+  # Full test suite via Bazel. Needs Nix: //:toxc and the compiler shell out to
+  # the pinned nixpkgs MLIR/GL toolchain, and `bazel test //...` realizes
+  # nixpkgs-provided tools.
+  # ---------------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ubuntu-latest ships only ~14GB free on /, which the /nix store + Bazel
+      # disk cache exhaust. Reclaim the ~25GB of preinstalled SDKs we never use.
+      - name: Free runner disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+
+      - name: Install Nix
+        uses: nixbuild/nix-quick-install-action@v30
+        with:
+          nix_conf: experimental-features = nix-command flakes
+
+      - name: Cache /nix store
+        uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'MODULE.bazel.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-linux: 5G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+
+      - name: Cache Bazel disk cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: bazel-disk-${{ runner.os }}-${{ hashFiles('MODULE.bazel.lock') }}
+          restore-keys: bazel-disk-${{ runner.os }}-
+
+      - name: Test
+        run: bazel test //... --disk_cache="$HOME/.cache/bazel-disk" --test_output=errors

@@ -1,0 +1,9 @@
+# Byte-pinned prebuilt artifact — the runtime loads schedule.json/services.json
+# verbatim; prettier must never reshape it.
+deploy/prebuilt/
+
+# Generated lock files.
+MODULE.bazel.lock
+requirements.lock
+runtime_rs/Cargo.lock
+app/electron/node_modules/
