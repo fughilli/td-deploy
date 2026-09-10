@@ -1,7 +1,7 @@
 # Build the per-OS host cross-toolchain bundle the desktop app ships.
 #
-# Output (uploaded as artifact `toolchain-<os>`): the pieces the finish step needs
-# to turn optimized MLIR into an aarch64-linux .so + GLSL ES on the user's laptop:
+# Output (artifact `toolchain-<os>`): the tools the finish step needs to turn
+# optimized MLIR into an aarch64-linux .so + GLSL ES on the user's laptop:
 #   mlir-opt, mlir-translate, clang, lld, glslangValidator, spirv-cross.
 #
 # No sysroot: the kernels compile from already-lowered .ll (no headers), are shared
@@ -9,9 +9,9 @@
 # loaded when it dlopens them — so finish cross-links with `-nostdlib` and leaves
 # libm undefined, resolved on-device (see deploy_engine/toolchain.py).
 #
-# The heavy piece is mlir-opt/mlir-translate (NOT in the LLVM release): built from
-# the pinned compiler/nix on macOS; built from LLVM source with MSVC on Windows
-# (cached aggressively — the long job).
+# The heavy piece (mlir-opt/mlir-translate — NOT in the LLVM release) is
+# CROSS-BUILT on Linux for BOTH targets via nixpkgs pkgsCross: Windows tools are
+# produced on a fast Linux runner (no slow MSVC LLVM build), macOS builds natively.
 name: build-toolchain
 
 on:
@@ -25,10 +25,55 @@ on:
 
 env:
   LLVM_VERSION: '18.1.8'
-  GLSLANG_VERSION: '14.3.0'
-  SPIRV_CROSS_VERSION: 'vulkan-sdk-1.3.290.0'
 
 jobs:
+  # ------------------------------------------------ Windows tools (on Linux) ----
+  # Cross-build the Windows mlir/glslang/spirv-cross .exe on a Linux runner via
+  # nixpkgs pkgsCross.mingwW64 — hermetic + reproducible, and far faster than a
+  # from-source MSVC LLVM build on a Windows runner. clang/lld come from the LLVM
+  # Windows release (added by the windows job). mingw runtime DLLs are bundled from
+  # the build closure so the exes run standalone.
+  win-tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: nixbuild/nix-quick-install-action@v30
+        with:
+          nix_conf: experimental-features = nix-command flakes
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-wintools-${{ hashFiles('.github/workflows/build-toolchain.yml') }}
+          restore-prefixes-first-match: nix-wintools-
+          gc-max-store-size-linux: 5G
+
+      - name: Cross-build mlir/glslang/spirv-cross for Windows (mingw)
+        run: |
+          set -euo pipefail
+          X='(import <nixpkgs> {}).pkgsCross.mingwW64'
+          mlir="$(nix build --impure --no-link --print-out-paths --expr "${X}.llvmPackages_18.mlir")"
+          gls="$(nix build --impure --no-link --print-out-paths --expr "${X}.glslang")"
+          sc="$(nix build --impure --no-link --print-out-paths --expr "${X}.spirv-cross")"
+
+          mkdir -p bundle/bin
+          cp -Lv "$mlir"/bin/mlir-opt.exe "$mlir"/bin/mlir-translate.exe bundle/bin/
+          # glslang ships glslangValidator (fall back to glslang.exe named as such)
+          if [ -e "$gls/bin/glslangValidator.exe" ]; then
+            cp -Lv "$gls/bin/glslangValidator.exe" bundle/bin/
+          else
+            cp -Lv "$gls/bin/glslang.exe" bundle/bin/glslangValidator.exe
+          fi
+          cp -Lv "$sc"/bin/spirv-cross.exe bundle/bin/
+
+          # Bundle every DLL in the build closure so the exes run standalone on
+          # Windows (mingw libstdc++/libgcc/winpthread + any shared LLVM).
+          for p in $(nix-store -qR "$mlir" "$gls" "$sc"); do
+            find "$p" -name '*.dll' 2>/dev/null || true
+          done | sort -u | while read -r d; do cp -Ln "$d" bundle/bin/ 2>/dev/null || true; done
+          echo "== bundled =="; ls -1 bundle/bin
+
+      - uses: actions/upload-artifact@v4
+        with: { name: win-tools, path: bundle }
+
   # ---------------------------------------------------------------- macOS -------
   macos:
     runs-on: macos-14 # arm64
@@ -36,8 +81,15 @@ jobs:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
 
+      # DeterminateSystems installer sets the flake registry (so `nixpkgs#…`
+      # resolves). NOTE: do NOT use magic-nix-cache-action — its static arm64
+      # binary crashes on macos-14 (libc++ symbol mismatch) and hangs the job.
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-macos-${{ hashFiles('compiler/nix/mlir.nix') }}
+          restore-prefixes-first-match: nix-macos-
+          gc-max-store-size: 5G
 
       - name: Build MLIR tools (pinned compiler/nix)
         run: |
@@ -75,72 +127,29 @@ jobs:
         with: { name: toolchain-macos, path: app/toolchain }
 
   # -------------------------------------------------------------- Windows -------
+  # Just assemble: the heavy tools are cross-built by win-tools; here we only add
+  # clang/lld from the LLVM Windows release. No compiling.
   windows:
+    needs: win-tools
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
 
-      - name: Cache LLVM+MLIR build
-        id: cache-mlir
-        uses: actions/cache@v4
-        with:
-          path: mlir-install
-          key: mlir-${{ env.LLVM_VERSION }}-msvc-${{ runner.os }}
+      - name: Fetch cross-built Windows tools
+        uses: actions/download-artifact@v4
+        with: { name: win-tools, path: app/toolchain }
 
-      - name: Build LLVM + MLIR (MSVC) — the heavy job
-        if: steps.cache-mlir.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          git clone --depth 1 --branch llvmorg-$env:LLVM_VERSION https://github.com/llvm/llvm-project.git
-          cmake -S llvm-project/llvm -B build -G "Ninja Multi-Config" `
-            -DLLVM_ENABLE_PROJECTS="mlir" `
-            -DLLVM_TARGETS_TO_BUILD="AArch64" `
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --config Release --target mlir-opt mlir-translate
-          New-Item -ItemType Directory -Force mlir-install\bin | Out-Null
-          Copy-Item build\Release\bin\mlir-opt.exe mlir-install\bin\
-          Copy-Item build\Release\bin\mlir-translate.exe mlir-install\bin\
-
-      - name: Fetch clang + lld (LLVM release)
+      - name: Add clang + lld (LLVM release)
         shell: pwsh
         run: |
           $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/clang+llvm-$env:LLVM_VERSION-x86_64-pc-windows-msvc.tar.xz"
           curl.exe -fL $url -o llvm.tar.xz
           mkdir llvm-full; tar -xf llvm.tar.xz --strip-components=1 -C llvm-full
-
-      - name: Build glslang (from source)
-        shell: pwsh
-        run: |
-          git clone --depth 1 --branch $env:GLSLANG_VERSION https://github.com/KhronosGroup/glslang.git
-          python glslang/update_glslang_sources.py --commit
-          cmake -S glslang -B glslang-build -DCMAKE_BUILD_TYPE=Release -DENABLE_OPT=0
-          cmake --build glslang-build --config Release --target glslangValidator
-
-      - name: Build spirv-cross (from source)
-        shell: pwsh
-        run: |
-          git clone --depth 1 --branch $env:SPIRV_CROSS_VERSION https://github.com/KhronosGroup/SPIRV-Cross.git
-          cmake -S SPIRV-Cross -B sc-build -DCMAKE_BUILD_TYPE=Release -DSPIRV_CROSS_CLI=ON
-          cmake --build sc-build --config Release --target spirv-cross
-
-      - name: Locate built binaries
-        id: bins
-        shell: pwsh
-        run: |
-          $glslang = (Get-ChildItem -Recurse glslang-build -Filter glslangValidator.exe | Select-Object -First 1).DirectoryName
-          $sc = (Get-ChildItem -Recurse sc-build -Filter spirv-cross.exe | Select-Object -First 1).DirectoryName
-          "glslang=$glslang" >> $env:GITHUB_OUTPUT
-          "spirvcross=$sc" >> $env:GITHUB_OUTPUT
-
-      - name: Assemble bundle
-        shell: pwsh
-        run: |
-          .\app\packaging\assemble_toolchain.ps1 `
-            -Mlir mlir-install\bin -Llvm llvm-full\bin `
-            -Glslang '${{ steps.bins.outputs.glslang }}' `
-            -SpirvCross '${{ steps.bins.outputs.spirvcross }}' `
-            -Out app\toolchain
+          Copy-Item llvm-full\bin\clang.exe   app\toolchain\bin\
+          Copy-Item llvm-full\bin\clang++.exe app\toolchain\bin\
+          Copy-Item llvm-full\bin\ld.lld.exe  app\toolchain\bin\
+          Get-ChildItem app\toolchain\bin | Select-Object Name
 
       - uses: actions/upload-artifact@v4
         with: { name: toolchain-windows, path: app/toolchain }
