@@ -168,9 +168,15 @@ it from single exprs to the whole CHOP DAG (constant/speed/math/… as `tox` ops
   `.so` and is **bit-parity (|Δ|≤1e-9) vs the reference evaluator**
   (`compiler/chop_ref.py`, which mirrors runtime_rs `eval_chops`) over a
   frame sequence with carried state — gate `//compiler:test_chop_lower`
-  (hermetic pieces: `//compiler:test_chop_ref`). *Remaining for P1:* wire the
-  runtime to call the compiled `@chops` instead of the per-node fasteval loop
-  (behind the artifact, keeping fasteval as the fallback for unlowerable exprs).
+  (hermetic pieces: `//compiler:test_chop_ref`). **The runtime now runs it:** a
+  stable pointer ABI `void chops_v(const double* in, double* out)` (emitted
+  alongside the scalar `@chops`) is compiled in-image to `chops/libchops.so` and
+  `dlopen`ed; `Renderer::eval_chops` builds `[t,dt,frame,<sources>,<states>]`,
+  calls the kernel, writes the outputs to the store and carries the Speed
+  accumulators — the per-node fasteval loop is now the fallback (unlowerable
+  DAGs). `emit_artifact` emits `chops.mlir`+`chops_abi`; `apps.nix` finishes it
+  next to `libexprs.so`. **User to verify on-device** (banana still spins,
+  `chop:eval` in `/stats` drops).
 - **P2 — CHOP→TOP specialization.** Constant-fold CHOP→uniform into shaders;
   keep dynamic ones as fused-kernel-computed uniforms.
 - **P3 — TOP fusion + placement (profile-guided).** Producer/consumer TOP

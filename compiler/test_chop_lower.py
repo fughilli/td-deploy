@@ -41,10 +41,17 @@ def run_parity(name: str, chops: list, frames: list) -> bool:
     """frames: list of (t, {chop_name: {chan: value}}) live source inputs."""
     mlir, abi = lower(chops)
     so = build(mlir)
-    fn = ctypes.CDLL(so).chops
+    lib = ctypes.CDLL(so)
     n_in = 3 + len(abi["sources"]) + len(abi["states"])
+    n_out = len(abi["outputs"])
+    # scalar entry (struct return) — used to cross-check the pointer wrapper.
+    fn = lib.chops
     fn.argtypes = [ctypes.c_double] * n_in
-    fn.restype = _ret_type(len(abi["outputs"]))
+    fn.restype = _ret_type(n_out)
+    # pointer entry `void chops_v(const double* in, double* out)` — the runtime path.
+    fnv = lib.chops_v
+    fnv.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double)]
+    fnv.restype = None
     out_index = {o: i for i, o in enumerate(abi["outputs"])}
 
     ref = ChopEval(chops)
@@ -58,8 +65,18 @@ def run_parity(name: str, chops: list, frames: list) -> bool:
         args = [t, dt, frame]
         args += [sources.get(n, {}).get(c, 0.0) for (n, c) in abi["sources"]]
         args += [state[s] for s in abi["states"]]
-        res = fn(*[ctypes.c_double(a) for a in args])
-        native = [getattr(res, f"f{i}") for i in range(len(abi["outputs"]))]
+        # pointer ABI (runtime path)
+        in_buf = (ctypes.c_double * n_in)(*args)
+        out_buf = (ctypes.c_double * n_out)()
+        fnv(in_buf, out_buf)
+        native = list(out_buf)
+        # scalar ABI must agree with the pointer wrapper
+        sres = fn(*[ctypes.c_double(a) for a in args])
+        for i in range(n_out):
+            if abs(getattr(sres, f"f{i}") - native[i]) > 0:
+                print(f"  ABI MISMATCH {name} t={t} out{i}: "
+                      f"scalar={getattr(sres, f'f{i}')} ptr={native[i]}")
+                ok = False
         # feed each Speed output back as its next-frame state
         for s in abi["states"]:
             state[s] = native[out_index[s]]

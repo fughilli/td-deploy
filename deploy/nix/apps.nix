@@ -48,6 +48,16 @@ let
       mlir-translate "$out/exprs/low.mlir" --mlir-to-llvmir -o "$out/exprs/exprs.ll"
       clang -O2 -shared -fPIC "$out/exprs/exprs.ll" -o "$out/exprs/libexprs.so" -lm
     fi
+    # The fused CHOP kernel (P1): chops.mlir -> chops/libchops.so. Same lowering;
+    # the pointer wrapper's llvm.getelementptr/load/store pass through and the
+    # func.call becomes an llvm.call. The runtime dlopens `chops_v`.
+    if [ -s "$out/chops.mlir" ]; then
+      mkdir -p "$out/chops"
+      mlir-opt "$out/chops.mlir" --convert-math-to-llvm --convert-arith-to-llvm \
+        --convert-func-to-llvm --reconcile-unrealized-casts -o "$out/chops/low.mlir"
+      mlir-translate "$out/chops/low.mlir" --mlir-to-llvmir -o "$out/chops/chops.ll"
+      clang -O2 -shared -fPIC "$out/chops/chops.ll" -o "$out/chops/libchops.so" -lm
+    fi
   '';
 
   # The runtime: a dynamic aarch64 binary from Bazel. autoPatchelf fixes the ELF

@@ -213,8 +213,52 @@ def lower(chops: list[dict], func_name: str = "chops"):
             f"    {body}\n"
             f"    return {ret_ssa} : {', '.join('f64' for _ in outputs)}\n"
             f"}}\n")
-    abi = {"sources": sources, "states": states, "outputs": outputs}
-    return mlir, abi
+    mlir += _wrapper(abi_of(sources, states, outputs), func_name)
+    return mlir, abi_of(sources, states, outputs)
+
+
+def abi_of(sources, states, outputs) -> dict:
+    return {"sources": sources, "states": states, "outputs": outputs}
+
+
+def _wrapper(abi: dict, func_name: str) -> str:
+    """A stable C ABI over the (arity-varying) scalar @chops:
+
+        void <name>_v(const double* in, double* out)
+
+    in  = [t, dt, frame, <sources…>, <states-in…>]   (scalar-arg order)
+    out = [<outputs…>]
+
+    so the runtime dlopens one symbol and calls it with two f64 buffers, no
+    per-graph signature. Emitted in the llvm dialect; the standard
+    convert-*-to-llvm passes turn the func.call into an llvm.call.
+    """
+    n_in = 3 + len(abi["sources"]) + len(abi["states"])
+    n_out = len(abi["outputs"])
+    lines = [f"llvm.func @{func_name}_v(%in: !llvm.ptr, %out: !llvm.ptr) {{"]
+    argv = []
+    for i in range(n_in):
+        lines.append(f"  %pi{i} = llvm.getelementptr %in[{i}] : "
+                     f"(!llvm.ptr) -> !llvm.ptr, f64")
+        lines.append(f"  %ai{i} = llvm.load %pi{i} : !llvm.ptr -> f64")
+        argv.append(f"%ai{i}")
+    intys = ", ".join("f64" for _ in range(n_in))
+    outtys = ", ".join("f64" for _ in range(n_out))
+    if n_out == 1:
+        lines.append(f"  %r = func.call @{func_name}({', '.join(argv)}) : "
+                     f"({intys}) -> f64")
+        res = ["%r"]
+    else:
+        lines.append(f"  %r:{n_out} = func.call @{func_name}({', '.join(argv)}) : "
+                     f"({intys}) -> ({outtys})")
+        res = [f"%r#{i}" for i in range(n_out)]
+    for i in range(n_out):
+        lines.append(f"  %po{i} = llvm.getelementptr %out[{i}] : "
+                     f"(!llvm.ptr) -> !llvm.ptr, f64")
+        lines.append(f"  llvm.store {res[i]}, %po{i} : f64, !llvm.ptr")
+    lines.append("  llvm.return")
+    lines.append("}")
+    return "\n".join(lines) + "\n"
 
 
 if __name__ == "__main__":

@@ -206,5 +206,30 @@
       ],
       "channels": []
     }
-  ]
+  ],
+  "chops_lib": "chops/libchops.so",
+  "chops_abi": {
+    "sources": [
+      [
+        "midiin1",
+        "0"
+      ]
+    ],
+    "states": [
+      [
+        "speed1",
+        "0"
+      ]
+    ],
+    "outputs": [
+      [
+        "constant1",
+        "0"
+      ],
+      [
+        "speed1",
+        "0"
+      ]
+    ]
+  }
 }

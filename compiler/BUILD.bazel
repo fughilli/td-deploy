@@ -28,6 +28,7 @@ py_library(
     ],
     imports = ["."],
     deps = [
+        ":chop_lower",
         requirement("pillow"),
         requirement("av"),
     ],

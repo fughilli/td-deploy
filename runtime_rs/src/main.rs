@@ -37,6 +37,24 @@ struct Schedule {
     // Evaluated per-frame into the chop store; see Renderer::eval_chops.
     #[serde(default)]
     chops: Vec<ChopDef>,
+    // The whole CHOP DAG fused + compiled to one native kernel (compiler/
+    // chop_lower.py), replacing the per-node fasteval loop. When present, the
+    // runtime calls `chops_v` instead of interpreting `chops`. See chops_abi.
+    chops_lib: Option<String>,
+    #[serde(default)]
+    chops_abi: Option<ChopAbi>,
+}
+// ABI of the compiled `chops_v(const double* in, double* out)` kernel: `in` is
+// [t, dt, frame, <sources..>, <states-in..>], `out` is [<outputs..>]. Each entry
+// is a (chop name, channel) pair. A Speed output IS its next-frame state.
+#[derive(Deserialize, Clone, Default)]
+struct ChopAbi {
+    #[serde(default)]
+    sources: Vec<(String, String)>,
+    #[serde(default)]
+    states: Vec<(String, String)>,
+    #[serde(default)]
+    outputs: Vec<(String, String)>,
 }
 // A control-rate node the importer pulled in because an expr reads it.
 // constant: `channels` are per-channel exprs. speed: integrates its input over
@@ -508,6 +526,12 @@ struct Renderer<'a> {
     quad: Option<glow::Buffer>,
     // Control-rate (CHOP) evaluation: the pre-compiled DAG + integrator state.
     chop_progs: Vec<ChopProg>,
+    // The compiled CHOP kernel (chops_v), if the DAG was fully lowered. Preferred
+    // over chop_progs; the fasteval loop is the fallback for unlowerable DAGs.
+    chops_lib: Option<libloading::Library>,
+    chops_abi: Option<ChopAbi>,
+    chop_state: RefCell<Vec<f64>>,      // carried Speed accumulators (abi.states)
+    chop_state_idx: Vec<usize>,         // each state's position in abi.outputs
     // Pre-compiled interpreted uniforms, keyed by (step index, uniform name).
     uniform_progs: HashMap<(usize, String), expr::Program>,
     speed_state: RefCell<HashMap<(String, usize), f64>>,
@@ -515,6 +539,9 @@ struct Renderer<'a> {
     prof: Prof,
     profile_gpu: bool,
 }
+
+// The fused CHOP kernel's stable C ABI (compiler/chop_lower.py `chops_v`).
+type ChopsVFn = unsafe extern "C" fn(*const f64, *mut f64);
 
 // A CHOP with its constant channel exprs pre-compiled (fasteval).
 struct ChopProg {
@@ -586,6 +613,22 @@ impl<'a> Renderer<'a> {
         let exprs = sched.exprs_lib.as_ref().map(|p| unsafe {
             libloading::Library::new(format!("{dir}/{p}")).expect("load exprs lib")
         });
+        // The fused CHOP kernel, if the DAG was fully lowered at compile time.
+        let chops_lib = sched.chops_lib.as_ref().map(|p| unsafe {
+            libloading::Library::new(format!("{dir}/{p}")).expect("load chops lib")
+        });
+        let chops_abi = sched.chops_abi.clone();
+        let (chop_state, chop_state_idx) = match &chops_abi {
+            Some(abi) => {
+                let idx = abi
+                    .states
+                    .iter()
+                    .map(|s| abi.outputs.iter().position(|o| o == s).unwrap_or(0))
+                    .collect();
+                (RefCell::new(vec![0.0; abi.states.len()]), idx)
+            }
+            None => (RefCell::new(Vec::new()), Vec::new()),
+        };
         let store: Chops = Arc::new(Mutex::new(HashMap::new()));
         if let Ok(txt) = std::fs::read_to_string(format!("{dir}/services.json")) {
             if let Ok(specs) = serde_json::from_str::<Vec<ServiceSpec>>(&txt) {
@@ -622,7 +665,7 @@ impl<'a> Renderer<'a> {
             gl, dir: dir.to_string(), sched, exprs, store,
             tex: HashMap::new(), fbo: HashMap::new(), prog: HashMap::new(), size: HashMap::new(),
             gles2, quad: None,
-            chop_progs, uniform_progs,
+            chop_progs, chops_lib, chops_abi, chop_state, chop_state_idx, uniform_progs,
             speed_state: RefCell::new(HashMap::new()), last_t: Cell::new(0.0),
             prof: Arc::new(Mutex::new(Default::default())),
             profile_gpu: std::env::var("TOXC_PROFILE").is_ok(),
@@ -639,6 +682,33 @@ impl<'a> Renderer<'a> {
     // interpreted uniforms like op('speed1')[0] resolve. Constant = its expr;
     // speed = time-integral of its input; others pass channel 0 through.
     fn eval_chops(&self, t: f64) {
+        // Preferred path: the whole DAG fused + compiled to one native kernel.
+        if let (Some(lib), Some(abi)) = (&self.chops_lib, &self.chops_abi) {
+            let dt = (t - self.last_t.get()).max(0.0).min(1.0);
+            self.last_t.set(t);
+            let frame = (t * 60.0).floor();
+            let mut input = Vec::with_capacity(3 + abi.sources.len() + abi.states.len());
+            input.push(t);
+            input.push(dt);
+            input.push(frame);
+            for (n, c) in &abi.sources {
+                input.push(chop_get(&self.store, n, c));
+            }
+            input.extend_from_slice(&self.chop_state.borrow());
+            let mut out = vec![0.0f64; abi.outputs.len()];
+            unsafe {
+                let f: libloading::Symbol<ChopsVFn> = lib.get(b"chops_v").expect("chops_v");
+                f(input.as_ptr(), out.as_mut_ptr());
+            }
+            for (i, (n, c)) in abi.outputs.iter().enumerate() {
+                chop_set(&self.store, n, c, out[i]);
+            }
+            let mut st = self.chop_state.borrow_mut();
+            for (j, &idx) in self.chop_state_idx.iter().enumerate() {
+                st[j] = out[idx];
+            }
+            return;
+        }
         if self.chop_progs.is_empty() {
             return;
         }

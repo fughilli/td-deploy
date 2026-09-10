@@ -36,9 +36,18 @@ to a native `.so` (mlir-opt → mlir-translate → clang) and is **bit-parity
 (|Δ|≤1e-9)** with `compiler/chop_ref.py` (a Python mirror of runtime_rs
 `eval_chops`) over a multi-frame sequence with carried state — replacing per-node
 fasteval interpretation. Gates: `//compiler:test_chop_lower` (compile+parity,
-manual/network), `//compiler:test_chop_ref` (hermetic). Next: wire the runtime to
-call `@chops` instead of the fasteval loop (fasteval stays as the unlowerable-expr
-fallback).
+manual/network), `//compiler:test_chop_ref` (hermetic).
+
+**And the runtime runs it.** A stable pointer ABI `void chops_v(const double* in,
+double* out)` is emitted next to the scalar `@chops`, compiled in-image to
+`chops/libchops.so` (`apps.nix`, same pipeline as `libexprs.so`) and `dlopen`ed;
+`Renderer::eval_chops` builds `[t,dt,frame,<sources>,<states>]`, calls the kernel,
+writes outputs to the store + carries the Speed accumulators. The fasteval loop is
+now the fallback (unlowerable DAGs). `emit_artifact` emits `chops.mlir`+`chops_abi`
+into the artifact. Verified in-container (aarch64): the emitted `chops.mlir`
+compiles via the exact in-image pipeline and `chops_v` returns `[0.5,0.5]` for the
+banana; runtime cross-builds; `bazel test //...` green. **User to verify on-device**
+(banana still spins; `chop:eval` in `/stats` should drop toward ~0).
 
 ## 2026-09-10 — On-Pi runtime: DRM/KMS HDMI, CHOP engine, perf counters (branch bazel-top-level)
 

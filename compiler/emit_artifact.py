@@ -95,6 +95,23 @@ def emit(plan, graph, outdir: str) -> dict:
         json.dump(getattr(graph, "services", []), f, indent=2)
 
     chops = list(getattr(graph, "chops", []))
+    # Fuse + lower the whole CHOP DAG to one native kernel (P1). Emit chops.mlir
+    # (compiled to chops/libchops.so in-image, arch-correct); the runtime calls
+    # `chops_v` instead of the fasteval loop. Falls back to fasteval (keeps the
+    # `chops` list) if any node is unlowerable.
+    chops_lib = None
+    chops_abi = None
+    if chops:
+        try:
+            from chop_lower import lower as _chop_lower
+            mlir, abi = _chop_lower(chops)
+            with open(os.path.join(outdir, "chops.mlir"), "w") as f:
+                f.write("module {\n" + mlir + "}\n")
+            chops_lib = "chops/libchops.so"
+            chops_abi = abi
+        except Exception as e:                       # noqa: BLE001 (parity fallback)
+            coverage["chop_lower_fallback"] = str(e)
+
     schedule = {
         "output": plan.output_id,
         "target": plan.target,
@@ -102,6 +119,8 @@ def emit(plan, graph, outdir: str) -> dict:
         "exprs_lib": "exprs/libexprs.so" if expr_funcs else None,
         "services": "services.json",
         "chops": chops,
+        "chops_lib": chops_lib,
+        "chops_abi": chops_abi,
     }
     with open(os.path.join(outdir, "schedule.json"), "w") as f:
         json.dump(schedule, f, indent=2)
