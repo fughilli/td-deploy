@@ -2,6 +2,33 @@
 
 Newest first. See `docs/design/tox-to-pi.md` for the full design.
 
+## 2026-09-10 (2) — VC4 GPU acceleration + fused-graph P0 (branch bazel-top-level)
+
+**VC4 hardware GL.** The GLESv2 transpiler backend is now stood up in the deploy,
+so the Pi 3 renders the graph on its VideoCore-IV GPU instead of llvmpipe:
+- The ascii artifact is compiled `target=gles2` and its shaders are translated to
+  GLSL ES 1.00 (`compiler/translate_gles.py`: desktop GLSL → glslang → SPIR-V →
+  spirv-cross `--es --version 100` → `%` legalization) into `shaders_gles/`, baked
+  into the prebuilt. All 8 shaders validated compiling under a real GLES2 context
+  (`check_gles2`).
+- `deploy/nix/apps.nix`: `softwareGL = false`. Surfaceless EGL binds the GPU's DRM
+  render node (renderD128 = vc4) unless `LIBGL_ALWAYS_SOFTWARE=1` forces llvmpipe;
+  the `video`/`render` groups were already granted.
+- `make_gl` logs `[gl] target=… renderer=… (hardware|SOFTWARE)` so the journal
+  shows VC4 vs llvmpipe at a glance. **User to verify on-device** (deploy, then
+  `journalctl -u sbc-tdplayer | grep '\[gl\]'` + `/stats` for the fps lift). If it
+  shows llvmpipe, the fallback is a GBM-platform EGL path on renderD128.
+
+**Fused CHOP+TOP MLIR — P0 (one graph).** The `tox` dialect now represents the
+CHOP DAG next to the TOPs (`docs/design/fused-chop-top-mlir.md` §7):
+- New `!tox.chop<N>` type + ops `chop_source`/`chop_constant`/`chop_expr`/
+  `chop_speed`/`chop_select`/`chop_sample` (`compiler/include/Tox/*.td`).
+- `compiler/chop_to_tox.py` emits the DAG from the importer's `chops` JSON; it
+  round-trips through `toxc-opt` (built via the pinned MLIR-18 nix shell).
+- Structural parity with the runtime CHOP eval — no fusion yet. Hermetic test
+  `//compiler:test_chop_to_tox`. Next: P1 (lower `chop_expr` → arith/math, fuse
+  the DAG into one compiled kernel, bit-parity vs fasteval).
+
 ## 2026-09-10 — On-Pi runtime: DRM/KMS HDMI, CHOP engine, perf counters (branch bazel-top-level)
 
 The whole td-deploy stack runs on a Pi 3 (tdplayer.local, deploy from the Mac via

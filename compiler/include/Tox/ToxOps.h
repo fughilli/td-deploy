@@ -1,6 +1,7 @@
 #ifndef TOX_TOXOPS_H
 #define TOX_TOXOPS_H
 
+#include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"

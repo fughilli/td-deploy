@@ -33,6 +33,24 @@ py_library(
     ],
 )
 
+# CHOP DAG -> tox dialect MLIR (P0 of the fused CHOP+TOP plan). Pure Python.
+py_library(
+    name = "chop_to_tox",
+    srcs = ["chop_to_tox.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+)
+
+# Hermetic (no MLIR toolchain) — runs in `bazel test //...`. The toxc-opt
+# round-trip is a manual check (needs the nixpkgs MLIR shell).
+py_test(
+    name = "test_chop_to_tox",
+    srcs = ["test_chop_to_tox.py"],
+    imports = ["."],
+    main = "test_chop_to_tox.py",
+    deps = [":chop_to_tox"],
+)
+
 # exprs.mlir -> exprs/libexprs.so, via the pinned nixpkgs mlir-opt/mlir-translate
 # /clang (compiler/nix/shell.sh). Host-arch dev convenience; the aarch64 build is
 # redone in-image. Runs the host `nix`, so tag it local + manual.

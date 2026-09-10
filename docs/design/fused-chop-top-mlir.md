@@ -145,10 +145,18 @@ it from single exprs to the whole CHOP DAG (constant/speed/math/… as `tox` ops
 
 ## 7. Phased plan
 
-- **P0 — one graph.** Represent the CHOP DAG as `tox` ops (`tox.constant`,
-  `tox.speed`/integrate, `tox.math`, `tox.analyze`) next to the TOP ops. Import
-  emits it (already emits the DAG as JSON; add the dialect builder). No
-  optimization yet — parity with today's runtime CHOP eval.
+- **P0 — one graph. ✅ landed (2026-09-10).** The `tox` dialect now carries the
+  CHOP DAG next to the TOPs: a parametric `!tox.chop<N>` type and the ops
+  `tox.chop_source` (live MIDI/OSC in), `tox.chop_constant` (literal),
+  `tox.chop_expr` (channels = TD expressions over input CHOPs — the general
+  control-math node, carried verbatim for parity), `tox.chop_speed` (integrator),
+  `tox.chop_select` (Null/Select passthrough) and `tox.chop_sample` (the
+  CHOP→uniform scalar edge). `compiler/chop_to_tox.py` emits the DAG from the
+  importer's `chops` JSON; it round-trips through `toxc-opt`
+  (`compiler/nix/shell.sh compiler/build/tools/toxc-opt/toxc-opt <(python3
+  compiler/chop_to_tox.py deploy/prebuilt/ascii/schedule.json)`). Hermetic test:
+  `//compiler:test_chop_to_tox`. No optimization yet — structural parity with the
+  runtime CHOP eval.
 - **P1 — CHOP fusion + compile.** Fold/DCE the CHOP subgraph; lower to one
   `arith`/`math`/`linalg` CPU kernel per uniform (via the M1 transpiler path),
   replacing per-node interpretation. Verify bit-parity vs the fasteval path.
