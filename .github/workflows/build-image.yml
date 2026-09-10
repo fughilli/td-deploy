@@ -1,0 +1,79 @@
+# Build the Raspberry Pi base image and publish it to a GitHub Release.
+#
+# The desktop app never builds the image — it downloads the .img published here
+# (deploy_engine/download.py resolves it by release tag). Runs on a native arm64
+# Linux runner so the aarch64 NixOS sdImage builds without QEMU/cross.
+#
+# The sbc-deploy image target emits a COMPRESSED .img.zst; the app's flasher writes
+# a raw .img, so we decompress before publishing and attach a .sha256 the app
+# verifies against.
+name: build-image
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the image to"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04-arm      # native aarch64 -> no cross/QEMU
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+            system-features = kvm big-parallel nixos-test
+
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@0.9.0
+        with: { bazelisk-cache: true, disk-cache: true, repository-cache: true }
+
+      - name: Build SD image (no flash)
+        id: build
+        run: |
+          set -euo pipefail
+          # image_sd --no-write builds the image and prints "==> Built image: <path>".
+          bazel run //deploy:tdplayer_pi3.image_sd -- --no-write 2>&1 | tee build.log
+          IMG="$(grep -oE '==> Built image: .*' build.log | tail -n1 | sed 's/==> Built image: //')"
+          test -n "$IMG"
+          echo "img=$IMG" >> "$GITHUB_OUTPUT"
+
+      - name: Decompress + checksum
+        id: pack
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          IMG="${{ steps.build.outputs.img }}"
+          NAME="tdplayer-pi3.img"
+          if [[ "$IMG" == *.zst ]]; then
+            nix run nixpkgs#zstd -- -d -c "$IMG" > "out/$NAME"
+          else
+            cp "$IMG" "out/$NAME"
+          fi
+          ( cd out && sha256sum "$NAME" | tee "$NAME.sha256" )
+          ls -l out
+
+      - name: Resolve tag
+        id: tag
+        run: echo "tag=${{ github.event.release.tag_name || github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+
+      - name: Attach image to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          files: |
+            out/tdplayer-pi3.img
+            out/tdplayer-pi3.img.sha256

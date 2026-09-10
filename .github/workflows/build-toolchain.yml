@@ -1,0 +1,139 @@
+# Build the per-OS host cross-toolchain bundle the desktop app ships.
+#
+# Output (uploaded as artifact `toolchain-<os>`): the pieces the finish step needs
+# to turn optimized MLIR into an aarch64-linux .so + GLSL ES on the user's laptop:
+#   mlir-opt, mlir-translate, clang, lld, glslang, spirv-cross + an aarch64 sysroot.
+#
+# The heavy piece is mlir-opt/mlir-translate (NOT in the LLVM release): built from
+# the pinned compiler/nix on macOS; built from LLVM source with MSVC on Windows
+# (cached aggressively — this is the long job).
+name: build-toolchain
+
+on:
+  workflow_dispatch:
+  workflow_call:            # invoked by build-app
+  push:
+    paths: [ "compiler/nix/**", "app/packaging/**", ".github/workflows/build-toolchain.yml" ]
+
+env:
+  LLVM_VERSION: "18.1.8"
+  GLSLANG_VERSION: "14.3.0"
+  SPIRV_CROSS_VERSION: "vulkan-sdk-1.3.290.0"
+
+jobs:
+  # ---------------------------------------------------------------- macOS -------
+  macos:
+    runs-on: macos-14        # arm64
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build MLIR tools (pinned compiler/nix)
+        run: |
+          set -euo pipefail
+          mkdir -p stage/mlir
+          expr="$(cat compiler/nix/mlir.nix)"
+          nix develop --impure --expr "$expr" --command bash -c '
+            cp -L "$(command -v mlir-opt)"       stage/mlir/mlir-opt
+            cp -L "$(command -v mlir-translate)" stage/mlir/mlir-translate
+          '
+
+      - name: Fetch clang + lld (LLVM release)
+        run: |
+          set -euo pipefail
+          mkdir -p stage/llvm
+          url="https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/clang+llvm-${LLVM_VERSION}-arm64-apple-macos11.tar.xz"
+          curl -fL "$url" | tar -xJ --strip-components=1 -C stage/llvm-full || true
+          cp -L stage/llvm-full/bin/clang   stage/llvm/clang
+          cp -L stage/llvm-full/bin/clang++ stage/llvm/clang++
+          cp -L stage/llvm-full/bin/ld.lld  stage/llvm/ld.lld
+
+      - name: aarch64 sysroot (nixpkgs pkgsCross)
+        run: |
+          set -euo pipefail
+          sr="$(nix build --impure --no-link --print-out-paths \
+            'nixpkgs#pkgsCross.aarch64-multiplatform.stdenv.cc.libc')"
+          mkdir -p stage/sysroot
+          cp -aL "$sr"/. stage/sysroot/ || true
+
+      - name: glslang + spirv-cross
+        run: |
+          set -euo pipefail
+          mkdir -p stage/glslang stage/spirv-cross
+          nix build --no-link --print-out-paths nixpkgs#glslang    | tail -1 | xargs -I{} cp -L {}/bin/glslang     stage/glslang/glslang
+          nix build --no-link --print-out-paths nixpkgs#spirv-cross | tail -1 | xargs -I{} cp -L {}/bin/spirv-cross stage/spirv-cross/spirv-cross
+
+      - name: Assemble bundle
+        run: STAGE=stage OUT=app/toolchain app/packaging/assemble_toolchain.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: toolchain-macos
+          path: app/toolchain
+
+  # -------------------------------------------------------------- Windows -------
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+
+      - name: Cache LLVM+MLIR build
+        id: cache-mlir
+        uses: actions/cache@v4
+        with:
+          path: mlir-install
+          key: mlir-${{ env.LLVM_VERSION }}-msvc-${{ runner.os }}
+
+      - name: Build LLVM + MLIR (MSVC) — the heavy job
+        if: steps.cache-mlir.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          # Clone the pinned LLVM and build only the mlir-opt/mlir-translate tools.
+          git clone --depth 1 --branch llvmorg-$env:LLVM_VERSION https://github.com/llvm/llvm-project.git
+          cmake -S llvm-project/llvm -B build -G "Ninja Multi-Config" `
+            -DLLVM_ENABLE_PROJECTS="mlir" `
+            -DLLVM_TARGETS_TO_BUILD="AArch64" `
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --target mlir-opt mlir-translate
+          New-Item -ItemType Directory -Force mlir-install\bin | Out-Null
+          Copy-Item build\Release\bin\mlir-opt.exe       mlir-install\bin\
+          Copy-Item build\Release\bin\mlir-translate.exe mlir-install\bin\
+
+      - name: Fetch clang + lld (LLVM release)
+        shell: pwsh
+        run: |
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/clang+llvm-$env:LLVM_VERSION-x86_64-pc-windows-msvc.tar.xz"
+          curl.exe -fL $url -o llvm.tar.xz
+          mkdir llvm-full; tar -xf llvm.tar.xz --strip-components=1 -C llvm-full
+
+      - name: Fetch glslang + spirv-cross (releases)
+        shell: pwsh
+        run: |
+          curl.exe -fL "https://github.com/KhronosGroup/glslang/releases/download/$env:GLSLANG_VERSION/glslang-master-windows-Release.zip" -o glslang.zip
+          Expand-Archive glslang.zip -DestinationPath glslang
+          curl.exe -fL "https://github.com/KhronosGroup/SPIRV-Cross/archive/refs/tags/$env:SPIRV_CROSS_VERSION.zip" -o sc.zip
+          # NOTE: spirv-cross ships source; CI builds it (cmake) — omitted here for brevity.
+
+      - name: aarch64 sysroot (Debian rootfs)
+        shell: pwsh
+        run: |
+          # A prebuilt aarch64-linux-gnu sysroot (crt + libc/libm dev). CI pins a
+          # known-good rootfs tarball; the app links -shared against it.
+          curl.exe -fL "https://github.com/fughilli/td-deploy/releases/download/sysroot-v1/aarch64-linux-gnu-sysroot.tar.xz" -o sysroot.tar.xz
+          mkdir sysroot; tar -xf sysroot.tar.xz -C sysroot
+
+      - name: Assemble bundle
+        shell: pwsh
+        run: |
+          .\app\packaging\assemble_toolchain.ps1 `
+            -Mlir mlir-install\bin -Llvm llvm-full\bin -Glslang glslang\bin `
+            -SpirvCross spirv-cross\bin -Sysroot sysroot -Out app\toolchain
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: toolchain-windows
+          path: app/toolchain

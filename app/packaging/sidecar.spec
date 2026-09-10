@@ -39,6 +39,11 @@ _tc = os.path.join(APP, "toolchain")
 if os.path.isdir(_tc):
     datas.append((_tc, "toolchain"))
 
+# CI-stamped base image tag (build_app writes app/version.json), read at runtime.
+_ver = os.path.join(APP, "version.json")
+if os.path.isfile(_ver):
+    datas.append((_ver, "."))
+
 a = Analysis(
     [os.path.join(APP, "sidecar.py")],
     pathex=[REPO, APP, COMPILER],

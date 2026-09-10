@@ -6,6 +6,10 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $app  = (Resolve-Path "$here\..").Path
 $repo = (Resolve-Path "$app\..").Path
 
+Write-Host "==> stamp base image tag"
+$tag = if ($env:BASE_IMAGE_TAG) { $env:BASE_IMAGE_TAG } else { "latest" }
+"{`"base_image_tag`": `"$tag`"}" | Out-File -Encoding utf8 "$app\version.json"
+
 Write-Host "==> python deps"
 python -m pip install -r "$here\requirements.txt"
 

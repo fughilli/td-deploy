@@ -60,12 +60,26 @@ def _overall(phase: str, frac: float) -> float:
     return (done + cur * max(0.0, min(1.0, frac))) / total
 
 
+def _base_image_tag() -> str:
+    """The base image tag this build was stamped with (build_app writes version.json
+    next to the frozen bundle / repo root); 'latest' when unstamped."""
+    from deploy_engine import _paths
+    for cand in (os.path.join(_paths.REPO_ROOT, "version.json"),
+                 os.path.join(os.path.dirname(os.path.abspath(__file__)), "version.json")):
+        try:
+            with open(cand) as f:
+                return json.load(f).get("base_image_tag") or "latest"
+        except (OSError, ValueError):
+            continue
+    return os.environ.get("TDDEPLOY_BASE_IMAGE_TAG", "latest")
+
+
 class Sidecar:
     def __init__(self) -> None:
         self.settings = {
             "pi": "tdplayer.local", "target": "gles2", "key": None,
             "set_file": [], "bridge": os.environ.get("TOXC_HOST"),
-            "user": "root",
+            "user": "root", "base_image_tag": _base_image_tag(),
         }
         self.toe: str | None = None
         self._deploy_req = threading.Event()

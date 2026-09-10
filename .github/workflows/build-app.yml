@@ -1,0 +1,62 @@
+# Package the td-deploy Studio desktop app for macOS + Windows and attach the
+# installers to a GitHub Release.
+#
+# Pulls the per-OS cross-toolchain bundle from build-toolchain, freezes the Python
+# sidecar with PyInstaller, then runs electron-builder. The app pins BASE_IMAGE_TAG
+# so a fresh install's "Flash SD" pulls the matching base image (build-image.yml).
+name: build-app
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  toolchain:
+    uses: ./.github/workflows/build-toolchain.yml
+
+  app:
+    needs: toolchain
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            artifact: toolchain-macos
+            build: bash app/packaging/build_app.sh
+          - os: windows-2022
+            artifact: toolchain-windows
+            build: powershell -ExecutionPolicy Bypass -File app/packaging/build_app.ps1
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+
+      - name: Fetch toolchain bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: app/toolchain
+
+      - name: Stamp base image tag
+        shell: bash
+        run: echo "BASE_IMAGE_TAG=${{ github.event.release.tag_name || 'latest' }}" >> "$GITHUB_ENV"
+
+      - name: Build app
+        run: ${{ matrix.build }}
+
+      - name: Attach installers to the release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            app/electron/dist/*.dmg
+            app/electron/dist/*.exe

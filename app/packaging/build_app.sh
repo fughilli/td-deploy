@@ -10,6 +10,9 @@ here="$(cd "$(dirname "$0")" && pwd)"
 app="$(cd "$here/.." && pwd)"
 repo="$(cd "$app/.." && pwd)"
 
+echo "==> stamp base image tag"
+printf '{"base_image_tag": "%s"}\n' "${BASE_IMAGE_TAG:-latest}" > "$app/version.json"
+
 echo "==> python deps"
 python3 -m pip install -r "$here/requirements.txt"
 

@@ -72,6 +72,8 @@ window.td.onEvent((evt) => {
   switch (evt.type) {
     case 'ready':
       pushSettings();
+      if (evt.settings && evt.settings.base_image_tag)
+        fm.tag.value = evt.settings.base_image_tag;   // CI-stamped default
       log('sidecar ready');
       break;
     case 'start':

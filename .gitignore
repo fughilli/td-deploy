@@ -37,6 +37,7 @@ runtime_rs/*.png
 app/dist/
 app/build/
 app/toolchain/
+app/version.json
 app/electron/node_modules/
 app/electron/dist/
 __pycache__/
