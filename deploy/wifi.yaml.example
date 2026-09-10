@@ -1,0 +1,28 @@
+# WiFi networks for the board. Two ways to use this file:
+#
+#   SEED (recommended, esp. for secrets) — push to a RUNNING board as a
+#   persistent NetworkManager layer; NOT baked into the image / nix store, and
+#   survives redeploys. Copy to deploy/secrets/wifi.yaml (that dir is gitignored),
+#   edit in your creds, then:
+#       cp deploy/wifi.yaml.example deploy/secrets/wifi.yaml   # then edit
+#       bazel run //deploy:tdplayer_pi3.seed_wifi -- tdplayer.local \
+#           --wifi-file deploy/secrets/wifi.yaml
+#   Manage: `... .seed_wifi -- tdplayer.local --list` / `--remove <ssid>`.
+#
+#   BAKE (declarative, reproducible across a reflash; the PSK ends up in the nix
+#   store) — set `wifi_config_file = "wifi.yaml"` on the sbc_application in
+#   deploy/BUILD.bazel; then image_sd / deploy_live include these networks, and
+#   `.seed_wifi` (no --wifi-file) seeds the same list.
+#
+# Schema: a list under `networks`, each { ssid, psk?, priority?, hidden? }.
+# Higher priority wins (Ethernet stays default-route while connected); omit psk
+# for an open network; set `hidden: true` for a non-broadcast SSID.
+networks:
+  - ssid: My Home Wi-Fi
+    psk: change-me
+    priority: 100
+  - ssid: Phone Hotspot
+    psk: change-me-too
+    priority: 10
+  # - ssid: GuestOpen      # open network — no psk
+  #   priority: 5

@@ -25,7 +25,24 @@ bazel run //deploy:tdplayer_pi3.image_sd_base -- --device /dev/sdX
 bazel run //deploy:tdplayer_pi3.deploy_live -- tdplayer.local
 bazel run //deploy:tdplayer_pi3.ssh         -- tdplayer.local
 bazel run //deploy:tdplayer_pi3.keys        -- init
+
+# 5. seed WiFi onto a running board (persistent; survives redeploys):
+cp deploy/wifi.yaml.example deploy/secrets/wifi.yaml   # then edit in your SSID/PSK
+bazel run //deploy:tdplayer_pi3.seed_wifi   -- tdplayer.local --wifi-file deploy/secrets/wifi.yaml
+bazel run //deploy:tdplayer_pi3.seed_wifi   -- tdplayer.local --list
 ```
+
+## WiFi
+
+`.seed_wifi` pushes the networks in a YAML file onto a **running** board as a
+persistent NetworkManager layer (`nmcli`, profiles named `seed-<ssid>` in
+`/etc/NetworkManager/system-connections`). It is **not** baked into the image —
+secret PSKs stay off the nix store — and it survives `deploy_live`. See
+[`wifi.yaml.example`](wifi.yaml.example) for the schema (`{ssid, psk?, priority?,
+hidden?}`). Put real creds in `deploy/secrets/wifi.yaml` (gitignored) and pass it
+with `--wifi-file`; `--list` / `--remove <ssid>` manage seeded profiles. To bake
+networks into the image instead (reproducible across a reflash, PSK in the store),
+set `wifi_config_file = "wifi.yaml"` on the `sbc_application` in `BUILD.bazel`.
 
 Boot the Pi and view the live render at `http://<pi>:8788/` (MJPEG). On macOS,
 start the aarch64 builder first: `bazel run @sbc_deploy//:linux_builder`.
