@@ -107,21 +107,25 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
         def _p(names, default):
             for nm in names:
                 if nm in n.params:
-                    return value_or_expr(n.params[nm], default)
+                    return value_or_expr(n.params[nm], default)  # float OR expr string
             return default
-        rot = _p(["rotate", "r"], 0.0)                      # degrees (literal or expr)
-        tx = float(_p(["tx", "translatex"], 0.0))
-        ty = float(_p(["ty", "translatey"], 0.0))
-        # TD Transform TOP: per-axis Scale is sx/sy (NOT scalex/scaley), times a
-        # separate "Uniform Scale" (scale). Read robustly + apply the multiplier.
-        uscale = float(_p(["scale"], 1.0))
-        sx = float(_p(["sx", "scalex"], 1.0)) * uscale
-        sy = float(_p(["sy", "scaley"], 1.0)) * uscale
+        # Every transform component can be a per-frame TD expression (e.g. scale =
+        # op('midiin1')[1]/64), so lower them ALL as time-uniforms (evaluated each
+        # frame via the compiled/interpreted expr path), like rotate. TD names:
+        # translate tx/ty, rotate, per-axis Scale sx/sy, "Uniform Scale" scale.
+        rot = _p(["rotate", "r"], 0.0)         # degrees
+        uscale = _p(["scale"], 1.0)            # uniform-scale multiplier
+        usc = float(uscale) if isinstance(uscale, (int, float)) else 1.0
         return Step(nid, n.op, "shader", ot, inputs=inputs,
                     vertex=shaders.vertex(target),
                     fragment=shaders.transform_top(target),
-                    uniforms={"uTranslate": ("vec2", [tx, ty]), "uScale": ("vec2", [sx, sy])},
-                    time_uniforms={"uRotate": {"expr": rot, "mul": math.pi / 180.0}},
+                    time_uniforms={
+                        "uRotate": {"expr": rot, "mul": math.pi / 180.0},
+                        "uTranslateX": {"expr": _p(["tx", "translatex"], 0.0), "mul": 1.0},
+                        "uTranslateY": {"expr": _p(["ty", "translatey"], 0.0), "mul": 1.0},
+                        "uScaleX": {"expr": _p(["sx", "scalex"], 1.0), "mul": usc},
+                        "uScaleY": {"expr": _p(["sy", "scaley"], 1.0), "mul": usc},
+                    },
                     params=dict(n.params))
 
     if n.op in PASSTHROUGH_OPS:

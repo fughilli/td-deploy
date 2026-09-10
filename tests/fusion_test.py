@@ -28,22 +28,25 @@ class FusionTest(unittest.TestCase):
         t = shaders[0]
         self.assertEqual(t.node_id, "t")           # transform keeps its id
         self.assertEqual(t.inputs, ["src"])        # now samples the source
-        self.assertIn("uCropRect", t.uniforms)     # both uniform sets carried
-        self.assertIn("uScale", t.uniforms)
+        self.assertIn("uCropRect", t.uniforms)      # crop's static uniform carried
+        self.assertIn("uScaleX", t.time_uniforms)   # transform's (dynamic) scale carried
         self.assertIn("mix(uCropRect", t.fragment)  # composed coordinate remap
         self.assertEqual(t.params.get("_fused_from"), "c")
 
-    def test_transform_scale_param_names(self):
-        # TD Transform TOP per-axis scale is sx/sy times a uniform `scale`.
+    def test_transform_scale_is_dynamic(self):
+        # sx/sy are TD per-frame expressions -> per-component time-uniforms with the
+        # uniform-scale multiplier folded into `mul` (not a static uniform).
         g = Graph.from_json({"output": "t", "nodes": [
             {"id": "src", "op": "image_in", "family": "TOP", "inputs": [],
              "out_type": {"w": 256, "h": 256, "fmt": "rgba8"}},
             {"id": "t", "op": "transform", "family": "TOP", "inputs": ["src"],
-             "params": {"sx": "2", "sy": "3", "scale": "2"},
+             "params": {"sx": "op('midiin1')[1] / 64", "sy": "2", "scale": "3"},
              "out_type": {"w": 256, "h": 256, "fmt": "rgba8"}},
         ]})
         t = [s for s in lower(g, "desktop_gl").steps if s.kind == "shader"][0]
-        self.assertEqual(t.uniforms["uScale"], ("vec2", [4.0, 6.0]))  # sx*scale, sy*scale
+        self.assertEqual(t.time_uniforms["uScaleX"], {"expr": "op('midiin1')[1] / 64", "mul": 3.0})
+        self.assertEqual(t.time_uniforms["uScaleY"], {"expr": 2.0, "mul": 3.0})
+        self.assertNotIn("uScale", t.uniforms)  # no longer a static vec2
 
     def test_shared_crop_not_fused(self):
         # When the crop feeds another op too, it must stay its own pass.

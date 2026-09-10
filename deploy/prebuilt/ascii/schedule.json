@@ -47,26 +47,30 @@
             0.0,
             1.0
           ]
-        },
-        "uTranslate": {
-          "type": "vec2",
-          "value": [
-            0.0,
-            0.0
-          ]
-        },
-        "uScale": {
-          "type": "vec2",
-          "value": [
-            1.0,
-            1.0
-          ]
         }
       },
       "time_uniforms": {
         "uRotate": {
           "interpreted": "op('speed1')[0] * 1000",
           "mul": 0.017453292519943295
+        },
+        "uTranslateX": {
+          "fn": "expr0",
+          "inputs": [],
+          "mul": 1.0
+        },
+        "uTranslateY": {
+          "fn": "expr0",
+          "inputs": [],
+          "mul": 1.0
+        },
+        "uScaleX": {
+          "interpreted": "op('midiin1')[1] / 64",
+          "mul": 1.0
+        },
+        "uScaleY": {
+          "interpreted": "op('midiin1')[1] / 64",
+          "mul": 1.0
         }
       }
     },
@@ -171,7 +175,7 @@
       ]
     }
   ],
-  "exprs_lib": null,
+  "exprs_lib": "exprs/libexprs.so",
   "services": "services.json",
   "chops": [
     {

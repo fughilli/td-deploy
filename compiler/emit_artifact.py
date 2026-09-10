@@ -30,19 +30,19 @@ def emit(plan, graph, outdir: str) -> dict:
     os.makedirs(os.path.join(outdir, "assets"), exist_ok=True)
 
     expr_funcs: list[str] = []
-    expr_cache: dict[str, str] = {}   # expr string -> fn name (dedup)
+    expr_cache: dict[str, tuple] = {}   # expr string -> (fn name, input names) (dedup)
     steps_json = []
     coverage = {"interpreted_exprs": []}
 
     def add_expr(expr: str):
         if expr in expr_cache:
-            return expr_cache[expr], None
+            return expr_cache[expr]           # (fn, inputs) — keep the input list!
         mlir, info = transpile(expr, fname=f"expr{len(expr_funcs)}")
         if mlir is None:
             return None, info                 # unsupported -> Rust/py fallback
         fn = f"expr{len(expr_funcs)}"
         expr_funcs.append(mlir)
-        expr_cache[expr] = fn
+        expr_cache[expr] = (fn, info)
         return fn, info
 
     for st in plan.steps:
