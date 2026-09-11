@@ -35,16 +35,20 @@ jobs:
   # the build closure so the exes run standalone.
   win-tools:
     runs-on: ubuntu-latest
+    environment: CI # provides CACHIX_AUTH_TOKEN
     steps:
       - uses: actions/checkout@v4
       # DeterminateSystems installer sets the flake registry so `nixpkgs#…`
       # resolves (nix-quick-install-action provides no <nixpkgs> / NIX_PATH).
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: nix-community/cache-nix-action@v6
+      # Cachix (fugstudio): the LLVM/MLIR closure is far larger than GitHub's 10 GB
+      # actions-cache, so use Cachix instead — it substitutes prior builds and
+      # pushes new ones, turning the ~2.5h cross-build into a cache pull after the
+      # first run.
+      - uses: cachix/cachix-action@v15
         with:
-          primary-key: nix-wintools-${{ hashFiles('.github/workflows/build-toolchain.yml') }}
-          restore-prefixes-first-match: nix-wintools-
-          gc-max-store-size: 5G
+          name: fugstudio
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Cross-build mlir/glslang/spirv-cross for Windows (mingw)
         run: |
@@ -129,6 +133,7 @@ jobs:
   # ---------------------------------------------------------------- macOS -------
   macos:
     runs-on: macos-14 # arm64
+    environment: CI # provides CACHIX_AUTH_TOKEN
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
@@ -137,11 +142,10 @@ jobs:
       # resolves). NOTE: do NOT use magic-nix-cache-action — its static arm64
       # binary crashes on macos-14 (libc++ symbol mismatch) and hangs the job.
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: nix-community/cache-nix-action@v6
+      - uses: cachix/cachix-action@v15
         with:
-          primary-key: nix-macos-${{ hashFiles('compiler/nix/mlir.nix') }}
-          restore-prefixes-first-match: nix-macos-
-          gc-max-store-size: 5G
+          name: fugstudio
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Build MLIR tools (pinned compiler/nix)
         run: |
@@ -185,9 +189,17 @@ jobs:
   windows:
     needs: win-tools
     runs-on: windows-2022
+    timeout-minutes: 25 # fail fast instead of hanging for hours on the extract
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
+
+      - name: Speed up file I/O (disable Defender realtime)
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE" -ErrorAction SilentlyContinue
+          Write-Host "defender realtime disabled (best effort)"
 
       - name: Fetch cross-built Windows tools
         uses: actions/download-artifact@v4
@@ -197,13 +209,17 @@ jobs:
         shell: pwsh
         run: |
           $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/clang+llvm-$env:LLVM_VERSION-x86_64-pc-windows-msvc.tar.xz"
+          # Time download vs extract separately so a slow run points at the culprit.
+          Write-Host "== downloading =="; $t = Get-Date
           curl.exe -fL $url -o llvm.tar.xz
-          # Extract ONLY the 3 tools we need. Extracting the whole ~2.5 GB release
-          # is pathologically slow on Windows (Defender scans every file) — it hung
-          # the job for ~1h. bsdtar treats trailing operands as match patterns.
-          mkdir llvm-full
+          Write-Host "download took $((Get-Date) - $t); size=$((Get-Item llvm.tar.xz).Length)"
+          # Extract ONLY the 3 tools we need (bsdtar treats trailing operands as
+          # match patterns) — avoids writing the whole ~2.5 GB release.
+          Write-Host "== extracting =="; $t = Get-Date
+          New-Item -ItemType Directory -Force llvm-full | Out-Null
           tar -xf llvm.tar.xz --strip-components=1 -C llvm-full `
             "*/bin/clang.exe" "*/bin/clang++.exe" "*/bin/ld.lld.exe"
+          Write-Host "extract took $((Get-Date) - $t)"
           Copy-Item llvm-full\bin\clang.exe   app\toolchain\bin\
           Copy-Item llvm-full\bin\clang++.exe app\toolchain\bin\
           Copy-Item llvm-full\bin\ld.lld.exe  app\toolchain\bin\

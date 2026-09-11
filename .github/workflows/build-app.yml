@@ -18,6 +18,7 @@ permissions:
 jobs:
   toolchain:
     uses: ./.github/workflows/build-toolchain.yml
+    secrets: inherit # pass CACHIX_AUTH_TOKEN (CI environment) to the reusable jobs
 
   app:
     needs: toolchain
