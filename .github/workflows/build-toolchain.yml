@@ -49,6 +49,9 @@ jobs:
       - name: Cross-build mlir/glslang/spirv-cross for Windows (mingw)
         run: |
           set -euo pipefail
+          # glslang/spirv-cross mark the mingw system unsupported in meta.platforms
+          # (nix refuses to build without this); the exes themselves are fine.
+          export NIXPKGS_ALLOW_UNSUPPORTED_SYSTEM=1
           # Pin to nixos-24.11 (same LLVM/MLIR 18 as compiler/nix/mlir.nix).
           # mlir must link LLVM STATICALLY: a shared libLLVM-18.dll exceeds the
           # Windows PE export-ordinal limit (~64K) and fails to link, so override
@@ -69,8 +72,8 @@ jobs:
                })
           '
           mlir="$(nix build --impure --no-link --print-out-paths --expr "$EXPR")"
-          gls="$(nix build --no-link --print-out-paths "${X}.glslang")"
-          sc="$(nix build --no-link --print-out-paths "${X}.spirv-cross")"
+          gls="$(nix build --impure --no-link --print-out-paths "${X}.glslang")"
+          sc="$(nix build --impure --no-link --print-out-paths "${X}.spirv-cross")"
 
           mkdir -p bundle/bin
           cp -Lv "$mlir"/bin/mlir-opt.exe "$mlir"/bin/mlir-translate.exe bundle/bin/
