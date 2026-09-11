@@ -54,10 +54,19 @@ jobs:
           # Windows PE export-ordinal limit (~64K) and fails to link, so override
           # enableSharedLibraries=false. glslang/spirv-cross don't use libLLVM.
           X='github:NixOS/nixpkgs/nixos-24.11#pkgsCross.mingwW64'
+          # Also point cross MLIR at NATIVE build tools (mlir-linalg-ods-yaml-gen
+          # etc.): nixpkgs sets native llvm/mlir-tblgen for cross but not the Linalg
+          # yaml generator, which then cross-compiles and can't run on the Linux
+          # host. buildPackages.…mlir is the native mlir nixpkgs already builds for
+          # mlir-tblgen, so LLVM_NATIVE_TOOL_DIR reuses it at no extra cost.
           EXPR='
             let cross = (import (builtins.getFlake "github:NixOS/nixpkgs/nixos-24.11") {}).pkgsCross.mingwW64;
                 l = cross.llvmPackages_18;
-            in l.mlir.override { libllvm = l.libllvm.override { enableSharedLibraries = false; }; }
+                staticLLVM = l.libllvm.override { enableSharedLibraries = false; };
+            in (l.mlir.override { libllvm = staticLLVM; }).overrideAttrs (old: {
+                 cmakeFlags = (old.cmakeFlags or [])
+                   ++ [ "-DLLVM_NATIVE_TOOL_DIR=${cross.buildPackages.llvmPackages_18.mlir}/bin" ];
+               })
           '
           mlir="$(nix build --impure --no-link --print-out-paths --expr "$EXPR")"
           gls="$(nix build --no-link --print-out-paths "${X}.glslang")"
