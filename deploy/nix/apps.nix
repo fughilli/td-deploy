@@ -14,10 +14,10 @@
 let
   runtimeBin = sbcBuildData."toxc_runtime" or (throw
     "toxc_runtime binary missing from build_data — add //runtime_rs:toxc_runtime "
-    + "to sbc_application(build_data=…).");
+  + "to sbc_application(build_data=…).");
   artifactSrc = sbcBuildData."toxc_artifact" or (throw
     "toxc_artifact missing from build_data — add //deploy:toxc_artifact "
-    + "to sbc_application(build_data=…).");
+  + "to sbc_application(build_data=…).");
 
   # Baked output config for this image.
   port = 8788;
@@ -65,7 +65,10 @@ let
 
   # The runtime: a dynamic aarch64 binary from Bazel. autoPatchelf fixes the ELF
   # interpreter + rpath for NixOS; makeWrapper adds the dlopen'd Mesa EGL/GL libs
-  # + the headless-EGL env, and bakes the `stream <artifact> <port> <fps>` args.
+  # + the headless-EGL env. The `stream <artifact> …` args are chosen at RUNTIME by
+  # a small resolver script (bin/toxc-runtime): the td-deploy app drops a fresh
+  # artifact at /var/lib/tdplayer/current (atomic symlink) for a live update, and a
+  # newly-flashed image (no `current` yet) falls back to the baked demo `${artifact}`.
   toxcPkg = pkgs.stdenv.mkDerivation {
     name = "toxc-runtime";
     dontUnpack = true;
@@ -75,18 +78,22 @@ let
       install -Dm755 ${runtimeBin} "$out/libexec/toxc-runtime"
     '';
     postFixup = ''
-      makeWrapper "$out/libexec/toxc-runtime" "$out/bin/toxc-runtime" \
-        --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath glLibs} \
-        --set EGL_PLATFORM surfaceless \
-        --set __EGL_VENDOR_LIBRARY_DIRS ${pkgs.mesa}/share/glvnd/egl_vendor.d \
-        --set MESA_SHADER_CACHE_DISABLE true \
-        --set GBM_BACKENDS_PATH ${pkgs.mesa}/lib/gbm \
-        --set LIBGL_DRIVERS_PATH ${pkgs.mesa}/lib/dri \
-        ${lib.optionalString softwareGL "--set LIBGL_ALWAYS_SOFTWARE 1"} \
-        --add-flags stream \
-        --add-flags ${artifact} \
-        --add-flags ${toString port} \
-        --add-flags ${toString fps}
+            makeWrapper "$out/libexec/toxc-runtime" "$out/libexec/toxc-runtime-env" \
+              --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath glLibs} \
+              --set EGL_PLATFORM surfaceless \
+              --set __EGL_VENDOR_LIBRARY_DIRS ${pkgs.mesa}/share/glvnd/egl_vendor.d \
+              --set MESA_SHADER_CACHE_DISABLE true \
+              --set GBM_BACKENDS_PATH ${pkgs.mesa}/lib/gbm \
+              --set LIBGL_DRIVERS_PATH ${pkgs.mesa}/lib/dri \
+              ${lib.optionalString softwareGL "--set LIBGL_ALWAYS_SOFTWARE 1"}
+            mkdir -p "$out/bin"
+            cat > "$out/bin/toxc-runtime" <<EOF
+      #!${pkgs.runtimeShell}
+      ART=/var/lib/tdplayer/current
+      [ -e "\$ART" ] || ART=${artifact}
+      exec $out/libexec/toxc-runtime-env stream "\$ART" ${toString port} ${toString fps}
+      EOF
+            chmod +x "$out/bin/toxc-runtime"
     '';
   };
 in

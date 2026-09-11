@@ -1,0 +1,233 @@
+# Build the per-OS host cross-toolchain bundle the desktop app ships.
+#
+# Output (artifact `toolchain-<os>`): the tools the finish step needs to turn
+# optimized MLIR into an aarch64-linux .so + GLSL ES on the user's laptop:
+#   mlir-opt, mlir-translate, clang, lld, glslangValidator, spirv-cross.
+#
+# No sysroot: the kernels compile from already-lowered .ll (no headers), are shared
+# libs (undefined symbols allowed at link), and the Pi runtime already has libm/libc
+# loaded when it dlopens them — so finish cross-links with `-nostdlib` and leaves
+# libm undefined, resolved on-device (see deploy_engine/toolchain.py).
+#
+# The heavy piece (mlir-opt/mlir-translate — NOT in the LLVM release) is
+# CROSS-BUILT on Linux for BOTH targets via nixpkgs pkgsCross: Windows tools are
+# produced on a fast Linux runner (no slow MSVC LLVM build), macOS builds natively.
+name: build-toolchain
+
+on:
+  workflow_dispatch:
+  workflow_call: # invoked by build-app
+  push:
+    paths:
+      - 'compiler/nix/**'
+      - 'app/packaging/**'
+      - '.github/workflows/build-toolchain.yml'
+
+env:
+  LLVM_VERSION: '18.1.8'
+
+jobs:
+  # ------------------------------------------------ Windows tools (on Linux) ----
+  # Cross-build the Windows mlir/glslang/spirv-cross .exe on a Linux runner via
+  # nixpkgs pkgsCross.mingwW64 — hermetic + reproducible, and far faster than a
+  # from-source MSVC LLVM build on a Windows runner. clang/lld come from the LLVM
+  # Windows release (added by the windows job). mingw runtime DLLs are bundled from
+  # the build closure so the exes run standalone.
+  win-tools:
+    runs-on: ubuntu-latest
+    environment: CI # provides CACHIX_AUTH_TOKEN
+    steps:
+      - uses: actions/checkout@v4
+      # DeterminateSystems installer sets the flake registry so `nixpkgs#…`
+      # resolves (nix-quick-install-action provides no <nixpkgs> / NIX_PATH).
+      - uses: DeterminateSystems/nix-installer-action@main
+      # Cachix (fugstudio): the LLVM/MLIR closure is far larger than GitHub's 10 GB
+      # actions-cache, so use Cachix instead — it substitutes prior builds and
+      # pushes new ones, turning the ~2.5h cross-build into a cache pull after the
+      # first run.
+      - uses: cachix/cachix-action@v15
+        with:
+          name: fugstudio
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Cross-build mlir/glslang/spirv-cross for Windows (mingw)
+        run: |
+          set -euo pipefail
+          # glslang/spirv-cross mark the mingw system unsupported in meta.platforms
+          # (nix refuses to build without this); the exes themselves are fine.
+          export NIXPKGS_ALLOW_UNSUPPORTED_SYSTEM=1
+
+          # The nix expressions live in a file so the multi-line installPhase etc.
+          # don't fight shell/YAML quoting. See the inline comments for each fix.
+          cat > bundle.nix <<'NIX'
+          let
+            np24 = import (builtins.getFlake "github:NixOS/nixpkgs/nixos-24.11") { };
+            npU = import (builtins.getFlake "github:NixOS/nixpkgs/nixos-unstable") { };
+            cross = np24.pkgsCross.mingwW64;
+            l = cross.llvmPackages_18;
+            # Static LLVM: a shared libLLVM-18.dll exceeds the Windows PE export
+            # limit (~64K) and fails to link.
+            staticLLVM = l.libllvm.override { enableSharedLibraries = false; };
+            crossU = npU.pkgsCross.mingwW64;
+          in
+          {
+            # mlir-opt/mlir-translate cross-link fine; the Linalg yaml generator runs
+            # via native tools (LLVM_NATIVE_TOOL_DIR — nixpkgs wires native
+            # llvm/mlir-tblgen but not this one), so its cross .exe isn't built and
+            # the stock install can't find it. We only need the two tools, so install
+            # exactly those from the build tree.
+            mlir = (l.mlir.override { libllvm = staticLLVM; }).overrideAttrs (old: {
+              cmakeFlags = (old.cmakeFlags or [ ])
+                ++ [ "-DLLVM_NATIVE_TOOL_DIR=${cross.buildPackages.llvmPackages_18.mlir}/bin" ];
+              installPhase = ''
+                runHook preInstall
+                mkdir -p "$out/bin" "$dev"
+                for t in mlir-opt.exe mlir-translate.exe; do
+                  if [ -e "$out/bin/$t" ]; then
+                    echo "already built into output: $out/bin/$t"
+                  else
+                    src="$(find "$NIX_BUILD_TOP" -name "$t" -type f 2>/dev/null | head -1)"
+                    echo "copying $t from: $src"
+                    cp -v "$src" "$out/bin/$t"
+                  fi
+                done
+                ls -l "$out/bin"
+                test -e "$out/bin/mlir-opt.exe"
+                test -e "$out/bin/mlir-translate.exe"
+                runHook postInstall
+              '';
+            });
+            # unstable: 24.11 mingw glslang fails linking a shared SPIRV-Tools DLL
+            # (-lmcfgthread). dontCheckForBrokenSymlinks: its glslangValidator symlink
+            # dangles on Windows since the real binary is glslang.exe.
+            glslang = crossU.glslang.overrideAttrs (o: { dontCheckForBrokenSymlinks = true; });
+            spirv-cross = crossU.spirv-cross;
+          }
+          NIX
+
+          mlir="$(nix build --impure --no-link --print-out-paths -f bundle.nix mlir)"
+          gls="$(nix build --impure --no-link --print-out-paths -f bundle.nix glslang)"
+          sc="$(nix build --impure --no-link --print-out-paths -f bundle.nix spirv-cross)"
+
+          mkdir -p bundle/bin
+          cp -Lv "$mlir"/bin/mlir-opt.exe "$mlir"/bin/mlir-translate.exe bundle/bin/
+          # glslang's real binary is glslang.exe (glslangValidator is a dangling
+          # symlink on mingw); ship it under the name translate_gles.py invokes.
+          if [ -e "$gls/bin/glslangValidator.exe" ]; then
+            cp -Lv "$gls/bin/glslangValidator.exe" bundle/bin/
+          else
+            cp -Lv "$gls/bin/glslang.exe" bundle/bin/glslangValidator.exe
+          fi
+          cp -Lv "$sc"/bin/spirv-cross.exe bundle/bin/
+
+          # Bundle every DLL in the build closure so the exes run standalone on
+          # Windows (mingw libstdc++/libgcc/winpthread + any shared LLVM).
+          for p in $(nix-store -qR "$mlir" "$gls" "$sc"); do
+            find "$p" -name '*.dll' 2>/dev/null || true
+          done | sort -u | while read -r d; do cp -Ln "$d" bundle/bin/ 2>/dev/null || true; done
+          echo "== bundled =="; ls -1 bundle/bin
+
+      - uses: actions/upload-artifact@v4
+        with: { name: win-tools, path: bundle }
+
+  # ---------------------------------------------------------------- macOS -------
+  macos:
+    runs-on: macos-14 # arm64
+    environment: CI # provides CACHIX_AUTH_TOKEN
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+
+      # DeterminateSystems installer sets the flake registry (so `nixpkgs#…`
+      # resolves). NOTE: do NOT use magic-nix-cache-action — its static arm64
+      # binary crashes on macos-14 (libc++ symbol mismatch) and hangs the job.
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: cachix/cachix-action@v15
+        with:
+          name: fugstudio
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build MLIR tools (pinned compiler/nix)
+        run: |
+          set -euo pipefail
+          mkdir -p stage/mlir
+          expr="$(cat compiler/nix/mlir.nix)"
+          nix develop --impure --expr "$expr" --command bash -c '
+            cp -L "$(command -v mlir-opt)"       stage/mlir/mlir-opt
+            cp -L "$(command -v mlir-translate)" stage/mlir/mlir-translate
+          '
+
+      - name: Fetch clang + lld (LLVM release)
+        run: |
+          set -euo pipefail
+          mkdir -p stage/llvm stage/llvm-full
+          url="https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/clang+llvm-${LLVM_VERSION}-arm64-apple-macos11.tar.xz"
+          curl -fL "$url" | tar -xJ --strip-components=1 -C stage/llvm-full
+          cp -L stage/llvm-full/bin/clang stage/llvm/clang
+          cp -L stage/llvm-full/bin/clang++ stage/llvm/clang++
+          cp -L stage/llvm-full/bin/ld.lld stage/llvm/ld.lld
+
+      - name: glslang + spirv-cross (nixpkgs)
+        run: |
+          set -euo pipefail
+          mkdir -p stage/glslang stage/spirv-cross
+          NP='github:NixOS/nixpkgs/nixos-24.11'
+          g="$(nix build --no-link --print-out-paths "$NP#glslang" | tail -1)"
+          s="$(nix build --no-link --print-out-paths "$NP#spirv-cross" | tail -1)"
+          cp -L "$g/bin/glslangValidator" stage/glslang/glslangValidator
+          cp -L "$s/bin/spirv-cross" stage/spirv-cross/spirv-cross
+
+      - name: Assemble bundle
+        run: STAGE=stage OUT=app/toolchain app/packaging/assemble_toolchain.sh
+
+      - uses: actions/upload-artifact@v4
+        with: { name: toolchain-macos, path: app/toolchain }
+
+  # -------------------------------------------------------------- Windows -------
+  # Just assemble: the heavy tools are cross-built by win-tools; here we only add
+  # clang/lld from the LLVM Windows release. No compiling.
+  windows:
+    needs: win-tools
+    runs-on: windows-2022
+    timeout-minutes: 25 # fail fast instead of hanging for hours on the extract
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+
+      - name: Speed up file I/O (disable Defender realtime)
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE" -ErrorAction SilentlyContinue
+          Write-Host "defender realtime disabled (best effort)"
+
+      - name: Fetch cross-built Windows tools
+        uses: actions/download-artifact@v4
+        with: { name: win-tools, path: app/toolchain }
+
+      - name: Add clang + lld (LLVM release)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/clang+llvm-$env:LLVM_VERSION-x86_64-pc-windows-msvc.tar.xz"
+          Write-Host "== downloading =="; $t = Get-Date
+          curl.exe -fL $url -o llvm.tar.xz
+          Write-Host "download took $((Get-Date) - $t); size=$((Get-Item llvm.tar.xz).Length)"
+          # bsdtar (`tar`) hangs decompressing this xz on the runner (>25 min).
+          # 7-Zip is reliably fast: xz -> plain .tar, then extract the 3 tools we
+          # need from the uncompressed tar (no xz work in the second pass).
+          Write-Host "== 7z: xz -> tar =="; $t = Get-Date
+          7z x llvm.tar.xz -y | Out-Null
+          Write-Host "xz->tar took $((Get-Date) - $t)"
+          Write-Host "== extract clang/clang++/ld.lld =="; $t = Get-Date
+          New-Item -ItemType Directory -Force llvm-full | Out-Null
+          tar -xf llvm.tar --strip-components=1 -C llvm-full `
+            "*/bin/clang.exe" "*/bin/clang++.exe" "*/bin/ld.lld.exe"
+          Write-Host "tar extract took $((Get-Date) - $t)"
+          Copy-Item llvm-full\bin\clang.exe   app\toolchain\bin\
+          Copy-Item llvm-full\bin\clang++.exe app\toolchain\bin\
+          Copy-Item llvm-full\bin\ld.lld.exe  app\toolchain\bin\
+          Get-ChildItem app\toolchain\bin | Select-Object Name
+
+      - uses: actions/upload-artifact@v4
+        with: { name: toolchain-windows, path: app/toolchain }

@@ -15,12 +15,12 @@ Model (see docs/design/tox-to-pi.md §4):
     those edges are the "state vector". Not used in the M1 slice but modeled here
     so it doesn't need retrofitting.
 """
+
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any
-
 
 FAMILIES = {"TOP", "CHOP", "SOP", "DAT"}
 
@@ -28,6 +28,7 @@ FAMILIES = {"TOP", "CHOP", "SOP", "DAT"}
 @dataclass
 class Port:
     """A reference to an output of another node (an edge tail)."""
+
     node: str
     index: int = 0
     delay: int = 0  # 0 = same-frame edge; >0 = feedback edge delayed N frames
@@ -36,14 +37,13 @@ class Port:
     def parse(d: Any) -> "Port":
         if isinstance(d, str):
             return Port(node=d)
-        return Port(node=d["node"], index=int(d.get("index", 0)),
-                    delay=int(d.get("delay", 0)))
+        return Port(node=d["node"], index=int(d.get("index", 0)), delay=int(d.get("delay", 0)))
 
 
 @dataclass
 class Node:
     id: str
-    op: str                       # kernel name, e.g. "gaussian_blur"
+    op: str  # kernel name, e.g. "gaussian_blur"
     family: str = "TOP"
     params: dict = field(default_factory=dict)
     inputs: list[Port] = field(default_factory=list)
@@ -56,7 +56,9 @@ class Node:
         if fam not in FAMILIES:
             raise ValueError(f"node {d.get('id')!r}: unknown family {fam!r}")
         return Node(
-            id=d["id"], op=d["op"], family=fam,
+            id=d["id"],
+            op=d["op"],
+            family=fam,
             params=dict(d.get("params", {})),
             inputs=[Port.parse(x) for x in d.get("inputs", [])],
             out_type=d.get("out_type"),
@@ -65,7 +67,7 @@ class Node:
 
 @dataclass
 class Graph:
-    output: str                             # id of the sink node
+    output: str  # id of the sink node
     nodes: dict[str, Node] = field(default_factory=dict)
     version: str = "0.1"
     services: list = field(default_factory=list)  # I/O service specs (OSC/MIDI in)
@@ -81,8 +83,13 @@ class Graph:
             if n.id in nodes:
                 raise ValueError(f"duplicate node id {n.id!r}")
             nodes[n.id] = n
-        g = Graph(output=obj["output"], nodes=nodes, version=obj.get("version", "0.1"),
-                  services=list(obj.get("services", [])), chops=list(obj.get("chops", [])))
+        g = Graph(
+            output=obj["output"],
+            nodes=nodes,
+            version=obj.get("version", "0.1"),
+            services=list(obj.get("services", [])),
+            chops=list(obj.get("chops", [])),
+        )
         g.validate()
         return g
 
@@ -96,9 +103,14 @@ class Graph:
             "version": self.version,
             "output": self.output,
             "nodes": [
-                {"id": n.id, "op": n.op, "family": n.family, "params": n.params,
-                 "inputs": [asdict(p) for p in n.inputs],
-                 **({"out_type": n.out_type} if n.out_type else {})}
+                {
+                    "id": n.id,
+                    "op": n.op,
+                    "family": n.family,
+                    "params": n.params,
+                    "inputs": [asdict(p) for p in n.inputs],
+                    **({"out_type": n.out_type} if n.out_type else {}),
+                }
                 for n in self.nodes.values()
             ],
             # I/O services (OSC/MIDI In) live off the TOP render DAG, so they must
@@ -135,11 +147,14 @@ class Graph:
                 if nid in deps[m]:
                     deps[m].discard(nid)
                     if not deps[m] and m not in seen:
-                        ready.append(m); seen.add(m); ready.sort()
+                        ready.append(m)
+                        seen.add(m)
+                        ready.sort()
         if len(order) != len(self.nodes):
             stuck = set(self.nodes) - set(order)
-            raise ValueError(f"non-delay cycle among {sorted(stuck)} "
-                             f"(feedback must use delay>0 edges)")
+            raise ValueError(
+                f"non-delay cycle among {sorted(stuck)} " f"(feedback must use delay>0 edges)"
+            )
         return order
 
     def reachable_from_output(self) -> set[str]:

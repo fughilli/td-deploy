@@ -11,13 +11,14 @@ Routes:
     /frame.jpg   the latest single frame
     /stats       json {fps, frame, seconds}
 """
+
 from __future__ import annotations
+
 import io
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import numpy as np
 from PIL import Image
 
 from lowering.lower import RuntimePlan
@@ -34,7 +35,7 @@ class _Shared:
 
 
 def _render_loop(plan: RuntimePlan, shared: _Shared, fps_cap: float, quality: int, chops):
-    renderer = Renderer(plan, chops=chops)    # context becomes current in THIS thread
+    renderer = Renderer(plan, chops=chops)  # context becomes current in THIS thread
     t0 = time.monotonic()
     last = t0
     frame = 0
@@ -67,7 +68,8 @@ justify-content:center}img{max-width:100vw;max-height:100vh;image-rendering:pixe
 #f{position:fixed;top:8px;left:10px;color:#6f6;font:12px monospace;opacity:.8}</style></head>
 <body><img src="/stream"><div id=f></div>
 <script>setInterval(async()=>{try{let s=await(await fetch('/stats')).json();
-document.getElementById('f').textContent=`frame ${s.frame} | ${s.seconds.toFixed(1)}s | ${s.fps.toFixed(1)} fps`;}catch(e){}},500);</script>
+document.getElementById('f').textContent=
+`frame ${s.frame} | ${s.seconds.toFixed(1)}s | ${s.fps.toFixed(1)} fps`;}catch(e){}},500);</script>
 </body></html>"""
 
 
@@ -99,7 +101,8 @@ def make_handler(shared: _Shared):
             with shared.lock:
                 data = shared.jpeg
             if not data:
-                self.send_error(503); return
+                self.send_error(503)
+                return
             self.send_response(200)
             self.send_header("Content-Type", "image/jpeg")
             self.send_header("Content-Length", str(len(data)))
@@ -108,9 +111,11 @@ def make_handler(shared: _Shared):
 
         def _stats(self):
             import json
+
             with shared.lock:
-                body = json.dumps({"frame": shared.frame, "seconds": shared.seconds,
-                                   "fps": shared.fps}).encode()
+                body = json.dumps(
+                    {"frame": shared.frame, "seconds": shared.seconds, "fps": shared.fps}
+                ).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -119,28 +124,35 @@ def make_handler(shared: _Shared):
 
         def _stream(self):
             self.send_response(200)
-            self.send_header("Content-Type",
-                             "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             last = -1
             try:
                 while True:
                     data, last = self._wait_frame(last)
-                    self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n"
-                                     b"Content-Length: " + str(len(data)).encode()
-                                     + b"\r\n\r\n" + data + b"\r\n")
+                    self.wfile.write(
+                        b"--frame\r\nContent-Type: image/jpeg\r\n"
+                        b"Content-Length: " + str(len(data)).encode() + b"\r\n\r\n" + data + b"\r\n"
+                    )
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
     return H
 
 
-def serve(plan: RuntimePlan, host: str = "0.0.0.0", port: int = 8788,
-          fps: float = 30.0, quality: int = 80, chops=None) -> None:
+def serve(
+    plan: RuntimePlan,
+    host: str = "0.0.0.0",
+    port: int = 8788,
+    fps: float = 30.0,
+    quality: int = 80,
+    chops=None,
+) -> None:
     shared = _Shared()
-    threading.Thread(target=_render_loop, args=(plan, shared, fps, quality, chops),
-                     daemon=True).start()
+    threading.Thread(
+        target=_render_loop, args=(plan, shared, fps, quality, chops), daemon=True
+    ).start()
     httpd = ThreadingHTTPServer((host, port), make_handler(shared))
     print(f"[stream] live MJPEG on http://{host}:{port}/  (fps cap {fps}, {plan.target})")
     httpd.serve_forever()

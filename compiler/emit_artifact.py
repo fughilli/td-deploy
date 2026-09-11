@@ -14,7 +14,9 @@ Layout (a directory):
 This runs in the Python compiler env (PIL/PyAV for assets; expr transpile is pure
 Python and only emits MLIR text — the .so is built separately in the MLIR shell).
 """
+
 from __future__ import annotations
+
 import json
 import os
 
@@ -30,16 +32,16 @@ def emit(plan, graph, outdir: str) -> dict:
     os.makedirs(os.path.join(outdir, "assets"), exist_ok=True)
 
     expr_funcs: list[str] = []
-    expr_cache: dict[str, tuple] = {}   # expr string -> (fn name, input names) (dedup)
+    expr_cache: dict[str, tuple] = {}  # expr string -> (fn name, input names) (dedup)
     steps_json = []
     coverage = {"interpreted_exprs": []}
 
     def add_expr(expr: str):
         if expr in expr_cache:
-            return expr_cache[expr]           # (fn, inputs) — keep the input list!
+            return expr_cache[expr]  # (fn, inputs) — keep the input list!
         mlir, info = transpile(expr, fname=f"expr{len(expr_funcs)}")
         if mlir is None:
-            return None, info                 # unsupported -> Rust/py fallback
+            return None, info  # unsupported -> Rust/py fallback
         fn = f"expr{len(expr_funcs)}"
         expr_funcs.append(mlir)
         expr_cache[expr] = (fn, info)
@@ -47,21 +49,31 @@ def emit(plan, graph, outdir: str) -> dict:
 
     for st in plan.steps:
         sid = _sid(st.node_id)
-        j = {"id": st.node_id, "op": st.op, "kind": st.kind,
-             "w": st.target["w"], "h": st.target["h"], "inputs": list(st.inputs)}
+        j = {
+            "id": st.node_id,
+            "op": st.op,
+            "kind": st.kind,
+            "w": st.target["w"],
+            "h": st.target["h"],
+            "inputs": list(st.inputs),
+        }
 
         if st.kind == "source":
             path = st.params.get("path")
             dst = os.path.join(outdir, "assets", f"{sid}.png")
             if path and os.path.isfile(path):
                 from runtime.video import is_video
+
                 if is_video(path):
-                    from runtime.video import VideoSource
                     from PIL import Image
+
+                    from runtime.video import VideoSource
+
                     fr = VideoSource(path).frame_at(0.0)
-                    Image.fromarray(fr, "RGBA").save(dst)   # first frame (video: TODO stream)
+                    Image.fromarray(fr, "RGBA").save(dst)  # first frame (video: TODO stream)
                 else:
                     from PIL import Image
+
                     Image.open(path).convert("RGBA").save(dst)
                 j["source"] = {"type": "image", "path": f"assets/{sid}.png"}
             else:
@@ -104,12 +116,13 @@ def emit(plan, graph, outdir: str) -> dict:
     if chops:
         try:
             from chop_lower import lower as _chop_lower
+
             mlir, abi = _chop_lower(chops)
             with open(os.path.join(outdir, "chops.mlir"), "w") as f:
                 f.write("module {\n" + mlir + "}\n")
             chops_lib = "chops/libchops.so"
             chops_abi = abi
-        except Exception as e:                       # noqa: BLE001 (parity fallback)
+        except Exception as e:  # noqa: BLE001 (parity fallback)
             coverage["chop_lower_fallback"] = str(e)
 
     schedule = {

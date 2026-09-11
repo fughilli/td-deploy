@@ -7,6 +7,7 @@ and assert every output channel matches.
 Run inside compiler/nix/shell.sh (needs mlir-opt/translate/clang + python3); it's
 tagged manual/local/requires-network in BUILD.
 """
+
 import ctypes
 import math
 import os
@@ -15,11 +16,15 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from chop_lower import lower                       # noqa: E402
-from chop_ref import ChopEval                      # noqa: E402
+from chop_lower import lower  # noqa: E402
+from chop_ref import ChopEval  # noqa: E402
 
-LOWER = ["--convert-math-to-llvm", "--convert-arith-to-llvm",
-         "--convert-func-to-llvm", "--reconcile-unrealized-casts"]
+LOWER = [
+    "--convert-math-to-llvm",
+    "--convert-arith-to-llvm",
+    "--convert-func-to-llvm",
+    "--reconcile-unrealized-casts",
+]
 
 
 def build(mlir: str) -> str:
@@ -33,8 +38,9 @@ def build(mlir: str) -> str:
 
 
 def _ret_type(n: int):
-    return type(f"Ret{n}", (ctypes.Structure,),
-               {"_fields_": [(f"f{i}", ctypes.c_double) for i in range(n)]})
+    return type(
+        f"Ret{n}", (ctypes.Structure,), {"_fields_": [(f"f{i}", ctypes.c_double) for i in range(n)]}
+    )
 
 
 def run_parity(name: str, chops: list, frames: list) -> bool:
@@ -55,10 +61,10 @@ def run_parity(name: str, chops: list, frames: list) -> bool:
     out_index = {o: i for i, o in enumerate(abi["outputs"])}
 
     ref = ChopEval(chops)
-    state = {s: 0.0 for s in abi["states"]}         # carried Speed accumulators
+    state = {s: 0.0 for s in abi["states"]}  # carried Speed accumulators
     last_t = 0.0
     ok = True
-    for (t, sources) in frames:
+    for t, sources in frames:
         dt = min(max(t - last_t, 0.0), 1.0)
         frame = math.floor(t * 60.0)
         last_t = t
@@ -74,8 +80,10 @@ def run_parity(name: str, chops: list, frames: list) -> bool:
         sres = fn(*[ctypes.c_double(a) for a in args])
         for i in range(n_out):
             if abs(getattr(sres, f"f{i}") - native[i]) > 0:
-                print(f"  ABI MISMATCH {name} t={t} out{i}: "
-                      f"scalar={getattr(sres, f'f{i}')} ptr={native[i]}")
+                print(
+                    f"  ABI MISMATCH {name} t={t} out{i}: "
+                    f"scalar={getattr(sres, f'f{i}')} ptr={native[i]}"
+                )
                 ok = False
         # feed each Speed output back as its next-frame state
         for s in abi["states"]:
@@ -88,25 +96,37 @@ def run_parity(name: str, chops: list, frames: list) -> bool:
             if abs(got - exp) > 1e-9:
                 print(f"  MISMATCH {name} t={t} {o}: native={got} ref={exp}")
                 ok = False
-    print(f"[{'OK  ' if ok else 'FAIL'}] {name}  "
-          f"sources={abi['sources']} states={abi['states']} outputs={abi['outputs']}")
+    print(
+        f"[{'OK  ' if ok else 'FAIL'}] {name}  "
+        f"sources={abi['sources']} states={abi['states']} outputs={abi['outputs']}"
+    )
     return ok
 
 
 # The ascii banana: MIDI -> Constant(expr) -> Speed(integrate).
 ASCII = [
-    {"name": "constant1", "type": "constant", "inputs": [],
-     "channels": ["op('midiin1')[0][0]/127 - 0.5"]},
+    {
+        "name": "constant1",
+        "type": "constant",
+        "inputs": [],
+        "channels": ["op('midiin1')[0][0]/127 - 0.5"],
+    },
     {"name": "speed1", "type": "speed", "inputs": ["constant1"], "channels": []},
 ]
 # A knob sweep over ~a second of frames (60fps), then held.
-ASCII_FRAMES = [(i / 60.0, {"midiin1": {"0": v}})
-                for i, v in enumerate([0, 32, 64, 96, 127, 127, 100, 64, 0, 0, 0])]
+ASCII_FRAMES = [
+    (i / 60.0, {"midiin1": {"0": v}})
+    for i, v in enumerate([0, 32, 64, 96, 127, 127, 100, 64, 0, 0, 0])
+]
 
 # A second DAG exercising literals, absTime, a Null passthrough, funcs.
 MIX = [
-    {"name": "c1", "type": "constant", "inputs": [],
-     "channels": ["sin(absTime.seconds) + op('osc1')[0] * 2", "3.5"]},
+    {
+        "name": "c1",
+        "type": "constant",
+        "inputs": [],
+        "channels": ["sin(absTime.seconds) + op('osc1')[0] * 2", "3.5"],
+    },
     {"name": "sp", "type": "speed", "inputs": ["c1"], "channels": []},
     {"name": "n1", "type": "null", "inputs": ["sp"], "channels": []},
 ]

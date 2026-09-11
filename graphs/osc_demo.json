@@ -1,14 +1,28 @@
 {
   "version": "0.1",
   "output": "display",
-  "services": [ { "type": "oscin", "name": "osc1", "port": 7700 } ],
+  "services": [{ "type": "oscin", "name": "osc1", "port": 7700 }],
   "nodes": [
-    { "id": "src", "op": "image_in", "family": "TOP",
-      "params": { "w": 256, "h": 256 }, "inputs": [] },
-    { "id": "xf", "op": "transform", "family": "TOP",
+    {
+      "id": "src",
+      "op": "image_in",
+      "family": "TOP",
+      "params": { "w": 256, "h": 256 },
+      "inputs": []
+    },
+    {
+      "id": "xf",
+      "op": "transform",
+      "family": "TOP",
       "params": { "rotate": "op('osc1')['rot']" },
-      "inputs": [ { "node": "src" } ] },
-    { "id": "display", "op": "out_display", "family": "TOP",
-      "params": {}, "inputs": [ { "node": "xf" } ] }
+      "inputs": [{ "node": "src" }]
+    },
+    {
+      "id": "display",
+      "op": "out_display",
+      "family": "TOP",
+      "params": {},
+      "inputs": [{ "node": "xf" }]
+    }
   ]
 }

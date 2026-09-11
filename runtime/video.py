@@ -8,7 +8,9 @@ File In playing a clip; the renderer re-uploads the current frame each render(t)
 Long clips are truncated (logged) — streaming/seek-based decode is a future
 refinement; for realtime preview a bounded in-RAM ring is simplest and smooth.
 """
+
 from __future__ import annotations
+
 import numpy as np
 
 VIDEO_EXTS = (".mov", ".mp4", ".m4v", ".avi", ".mkv", ".webm", ".mpg", ".mpeg")
@@ -20,6 +22,7 @@ def is_video(path: str | None) -> bool:
 
 def probe_size(path: str) -> tuple[int, int]:
     import av
+
     with av.open(path) as c:
         s = c.streams.video[0]
         return int(s.codec_context.width), int(s.codec_context.height)
@@ -29,6 +32,7 @@ class VideoSource:
     def __init__(self, path: str, max_frames: int = 300, max_dim: int = 512):
         import av
         from PIL import Image
+
         self.frames: list[np.ndarray] = []
         with av.open(path) as container:
             stream = container.streams.video[0]
@@ -50,8 +54,10 @@ class VideoSource:
         self.n = len(self.frames)
         self.duration = self.n / self.fps
         note = f" (truncated to {self.n})" if truncated else ""
-        print(f"[video] {path}: {self.n} frames @ {self.fps:.1f}fps, "
-              f"{self.width}x{self.height}{note}")
+        print(
+            f"[video] {path}: {self.n} frames @ {self.fps:.1f}fps, "
+            f"{self.width}x{self.height}{note}"
+        )
 
     def frame_at(self, t: float) -> np.ndarray:
         return self.frames[int(t * self.fps) % self.n]

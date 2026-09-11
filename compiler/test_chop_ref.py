@@ -2,14 +2,19 @@
 evaluator's semantics and the lowering's ABI/structure. The full compile +
 bit-parity gate is compiler/test_chop_lower.py (needs the MLIR nix shell).
 """
+
 import unittest
 
-from chop_ref import ChopEval
 from chop_lower import lower
+from chop_ref import ChopEval
 
 ASCII = [
-    {"name": "constant1", "type": "constant", "inputs": [],
-     "channels": ["op('midiin1')[0][0]/127 - 0.5"]},
+    {
+        "name": "constant1",
+        "type": "constant",
+        "inputs": [],
+        "channels": ["op('midiin1')[0][0]/127 - 0.5"],
+    },
     {"name": "speed1", "type": "speed", "inputs": ["constant1"], "channels": []},
 ]
 
@@ -25,13 +30,12 @@ class ChopRefTest(unittest.TestCase):
         ev = ChopEval(ASCII)
         # dt clamps to 1.0 on the first step (t jumps from last_t=0 to 5).
         st = ev.step(5.0, {"midiin1": {"0": 127.0}})
-        self.assertAlmostEqual(st.get("speed1", "0"), 0.5)   # 0.5 * dt(=1.0)
+        self.assertAlmostEqual(st.get("speed1", "0"), 0.5)  # 0.5 * dt(=1.0)
         st = ev.step(5.5, {"midiin1": {"0": 127.0}})
         self.assertAlmostEqual(st.get("speed1", "0"), 0.75)  # + 0.5 * 0.5
 
     def test_nonfinite_expr_is_zero(self):
-        ev = ChopEval([{"name": "c", "type": "constant", "inputs": [],
-                        "channels": ["1.0/0.0"]}])
+        ev = ChopEval([{"name": "c", "type": "constant", "inputs": [], "channels": ["1.0/0.0"]}])
         self.assertEqual(ev.step(0.0, {}).get("c", "0"), 0.0)
 
     def test_null_passthrough(self):
@@ -57,8 +61,9 @@ class ChopLowerAbiTest(unittest.TestCase):
         self.assertIn("arith.addf %st_speed1_0", mlir)
 
     def test_literal_constant_no_sources(self):
-        _, abi = lower([{"name": "c", "type": "constant", "inputs": [],
-                         "channels": ["1.0", "2.0"]}])
+        _, abi = lower(
+            [{"name": "c", "type": "constant", "inputs": [], "channels": ["1.0", "2.0"]}]
+        )
         self.assertEqual(abi["sources"], [])
         self.assertEqual(abi["outputs"], [("c", "0"), ("c", "1")])
 

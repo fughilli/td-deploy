@@ -1,0 +1,94 @@
+# Presubmit hooks, run by prek (a single-binary drop-in for pre-commit that reads
+# this same file). Set up a local checkout with ./setup-precommit.sh; CI runs the
+# identical binary in .github/workflows/test.yml, so the commit gate and CI stay
+# byte-for-byte in sync.
+#
+# Generated / vendored / binary paths are globally excluded: the Bazel + Nix lock
+# files, the byte-pinned prebuilt artifact (deploy/prebuilt/, which the runtime
+# loads verbatim — a formatter must never touch it), build outputs, and the
+# long-form design docs (one-paragraph-per-line authoring we don't want rewrapped).
+exclude: |
+  (?x)^(
+    bazel-.*|
+    app/dist/.*|
+    app/build/.*|
+    app/toolchain/.*|
+    app/electron/node_modules/.*|
+    deploy/prebuilt/.*|
+    importer/samples/.*|
+    docs/design/.*\.md|
+    MODULE\.bazel\.lock|
+    requirements\.lock|
+    runtime_rs/Cargo\.lock|
+    .*\.(png|tif|jpg|ico)
+  )$
+
+repos:
+  # Python formatting and linting
+  - repo: https://github.com/psf/black
+    rev: 25.1.0
+    hooks:
+      - id: black
+        language_version: python3
+        types: [python]
+        args: [--line-length=100]
+
+  - repo: https://github.com/pycqa/isort
+    rev: 6.0.1
+    hooks:
+      - id: isort
+        args: [--profile=black, --line-length=100]
+
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.0.0
+    hooks:
+      - id: flake8
+        args: [--max-line-length=120, --extend-ignore=E203]
+
+  # Shell script linting (shellcheck-py: no docker dependency, runs anywhere)
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.9.0.6
+    hooks:
+      - id: shellcheck
+        args: [--severity=warning]
+
+  # BUILD / .bzl / MODULE.bazel formatting (Bazel)
+  - repo: https://github.com/keith/pre-commit-buildifier
+    rev: 8.2.0
+    hooks:
+      - id: buildifier
+      - id: buildifier-lint
+
+  # Nix formatting (deploy/nix, compiler/nix, runtime_rs/nix)
+  - repo: https://github.com/nix-community/nixpkgs-fmt
+    rev: v1.3.0
+    hooks:
+      - id: nixpkgs-fmt
+
+  # Markdown/JSON/YAML formatting and linting
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.1.0
+    hooks:
+      - id: prettier
+        types_or: [markdown, json, yaml]
+
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.38.0
+    hooks:
+      - id: markdownlint
+        args: [--fix]
+
+  # General hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        exclude: ^(deploy/nix/|compiler/nix/|runtime_rs/nix/).*\.nix$
+      - id: check-added-large-files
+        args: [--maxkb=600]
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-json
+      - id: debug-statements

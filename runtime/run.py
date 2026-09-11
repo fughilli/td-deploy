@@ -7,7 +7,9 @@ Runs the numpy reference and the GL backend, writes PNGs, and reports the
 pixel-diff between them (the cross-validation). On the Pi the same plan runs on
 the GL backend with the HDMI sink instead of a PNG.
 """
+
 from __future__ import annotations
+
 import argparse
 import os
 import sys
@@ -17,9 +19,9 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ir.graph import Graph            # noqa: E402
+from ir.graph import Graph  # noqa: E402
+from lowering.lower import lower  # noqa: E402
 from passes.optimize import optimize  # noqa: E402
-from lowering.lower import lower       # noqa: E402
 
 
 def _summarize_plan(plan) -> None:
@@ -29,9 +31,11 @@ def _summarize_plan(plan) -> None:
         if st.op == "gaussian_blur":
             extra = f"  radius={st.params['_radius']} taps={(2*st.params['_radius']+1)**2}"
         frag = "" if st.fragment is None else f" glsl={len(st.fragment)}B"
-        print(f"  {st.kind:6s} {st.node_id:10s} {st.op:14s} "
-              f"{st.target['w']}x{st.target['h']}:{st.target['fmt']}"
-              f" inputs={st.inputs}{frag}{extra}")
+        print(
+            f"  {st.kind:6s} {st.node_id:10s} {st.op:14s} "
+            f"{st.target['w']}x{st.target['h']}:{st.target['fmt']}"
+            f" inputs={st.inputs}{frag}{extra}"
+        )
 
 
 def main() -> int:
@@ -60,11 +64,13 @@ def main() -> int:
         want_cpu = False
     if want_cpu:
         from runtime import backend_cpu
+
         results["cpu"] = backend_cpu.run(plan)
         Image.fromarray(results["cpu"], "RGBA").save(f"{args.out}/cpu.png")
         print(f"\n[cpu] wrote {args.out}/cpu.png")
     if args.backend in ("gl", "both"):
         from runtime import backend_gl
+
         results["gl"] = backend_gl.run(plan)
         Image.fromarray(results["gl"], "RGBA").save(f"{args.out}/gl.png")
         print(f"[gl]  wrote {args.out}/gl.png")
@@ -74,10 +80,13 @@ def main() -> int:
         b = results["cpu"].astype(np.int16)
         diff = np.abs(a - b)
         Image.fromarray((np.clip(diff * 8, 0, 255).astype(np.uint8)), "RGBA").save(
-            f"{args.out}/diff8x.png")
-        print(f"\n[validate] GL vs CPU reference:"
-              f" max|Δ|={int(diff.max())} LSB, mean|Δ|={diff.mean():.4f} LSB"
-              f"  ({100.0*(diff==0).mean():.2f}% pixels exact)")
+            f"{args.out}/diff8x.png"
+        )
+        print(
+            f"\n[validate] GL vs CPU reference:"
+            f" max|Δ|={int(diff.max())} LSB, mean|Δ|={diff.mean():.4f} LSB"
+            f"  ({100.0 * (diff == 0).mean():.2f}% pixels exact)"
+        )
         print(f"[validate] wrote {args.out}/diff8x.png (differences x8)")
         if diff.max() <= 2:
             print("[validate] PASS — backends agree within 2 LSB")

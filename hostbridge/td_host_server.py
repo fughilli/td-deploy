@@ -68,17 +68,18 @@ import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
 # ----------------------------------------------------------------------------- discovery
+
 
 def _candidate_td_dirs():
     """macOS + Windows + Linux install locations for TouchDesigner."""
     pats = [
-        "/Applications/TouchDesigner*.app/Contents/MacOS",           # macOS
+        "/Applications/TouchDesigner*.app/Contents/MacOS",  # macOS
         "/Applications/Derivative/TouchDesigner*.app/Contents/MacOS",
-        "C:/Program Files/Derivative/TouchDesigner*/bin",            # Windows
-        os.path.expanduser("~/TouchDesigner*/bin"),                  # Linux-ish
+        "C:/Program Files/Derivative/TouchDesigner*/bin",  # Windows
+        os.path.expanduser("~/TouchDesigner*/bin"),  # Linux-ish
     ]
     out = []
     for p in pats:
@@ -103,11 +104,13 @@ def discover(cfg):
         cfg["toecollapse"] = os.environ.get("TOECOLLAPSE") or _which_in(dirs, ["toecollapse"])
     if cfg.get("td_app") is None:
         cfg["td_app"] = os.environ.get("TD_APP") or _which_in(
-            dirs, ["TouchDesigner", "TouchDesigner099", "touchd"])
+            dirs, ["TouchDesigner", "TouchDesigner099", "touchd"]
+        )
     return cfg
 
 
 # ----------------------------------------------------------------------------- helpers
+
 
 def _run(cmd, cwd=None, timeout=120):
     p = subprocess.run(cmd, cwd=cwd, capture_output=True, timeout=timeout)
@@ -151,24 +154,39 @@ _JOB_SEQ = [0]
 # The only command this endpoint will run (plus the target host as the last arg).
 _DEPLOY_TARGET = "//deploy:tdplayer_pi3.deploy_live"
 _DEFAULT_HOST = "tdplayer.local"
-_HOST_RE = re.compile(r"^[A-Za-z0-9._-]+$")   # hostname / IPv4 — no shell metachars
+_HOST_RE = re.compile(r"^[A-Za-z0-9._-]+$")  # hostname / IPv4 — no shell metachars
 
 
 def _start_job(label, cmd, cwd, env=None):
     with _JOBS_LOCK:
         _JOB_SEQ[0] += 1
         jid = "%s-%d" % (label, _JOB_SEQ[0])
-    job = {"id": jid, "label": label, "cmd": cmd, "cwd": cwd, "lines": [],
-           "rc": None, "done": False, "started": time.time(), "ended": None,
-           "proc": None}
+    job = {
+        "id": jid,
+        "label": label,
+        "cmd": cmd,
+        "cwd": cwd,
+        "lines": [],
+        "rc": None,
+        "done": False,
+        "started": time.time(),
+        "ended": None,
+        "proc": None,
+    }
     with _JOBS_LOCK:
         _JOBS[jid] = job
 
     def _run_job():
         try:
             p = subprocess.Popen(
-                cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True, bufsize=1)
+                cmd,
+                cwd=cwd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
         except Exception as e:  # noqa: BLE001 - report launch failure to the client
             with _JOBS_LOCK:
                 job["lines"].append("[exec] failed to start: %r" % (e,))
@@ -178,7 +196,7 @@ def _start_job(label, cmd, cwd, env=None):
             return
         with _JOBS_LOCK:
             job["proc"] = p
-        for line in p.stdout:                      # streams until the process exits
+        for line in p.stdout:  # streams until the process exits
             with _JOBS_LOCK:
                 job["lines"].append(line.rstrip("\n"))
         p.wait()
@@ -192,6 +210,7 @@ def _start_job(label, cmd, cwd, env=None):
 
 
 # ----------------------------------------------------------------------------- handler
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "toxc-host/0.1"
@@ -277,7 +296,7 @@ class Handler(BaseHTTPRequestHandler):
             "td_app": c.get("td_app"),
             "td_found": bool(c.get("td_app")),
             "candidates": _candidate_td_dirs(),
-            "deploy_enabled": bool(c.get("token")),   # /deploy requires a token
+            "deploy_enabled": bool(c.get("token")),  # /deploy requires a token
             "deploy_target": _DEPLOY_TARGET,
             "workspace": c.get("workspace"),
             "bazel": (c.get("bazel") or shutil.which("bazel")),
@@ -288,7 +307,8 @@ class Handler(BaseHTTPRequestHandler):
         exe = self.cfg.get("toeexpand")
         if not exe:
             return self._send_json(
-                {"error": "toeexpand not found; set TOEEXPAND or --toeexpand"}, 501)
+                {"error": "toeexpand not found; set TOEEXPAND or --toeexpand"}, 501
+            )
         name = (q.get("name", ["project.tox"])[0]) or "project.tox"
         name = os.path.basename(name)
         fmt = q.get("format", ["tar"])[0]
@@ -303,7 +323,8 @@ class Handler(BaseHTTPRequestHandler):
         exe = self.cfg.get("toeexpand")
         if not exe:
             return self._send_json(
-                {"error": "toeexpand not found; set TOEEXPAND or --toeexpand"}, 501)
+                {"error": "toeexpand not found; set TOEEXPAND or --toeexpand"}, 501
+            )
         raw_path = (q.get("path", [""])[0]) or ""
         path = os.path.expanduser(raw_path)
         if not raw_path:
@@ -333,17 +354,23 @@ class Handler(BaseHTTPRequestHandler):
                 shutil.move(os.path.join(work, entry), os.path.join(produced, entry))
 
             if fmt == "json":
-                return self._send_json({
-                    "rc": rc,
-                    "stdout": out.decode("utf-8", "replace"),
-                    "stderr": err.decode("utf-8", "replace"),
-                    "files": _dir_to_json(produced),
-                })
+                return self._send_json(
+                    {
+                        "rc": rc,
+                        "stdout": out.decode("utf-8", "replace"),
+                        "stderr": err.decode("utf-8", "replace"),
+                        "files": _dir_to_json(produced),
+                    }
+                )
             tar = _tar_dir_bytes(produced)
             return self._send_bytes(
-                tar, "application/gzip",
-                extra={"X-Toeexpand-RC": str(rc),
-                       "Content-Disposition": f'attachment; filename="{name}.expanded.tgz"'})
+                tar,
+                "application/gzip",
+                extra={
+                    "X-Toeexpand-RC": str(rc),
+                    "Content-Disposition": f'attachment; filename="{name}.expanded.tgz"',
+                },
+            )
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
@@ -351,7 +378,8 @@ class Handler(BaseHTTPRequestHandler):
         exe = self.cfg.get("toecollapse")
         if not exe:
             return self._send_json(
-                {"error": "toecollapse not found; set TOECOLLAPSE or --toecollapse"}, 501)
+                {"error": "toecollapse not found; set TOECOLLAPSE or --toecollapse"}, 501
+            )
         name = os.path.basename((q.get("name", ["out.tox"])[0]) or "out.tox")
         data = self._read_body()
         work = tempfile.mkdtemp(prefix="toxc_collapse_")
@@ -361,13 +389,21 @@ class Handler(BaseHTTPRequestHandler):
             rc, out, err = _run([exe, name], cwd=work)
             result = os.path.join(work, name)
             if rc != 0 or not os.path.isfile(result):
-                return self._send_json({
-                    "error": "toecollapse failed", "rc": rc,
-                    "stdout": out.decode("utf-8", "replace"),
-                    "stderr": err.decode("utf-8", "replace")}, 500)
+                return self._send_json(
+                    {
+                        "error": "toecollapse failed",
+                        "rc": rc,
+                        "stdout": out.decode("utf-8", "replace"),
+                        "stderr": err.decode("utf-8", "replace"),
+                    },
+                    500,
+                )
             with open(result, "rb") as fh:
-                return self._send_bytes(fh.read(), "application/octet-stream",
-                                        extra={"Content-Disposition": f'attachment; filename="{name}"'})
+                return self._send_bytes(
+                    fh.read(),
+                    "application/octet-stream",
+                    extra={"Content-Disposition": f'attachment; filename="{name}"'},
+                )
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
@@ -383,8 +419,10 @@ class Handler(BaseHTTPRequestHandler):
         with open(path, "rb") as fh:
             data = fh.read()
         return self._send_bytes(
-            data, "application/octet-stream",
-            extra={"Content-Disposition": f'attachment; filename="{os.path.basename(path)}"'})
+            data,
+            "application/octet-stream",
+            extra={"Content-Disposition": f'attachment; filename="{os.path.basename(path)}"'},
+        )
 
     def render(self):
         """EXPERIMENTAL headless TD render for conformance. See _HEADLESS_RENDER_NOTES."""
@@ -395,18 +433,23 @@ class Handler(BaseHTTPRequestHandler):
         if "tox" not in req or "op" not in req:
             return self._send_json({"error": "need JSON {tox: base64, op: '/path/to/top'}"}, 400)
         # Headless cook-and-save is version/OS sensitive; wire per host and flip this on.
-        return self._send_json({
-            "error": "headless render not wired on this host",
-            "how": _HEADLESS_RENDER_NOTES,
-        }, 501)
+        return self._send_json(
+            {
+                "error": "headless render not wired on this host",
+                "how": _HEADLESS_RENDER_NOTES,
+            },
+            501,
+        )
 
     # -- deploy (the one Pi live-deploy, on the host) -------------------------
     def _deploy_gate(self):
         """Deploy runs a build/switch on the host, so it always requires a token.
         Returns an error dict+code to send, or None if allowed."""
         if not self.cfg.get("token"):
-            return {"error": "deploy requires an auth token; start the bridge with"
-                            " --token <secret> (and send X-Auth-Token)"}, 403
+            return {
+                "error": "deploy requires an auth token; start the bridge with"
+                " --token <secret> (and send X-Auth-Token)"
+            }, 403
         return None
 
     def deploy_start(self):
@@ -431,16 +474,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": "bazel not found on PATH"}, 501)
         cwd = self.cfg.get("workspace") or os.getcwd()
         if not os.path.isdir(os.path.join(cwd, "deploy")):
-            return self._send_json(
-                {"error": "workspace has no deploy/ dir: %s" % cwd}, 500)
+            return self._send_json({"error": "workspace has no deploy/ dir: %s" % cwd}, 500)
         # Optional builder disk override -> env (safe: goes in the env dict, not the
         # shell). Inherits the bridge's env so an exported SBC_BUILDER_DISK works too.
         env = None
         builder_disk = req.get("builder_disk")
         if builder_disk is not None:
             if not (isinstance(builder_disk, str) and os.path.isabs(builder_disk)):
-                return self._send_json(
-                    {"error": "builder_disk must be an absolute path"}, 400)
+                return self._send_json({"error": "builder_disk must be an absolute path"}, 400)
             env = os.environ.copy()
             env["SBC_BUILDER_DISK"] = builder_disk
         cmd = [bazel, "run", _DEPLOY_TARGET, "--"]
@@ -449,8 +490,8 @@ class Handler(BaseHTTPRequestHandler):
         cmd += [host]
         job = _start_job("deploy", cmd, cwd, env=env)
         return self._send_json(
-            {"id": job["id"], "cmd": job["cmd"], "cwd": cwd,
-             "builder_disk": builder_disk})
+            {"id": job["id"], "cmd": job["cmd"], "cwd": cwd, "builder_disk": builder_disk}
+        )
 
     def deploy_poll(self, q):
         """GET /deploy?id=<id>[&from=<n>] — poll (new output lines from offset
@@ -458,12 +499,19 @@ class Handler(BaseHTTPRequestHandler):
         gate = self._deploy_gate()
         if gate:
             return self._send_json(*gate)
-        jid = (q.get("id", [None])[0])
+        jid = q.get("id", [None])[0]
         if not jid:
             with _JOBS_LOCK:
-                jobs = [{"id": j["id"], "running": not j["done"], "rc": j["rc"],
-                         "nlines": len(j["lines"]), "started": j["started"]}
-                        for j in _JOBS.values()]
+                jobs = [
+                    {
+                        "id": j["id"],
+                        "running": not j["done"],
+                        "rc": j["rc"],
+                        "nlines": len(j["lines"]),
+                        "started": j["started"],
+                    }
+                    for j in _JOBS.values()
+                ]
             return self._send_json({"jobs": jobs})
         frm = int((q.get("from", ["0"])[0]) or 0)
         with _JOBS_LOCK:
@@ -473,10 +521,15 @@ class Handler(BaseHTTPRequestHandler):
             lines = job["lines"][frm:]
             end = job["ended"] or time.time()
             resp = {
-                "id": jid, "cmd": job["cmd"], "running": not job["done"],
-                "rc": job["rc"], "from": frm, "next": frm + len(lines),
+                "id": jid,
+                "cmd": job["cmd"],
+                "running": not job["done"],
+                "rc": job["rc"],
+                "from": frm,
+                "next": frm + len(lines),
                 "nlines": len(job["lines"]),
-                "elapsed": round(end - job["started"], 1), "lines": lines,
+                "elapsed": round(end - job["started"], 1),
+                "lines": lines,
             }
         return self._send_json(resp)
 
@@ -509,28 +562,33 @@ def main():
     ap.add_argument("--token", default=os.environ.get("TOXC_HOST_TOKEN"))
     # POST /deploy runs the ONE fixed Pi live-deploy (bazel run …deploy_live) in
     # this workspace on the host. It requires --token (it builds/switches here).
-    ap.add_argument("--workspace",
-                    default=os.environ.get("TOXC_WORKSPACE")
-                    or os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    help="repo checkout /deploy runs bazel in (default: this file's repo)")
-    ap.add_argument("--bazel", default=os.environ.get("TOXC_BAZEL"),
-                    help="path to bazel (default: PATH lookup)")
+    ap.add_argument(
+        "--workspace",
+        default=os.environ.get("TOXC_WORKSPACE")
+        or os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        help="repo checkout /deploy runs bazel in (default: this file's repo)",
+    )
+    ap.add_argument(
+        "--bazel", default=os.environ.get("TOXC_BAZEL"), help="path to bazel (default: PATH lookup)"
+    )
     args = ap.parse_args()
 
-    cfg = discover({
-        "toeexpand": args.toeexpand,
-        "toecollapse": args.toecollapse,
-        "td_app": args.td_app,
-        "token": args.token,
-        "workspace": os.path.abspath(os.path.expanduser(args.workspace)),
-        "bazel": args.bazel,
-    })
+    cfg = discover(
+        {
+            "toeexpand": args.toeexpand,
+            "toecollapse": args.toecollapse,
+            "td_app": args.td_app,
+            "token": args.token,
+            "workspace": os.path.abspath(os.path.expanduser(args.workspace)),
+            "bazel": args.bazel,
+        }
+    )
     Handler.cfg = cfg
 
     print(f"[toxc-host] {platform.platform()}  python {sys.version.split()[0]}")
-    print(f"[toxc-host] toeexpand   : {cfg.get('toeexpand')  or 'NOT FOUND'}")
+    print(f"[toxc-host] toeexpand   : {cfg.get('toeexpand') or 'NOT FOUND'}")
     print(f"[toxc-host] toecollapse : {cfg.get('toecollapse') or 'NOT FOUND'}")
-    print(f"[toxc-host] TouchDesigner: {cfg.get('td_app')     or 'NOT FOUND'}")
+    print(f"[toxc-host] TouchDesigner: {cfg.get('td_app') or 'NOT FOUND'}")
     if cfg.get("token"):
         print("[toxc-host] auth token REQUIRED (X-Auth-Token)")
         print(f"[toxc-host] /deploy ENABLED: {_DEPLOY_TARGET} in {cfg.get('workspace')}")

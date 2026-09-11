@@ -10,9 +10,9 @@ here for host dev, and are re-run for aarch64 inside the image (deploy/nix).
   bazel run //compiler:build_shaders_gles -- <artifact_dir>
 """
 
-load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
-load("@rules_python//python:defs.bzl", "py_library", "py_test")
 load("@pypi//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -77,7 +77,11 @@ py_test(
     data = glob(["nix/**"]),
     imports = ["."],
     main = "test_chop_lower.py",
-    tags = ["local", "manual", "requires-network"],
+    tags = [
+        "local",
+        "manual",
+        "requires-network",
+    ],
     deps = [":chop_lower"],
 )
 
@@ -90,7 +94,11 @@ sh_binary(
     data = glob([
         "nix/**",
     ]),
-    tags = ["local", "manual", "requires-network"],
+    tags = [
+        "local",
+        "manual",
+        "requires-network",
+    ],
 )
 
 # shaders/*.frag -> shaders_gles/*.frag (GLSL ES 1.00) via glslang + spirv-cross.
@@ -101,7 +109,11 @@ sh_binary(
         "nix/**",
         "*.py",
     ]),
-    tags = ["local", "manual", "requires-network"],
+    tags = [
+        "local",
+        "manual",
+        "requires-network",
+    ],
 )
 
 # Transpiler conformance: param-expr string -> MLIR -> native .so, compared
@@ -113,7 +125,11 @@ py_test(
     data = glob(["nix/**"]),
     imports = ["."],
     main = "test_expr.py",
-    tags = ["local", "manual", "requires-network"],
+    tags = [
+        "local",
+        "manual",
+        "requires-network",
+    ],
     deps = [
         ":emit",
         "//:runtime",

@@ -7,6 +7,7 @@ header — this module is where that translation lives. Real custom-GLSL TOPs wi
 later route TD desktop-GLSL through glslang->SPIR-V->SPIRV-Cross; the built-in
 kernels below are authored portably so they need only header swapping.
 """
+
 from __future__ import annotations
 
 # "gles2" emits desktop GLSL (330) as the *input* to the ES1.00 translator
@@ -25,7 +26,9 @@ def _header(target: str, stage: str) -> str:
 
 # Fullscreen-triangle vertex shader (no vertex buffers; positions from gl_VertexID).
 def vertex(target: str) -> str:
-    return _header(target, "vertex") + """
+    return (
+        _header(target, "vertex")
+        + """
 out vec2 vUV;
 void main() {
     vec2 uv = vec2((gl_VertexID == 1) ? 2.0 : 0.0,
@@ -34,11 +37,14 @@ void main() {
     gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
 }
 """
+    )
 
 
 def vertex_td(target: str) -> str:
     """TD GLSL TOPs expect `vec3 vUV` (they use vUV.st)."""
-    return _header(target, "vertex") + """
+    return (
+        _header(target, "vertex")
+        + """
 out vec3 vUV;
 void main() {
     vec2 uv = vec2((gl_VertexID == 1) ? 2.0 : 0.0,
@@ -47,6 +53,7 @@ void main() {
     gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
 }
 """
+    )
 
 
 def td_glsl_top(target: str, n_inputs: int, user_src: str) -> str:
@@ -72,7 +79,9 @@ def gaussian_blur(target: str, radius: int, weights: list[float]) -> str:
     sampler so out-of-range taps replicate the border."""
     wlit = ", ".join(f"{w:.9g}" for w in weights)
     n = 2 * radius + 1
-    return _header(target, "fragment") + f"""
+    return (
+        _header(target, "fragment")
+        + f"""
 in vec2 vUV;
 out vec4 fragColor;
 uniform sampler2D tex0;
@@ -91,12 +100,15 @@ void main() {{
     fragColor = acc;
 }}
 """
+    )
 
 
 def crop_top(target: str) -> str:
     """Crop TOP: sample a sub-rectangle of the input (normalized left/right/
     bottom/top) and rescale it to fill the output. uCropRect = (l, r, b, t)."""
-    return _header(target, "fragment") + """
+    return (
+        _header(target, "fragment")
+        + """
 in vec2 vUV;
 out vec4 fragColor;
 uniform sampler2D tex0;
@@ -107,6 +119,7 @@ void main() {
     fragColor = texture(tex0, uv);
 }
 """
+    )
 
 
 def crop_transform_top(target: str) -> str:
@@ -114,7 +127,9 @@ def crop_transform_top(target: str) -> str:
     sample the SOURCE once. Exact composition of crop_top feeding transform_top —
     one pass and one FBO instead of two (producer/consumer fusion of two
     single-tap coordinate-remap ops)."""
-    return _header(target, "fragment") + """
+    return (
+        _header(target, "fragment")
+        + """
 in vec2 vUV;
 out vec4 fragColor;
 uniform sampler2D tex0;      // the source (crop's input)
@@ -138,6 +153,7 @@ void main() {
     fragColor = texture(tex0, uv);
 }
 """
+    )
 
 
 def transform_top(target: str) -> str:
@@ -146,7 +162,9 @@ def transform_top(target: str) -> str:
     # Per-component scalar uniforms (not vec2) so each can be a per-frame
     # expression (TD parameters like scale = op('midiin1')[1]/64). One decl per
     # line for the GLES translator's per-uniform layout injection.
-    return _header(target, "fragment") + """
+    return (
+        _header(target, "fragment")
+        + """
 in vec2 vUV;
 out vec4 fragColor;
 uniform sampler2D tex0;
@@ -164,13 +182,17 @@ void main() {
     fragColor = texture(tex0, p + c);
 }
 """
+    )
 
 
 # Trivial passthrough (used by the sink to sample its input into the readback FBO).
 def passthrough(target: str) -> str:
-    return _header(target, "fragment") + """
+    return (
+        _header(target, "fragment")
+        + """
 in vec2 vUV;
 out vec4 fragColor;
 uniform sampler2D tex0;
 void main() { fragColor = texture(tex0, vUV); }
 """
+    )

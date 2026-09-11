@@ -6,8 +6,13 @@ let
 in
 pkgs.mkShell {
   packages = [
-    pkgs.cmake pkgs.ninja pkgs.lld pkgs.python3
-    llvm.clang llvm.mlir llvm.llvm.dev
+    pkgs.cmake
+    pkgs.ninja
+    pkgs.lld
+    pkgs.python3
+    llvm.clang
+    llvm.mlir
+    llvm.llvm.dev
   ];
   shellHook = ''
     export MLIR_DIR=${llvm.mlir.dev}/lib/cmake/mlir

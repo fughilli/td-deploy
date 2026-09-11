@@ -1,0 +1,6 @@
+# Python deps for freezing the td-deploy Studio sidecar (host side).
+# The engine itself is stdlib-only; these are the compiler's asset decoders + the
+# freezer. Pin conservatively — the cryptography wheel is intentionally NOT here.
+pyinstaller==6.10.0
+pillow>=10.0
+av>=12.0

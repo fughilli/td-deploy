@@ -14,6 +14,7 @@ updated in DAG order), matching the runtime. Expression semantics match the
 runtime's fasteval + preprocess: `op('X')[c]` reads channel c; a trailing
 `[sample]` is dropped; `absTime.seconds->t`, `.frame/.step->frame`; non-finite->0.
 """
+
 from __future__ import annotations
 
 import math
@@ -22,6 +23,7 @@ import math
 class _Sample(float):
     """A CHOP channel value that also swallows a trailing sample subscript, so
     `op('X')[c][s]` == `op('X')[c]` (the runtime drops the sample index)."""
+
     def __getitem__(self, _k):
         return self
 
@@ -34,10 +36,22 @@ class _AbsTime:
 
 
 _SAFE = {
-    "pi": math.pi, "e": math.e, "sin": math.sin, "cos": math.cos, "tan": math.tan,
-    "abs": abs, "min": min, "max": max, "pow": pow, "sqrt": math.sqrt,
-    "floor": math.floor, "ceil": math.ceil, "radians": math.radians,
-    "degrees": math.degrees, "mod": math.fmod, "math": math,
+    "pi": math.pi,
+    "e": math.e,
+    "sin": math.sin,
+    "cos": math.cos,
+    "tan": math.tan,
+    "abs": abs,
+    "min": min,
+    "max": max,
+    "pow": pow,
+    "sqrt": math.sqrt,
+    "floor": math.floor,
+    "ceil": math.ceil,
+    "radians": math.radians,
+    "degrees": math.degrees,
+    "mod": math.fmod,
+    "math": math,
 }
 
 
@@ -78,6 +92,7 @@ def eval_expr(expr, t: float, frame: float, store: Store) -> float:
 
 class ChopEval:
     """Stateful DAG evaluator. `step(t, sources)` returns the post-frame Store."""
+
     def __init__(self, chops: list[dict]):
         self.chops = chops
         self.speed: dict[tuple[str, int], float] = {}

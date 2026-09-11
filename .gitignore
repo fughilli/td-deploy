@@ -32,3 +32,13 @@ compiler/build/
 # rust runtime
 runtime_rs/target/
 runtime_rs/*.png
+
+# td-deploy Studio app build outputs (all large / per-OS / generated)
+app/dist/
+app/build/
+app/toolchain/
+app/version.json
+app/electron/node_modules/
+app/electron/dist/
+__pycache__/
+*.pyc

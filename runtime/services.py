@@ -10,7 +10,9 @@ OSC parsing is hand-rolled (no dependency). MIDI uses `mido` if present and a po
 is available; otherwise it degrades gracefully (there's no MIDI device in the
 container — on the Pi a USB controller shows up and this starts working).
 """
+
 from __future__ import annotations
+
 import socket
 import struct
 import threading
@@ -18,6 +20,7 @@ import threading
 
 class ChopStore:
     """Thread-safe {chop_name: {channel: float}}."""
+
     def __init__(self):
         self._lock = threading.Lock()
         self._d: dict[str, dict[str, float]] = {}
@@ -50,27 +53,36 @@ def parse_osc(data: bytes) -> list[tuple[str, list]]:
         out = []
         i = 16  # skip '#bundle\0' + 8-byte timetag
         while i < len(data):
-            (size,) = struct.unpack_from(">i", data, i); i += 4
-            out += parse_osc(data[i:i + size]); i += size
+            (size,) = struct.unpack_from(">i", data, i)
+            i += 4
+            out += parse_osc(data[i : i + size])
+            i += size
         return out
     if not data[:1] == b"/":
         return []
     addr, i = _osc_string(data, 0)
-    if i >= len(data) or data[i:i + 1] != b",":
+    if i >= len(data) or data[i : i + 1] != b",":
         return [(addr, [])]
     tags, i = _osc_string(data, i)
     args = []
     for t in tags[1:]:
         if t == "f":
-            (v,) = struct.unpack_from(">f", data, i); i += 4; args.append(v)
+            (v,) = struct.unpack_from(">f", data, i)
+            i += 4
+            args.append(v)
         elif t == "i":
-            (v,) = struct.unpack_from(">i", data, i); i += 4; args.append(v)
+            (v,) = struct.unpack_from(">i", data, i)
+            i += 4
+            args.append(v)
         elif t == "d":
-            (v,) = struct.unpack_from(">d", data, i); i += 8; args.append(v)
+            (v,) = struct.unpack_from(">d", data, i)
+            i += 8
+            args.append(v)
         elif t in "TF":
             args.append(1.0 if t == "T" else 0.0)
         elif t == "s":
-            _s, i = _osc_string(data, i); args.append(_s)
+            _s, i = _osc_string(data, i)
+            args.append(_s)
     return [(addr, args)]
 
 
@@ -103,11 +115,13 @@ class OscInService:
 class MidiInService:
     """MIDI In via mido (if available). Maps note-on velocity and CC value to
     channels 'n<note>' and 'cc<num>' (normalized 0..1). Degrades if no backend/port."""
+
     def __init__(self, name: str, device: str | None, store: ChopStore):
         self.name, self.device, self.store = name, device, store
 
     def start(self) -> None:
         import mido  # raises if unavailable -> caller reports
+
         names = mido.get_input_names()
         port = self.device if self.device in names else (names[0] if names else None)
         if port is None:
@@ -155,9 +169,9 @@ def collect_services(graph) -> list[dict]:
         if n.op in ("oscin", "midiin"):
             name = nid.split("/")[-1]
             if n.op == "oscin":
-                specs.append({"type": "oscin", "name": name,
-                              "port": int(n.params.get("port", 7000))})
+                specs.append(
+                    {"type": "oscin", "name": name, "port": int(n.params.get("port", 7000))}
+                )
             else:
-                specs.append({"type": "midiin", "name": name,
-                              "device": n.params.get("device")})
+                specs.append({"type": "midiin", "name": name, "device": n.params.get("device")})
     return specs

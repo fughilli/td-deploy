@@ -7,8 +7,13 @@ let
 in
 pkgs.mkShell {
   packages = [
-    pkgs.rustc pkgs.cargo pkgs.pkg-config pkgs.gcc
-    pkgs.libGL pkgs.mesa pkgs.libdrm
+    pkgs.rustc
+    pkgs.cargo
+    pkgs.pkg-config
+    pkgs.gcc
+    pkgs.libGL
+    pkgs.mesa
+    pkgs.libdrm
   ];
   shellHook = ''
     export LIBGL_ALWAYS_SOFTWARE=1

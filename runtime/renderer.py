@@ -7,14 +7,17 @@ so animated params (e.g. a Transform's `rotate = absTime.seconds*10`) actually
 move. Output frames are read back as numpy RGBA. Used by the MJPEG stream server;
 `run()` wraps it for a single frame (host reference / conformance).
 """
+
 from __future__ import annotations
+
 import os
+
 import numpy as np
 from OpenGL import GL
 
+from lowering.lower import RuntimePlan
 from runtime import egl_context, sources, video
 from runtime.expr import eval_expr
-from lowering.lower import RuntimePlan
 
 
 def _compile(src: str, stage) -> int:
@@ -22,36 +25,43 @@ def _compile(src: str, stage) -> int:
     GL.glShaderSource(sh, src)
     GL.glCompileShader(sh)
     if GL.glGetShaderiv(sh, GL.GL_COMPILE_STATUS) != GL.GL_TRUE:
-        raise RuntimeError("shader compile failed:\n" + GL.glGetShaderInfoLog(sh).decode()
-                           + "\n--- source ---\n" + src)
+        raise RuntimeError(
+            "shader compile failed:\n"
+            + GL.glGetShaderInfoLog(sh).decode()
+            + "\n--- source ---\n"
+            + src
+        )
     return sh
 
 
 def _program(vs: str, fs: str) -> int:
     prog = GL.glCreateProgram()
     a, b = _compile(vs, GL.GL_VERTEX_SHADER), _compile(fs, GL.GL_FRAGMENT_SHADER)
-    GL.glAttachShader(prog, a); GL.glAttachShader(prog, b)
+    GL.glAttachShader(prog, a)
+    GL.glAttachShader(prog, b)
     GL.glLinkProgram(prog)
     if GL.glGetProgramiv(prog, GL.GL_LINK_STATUS) != GL.GL_TRUE:
         raise RuntimeError("link failed:\n" + GL.glGetProgramInfoLog(prog).decode())
-    GL.glDeleteShader(a); GL.glDeleteShader(b)
+    GL.glDeleteShader(a)
+    GL.glDeleteShader(b)
     return prog
 
 
 def _texture(w: int, h: int, data: np.ndarray | None) -> int:
     tex = GL.glGenTextures(1)
     GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
-    for k, v in ((GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE),
-                 (GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE),
-                 (GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR),
-                 (GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)):
+    for k, v in (
+        (GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE),
+        (GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE),
+        (GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR),
+        (GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR),
+    ):
         GL.glTexParameteri(GL.GL_TEXTURE_2D, k, v)
     # Upload bottom-row-first (GL's convention): flip incoming top-down image data
     # so texel t=0 is the image's bottom row. TD's GLSL TOPs assume this (e.g.
     # sprite-atlas row math), and readback flips back — net identity for output.
     buf = None if data is None else np.ascontiguousarray(np.flipud(data), np.uint8)
-    GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, w, h, 0,
-                    GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, buf)
+    GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, w, h, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, buf)
     return tex
 
 
@@ -72,7 +82,7 @@ def _set_uniform(prog: int, name: str, kind: str, val) -> None:
 class Renderer:
     def __init__(self, plan: RuntimePlan, chops=None):
         self.plan = plan
-        self.chops = chops          # ChopStore for op('..')['..'] param exprs (OSC/MIDI)
+        self.chops = chops  # ChopStore for op('..')['..'] param exprs (OSC/MIDI)
         egl_context.make_current()
         self.vao = GL.glGenVertexArrays(1)
         GL.glBindVertexArray(self.vao)
@@ -101,8 +111,9 @@ class Renderer:
                 out = _texture(w, h, None)
                 fbo = GL.glGenFramebuffers(1)
                 GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
-                GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0,
-                                          GL.GL_TEXTURE_2D, out, 0)
+                GL.glFramebufferTexture2D(
+                    GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0, GL.GL_TEXTURE_2D, out, 0
+                )
                 self.tex[st.node_id] = out
                 self.fbo[st.node_id] = fbo
                 self.size[st.node_id] = (w, h)
@@ -112,8 +123,17 @@ class Renderer:
         for nid, vs in self.videos.items():
             data = np.ascontiguousarray(np.flipud(vs.frame_at(t)), np.uint8)
             GL.glBindTexture(GL.GL_TEXTURE_2D, self.tex[nid])
-            GL.glTexSubImage2D(GL.GL_TEXTURE_2D, 0, 0, 0, vs.width, vs.height,
-                               GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, data)
+            GL.glTexSubImage2D(
+                GL.GL_TEXTURE_2D,
+                0,
+                0,
+                0,
+                vs.width,
+                vs.height,
+                GL.GL_RGBA,
+                GL.GL_UNSIGNED_BYTE,
+                data,
+            )
         for st in self.plan.steps:
             if st.kind == "passthrough":
                 src = st.inputs[0] if st.inputs else None
@@ -138,8 +158,9 @@ class Renderer:
                     if loc == -1:
                         loc = GL.glGetUniformLocation(prog, st.sampler_array)
                     if loc != -1:
-                        GL.glUniform1iv(loc, len(st.inputs),
-                                        (GL.GLint * len(st.inputs))(*range(len(st.inputs))))
+                        GL.glUniform1iv(
+                            loc, len(st.inputs), (GL.GLint * len(st.inputs))(*range(len(st.inputs)))
+                        )
                 else:
                     for i in range(len(st.inputs)):
                         l2 = GL.glGetUniformLocation(prog, f"tex{i}")
@@ -158,14 +179,15 @@ class Renderer:
         if fbo is None:  # output is a source/passthrough: attach its texture to read
             fbo = GL.glGenFramebuffers(1)
             GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
-            GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0,
-                                      GL.GL_TEXTURE_2D, self.tex[out_id], 0)
+            GL.glFramebufferTexture2D(
+                GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0, GL.GL_TEXTURE_2D, self.tex[out_id], 0
+            )
         else:
             GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
         GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
         raw = GL.glReadPixels(0, 0, sw, sh, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
         img = np.frombuffer(raw, np.uint8).reshape(sh, sw, 4)
-        return np.flipud(img).copy()   # GL is bottom-up; restore top-down for output
+        return np.flipud(img).copy()  # GL is bottom-up; restore top-down for output
 
 
 def run(plan: RuntimePlan, chops=None) -> np.ndarray:
