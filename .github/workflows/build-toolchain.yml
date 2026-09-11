@@ -49,10 +49,17 @@ jobs:
       - name: Cross-build mlir/glslang/spirv-cross for Windows (mingw)
         run: |
           set -euo pipefail
-          # Pin to nixos-24.11 (same LLVM/MLIR 18 as compiler/nix/mlir.nix); an
-          # explicit flake ref needs no registry / NIX_PATH.
+          # Pin to nixos-24.11 (same LLVM/MLIR 18 as compiler/nix/mlir.nix).
+          # mlir must link LLVM STATICALLY: a shared libLLVM-18.dll exceeds the
+          # Windows PE export-ordinal limit (~64K) and fails to link, so override
+          # enableSharedLibraries=false. glslang/spirv-cross don't use libLLVM.
           X='github:NixOS/nixpkgs/nixos-24.11#pkgsCross.mingwW64'
-          mlir="$(nix build --no-link --print-out-paths "${X}.llvmPackages_18.mlir")"
+          EXPR='
+            let cross = (import (builtins.getFlake "github:NixOS/nixpkgs/nixos-24.11") {}).pkgsCross.mingwW64;
+                l = cross.llvmPackages_18;
+            in l.mlir.override { libllvm = l.libllvm.override { enableSharedLibraries = false; }; }
+          '
+          mlir="$(nix build --impure --no-link --print-out-paths --expr "$EXPR")"
           gls="$(nix build --no-link --print-out-paths "${X}.glslang")"
           sc="$(nix build --no-link --print-out-paths "${X}.spirv-cross")"
 
