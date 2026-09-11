@@ -77,10 +77,19 @@ jobs:
                 ++ [ "-DLLVM_NATIVE_TOOL_DIR=${cross.buildPackages.llvmPackages_18.mlir}/bin" ];
               installPhase = ''
                 runHook preInstall
-                mkdir -p $out/bin $dev
+                mkdir -p "$out/bin" "$dev"
                 for t in mlir-opt.exe mlir-translate.exe; do
-                  cp -v "$(find . -name "$t" -type f | head -1)" "$out/bin/"
+                  if [ -e "$out/bin/$t" ]; then
+                    echo "already built into output: $out/bin/$t"
+                  else
+                    src="$(find "$NIX_BUILD_TOP" -name "$t" -type f 2>/dev/null | head -1)"
+                    echo "copying $t from: $src"
+                    cp -v "$src" "$out/bin/$t"
+                  fi
                 done
+                ls -l "$out/bin"
+                test -e "$out/bin/mlir-opt.exe"
+                test -e "$out/bin/mlir-translate.exe"
                 runHook postInstall
               '';
             });
