@@ -198,7 +198,12 @@ jobs:
         run: |
           $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/clang+llvm-$env:LLVM_VERSION-x86_64-pc-windows-msvc.tar.xz"
           curl.exe -fL $url -o llvm.tar.xz
-          mkdir llvm-full; tar -xf llvm.tar.xz --strip-components=1 -C llvm-full
+          # Extract ONLY the 3 tools we need. Extracting the whole ~2.5 GB release
+          # is pathologically slow on Windows (Defender scans every file) — it hung
+          # the job for ~1h. bsdtar treats trailing operands as match patterns.
+          mkdir llvm-full
+          tar -xf llvm.tar.xz --strip-components=1 -C llvm-full `
+            "*/bin/clang.exe" "*/bin/clang++.exe" "*/bin/ld.lld.exe"
           Copy-Item llvm-full\bin\clang.exe   app\toolchain\bin\
           Copy-Item llvm-full\bin\clang++.exe app\toolchain\bin\
           Copy-Item llvm-full\bin\ld.lld.exe  app\toolchain\bin\
