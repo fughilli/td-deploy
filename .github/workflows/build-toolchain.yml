@@ -52,32 +52,54 @@ jobs:
           # glslang/spirv-cross mark the mingw system unsupported in meta.platforms
           # (nix refuses to build without this); the exes themselves are fine.
           export NIXPKGS_ALLOW_UNSUPPORTED_SYSTEM=1
-          # Pin to nixos-24.11 (same LLVM/MLIR 18 as compiler/nix/mlir.nix).
-          # mlir must link LLVM STATICALLY: a shared libLLVM-18.dll exceeds the
-          # Windows PE export-ordinal limit (~64K) and fails to link, so override
-          # enableSharedLibraries=false. glslang/spirv-cross don't use libLLVM.
-          X='github:NixOS/nixpkgs/nixos-24.11#pkgsCross.mingwW64'
-          # Also point cross MLIR at NATIVE build tools (mlir-linalg-ods-yaml-gen
-          # etc.): nixpkgs sets native llvm/mlir-tblgen for cross but not the Linalg
-          # yaml generator, which then cross-compiles and can't run on the Linux
-          # host. buildPackages.…mlir is the native mlir nixpkgs already builds for
-          # mlir-tblgen, so LLVM_NATIVE_TOOL_DIR reuses it at no extra cost.
-          EXPR='
-            let cross = (import (builtins.getFlake "github:NixOS/nixpkgs/nixos-24.11") {}).pkgsCross.mingwW64;
-                l = cross.llvmPackages_18;
-                staticLLVM = l.libllvm.override { enableSharedLibraries = false; };
-            in (l.mlir.override { libllvm = staticLLVM; }).overrideAttrs (old: {
-                 cmakeFlags = (old.cmakeFlags or [])
-                   ++ [ "-DLLVM_NATIVE_TOOL_DIR=${cross.buildPackages.llvmPackages_18.mlir}/bin" ];
-               })
-          '
-          mlir="$(nix build --impure --no-link --print-out-paths --expr "$EXPR")"
-          gls="$(nix build --impure --no-link --print-out-paths "${X}.glslang")"
-          sc="$(nix build --impure --no-link --print-out-paths "${X}.spirv-cross")"
+
+          # The nix expressions live in a file so the multi-line installPhase etc.
+          # don't fight shell/YAML quoting. See the inline comments for each fix.
+          cat > bundle.nix <<'NIX'
+          let
+            np24 = import (builtins.getFlake "github:NixOS/nixpkgs/nixos-24.11") { };
+            npU = import (builtins.getFlake "github:NixOS/nixpkgs/nixos-unstable") { };
+            cross = np24.pkgsCross.mingwW64;
+            l = cross.llvmPackages_18;
+            # Static LLVM: a shared libLLVM-18.dll exceeds the Windows PE export
+            # limit (~64K) and fails to link.
+            staticLLVM = l.libllvm.override { enableSharedLibraries = false; };
+            crossU = npU.pkgsCross.mingwW64;
+          in
+          {
+            # mlir-opt/mlir-translate cross-link fine; the Linalg yaml generator runs
+            # via native tools (LLVM_NATIVE_TOOL_DIR — nixpkgs wires native
+            # llvm/mlir-tblgen but not this one), so its cross .exe isn't built and
+            # the stock install can't find it. We only need the two tools, so install
+            # exactly those from the build tree.
+            mlir = (l.mlir.override { libllvm = staticLLVM; }).overrideAttrs (old: {
+              cmakeFlags = (old.cmakeFlags or [ ])
+                ++ [ "-DLLVM_NATIVE_TOOL_DIR=${cross.buildPackages.llvmPackages_18.mlir}/bin" ];
+              installPhase = ''
+                runHook preInstall
+                mkdir -p $out/bin $dev
+                for t in mlir-opt.exe mlir-translate.exe; do
+                  cp -v "$(find . -name "$t" -type f | head -1)" "$out/bin/"
+                done
+                runHook postInstall
+              '';
+            });
+            # unstable: 24.11 mingw glslang fails linking a shared SPIRV-Tools DLL
+            # (-lmcfgthread). dontCheckForBrokenSymlinks: its glslangValidator symlink
+            # dangles on Windows since the real binary is glslang.exe.
+            glslang = crossU.glslang.overrideAttrs (o: { dontCheckForBrokenSymlinks = true; });
+            spirv-cross = crossU.spirv-cross;
+          }
+          NIX
+
+          mlir="$(nix build --impure --no-link --print-out-paths -f bundle.nix mlir)"
+          gls="$(nix build --impure --no-link --print-out-paths -f bundle.nix glslang)"
+          sc="$(nix build --impure --no-link --print-out-paths -f bundle.nix spirv-cross)"
 
           mkdir -p bundle/bin
           cp -Lv "$mlir"/bin/mlir-opt.exe "$mlir"/bin/mlir-translate.exe bundle/bin/
-          # glslang ships glslangValidator (fall back to glslang.exe named as such)
+          # glslang's real binary is glslang.exe (glslangValidator is a dangling
+          # symlink on mingw); ship it under the name translate_gles.py invokes.
           if [ -e "$gls/bin/glslangValidator.exe" ]; then
             cp -Lv "$gls/bin/glslangValidator.exe" bundle/bin/
           else
