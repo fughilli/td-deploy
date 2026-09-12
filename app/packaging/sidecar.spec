@@ -34,8 +34,8 @@ hidden += ["emit_artifact", "translate_gles"]
 
 datas = []
 binaries = []
-# PyAV ships FFmpeg shared libs + submodules; collect everything.
-for mod in ("av", "PIL"):
+# PyAV ships FFmpeg shared libs + submodules; zstandard has a C extension; PIL too.
+for mod in ("av", "PIL", "zstandard"):
     d, b, h = collect_all(mod)
     datas += d
     binaries += b
