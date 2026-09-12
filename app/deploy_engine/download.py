@@ -127,6 +127,26 @@ def default_cache_dir() -> str:
     return os.path.join(base, "td-deploy-studio", "images")
 
 
+def _decompress_zst(src: str, dest: str, on_progress: OnProgress) -> None:
+    """Stream-decompress a .zst file to `dest` (via the `zstandard` package)."""
+    import zstandard  # bundled in the frozen app (see packaging/requirements.txt)
+
+    tmp = dest + ".part"
+    total = os.path.getsize(src)
+    dctx = zstandard.ZstdDecompressor()
+    with open(src, "rb") as fi, open(tmp, "wb") as fo:
+        reader = dctx.stream_reader(fi)
+        done = 0
+        while True:
+            chunk = reader.read(1 << 20)
+            if not chunk:
+                break
+            fo.write(chunk)
+            done = fi.tell()
+            on_progress(done / total if total else 1.0, "decompressing image")
+    os.replace(tmp, dest)
+
+
 def fetch_base_image(
     tag: str = "latest",
     *,
@@ -135,27 +155,39 @@ def fetch_base_image(
     on_progress: OnProgress = _noop,
     verify: bool = True,
 ) -> str:
-    """Download (or reuse cached) verified base `.img` for `tag`; return its path.
+    """Download (+ verify + decompress) the base image for `tag`; return the raw
+    `.img` path ready for flashing.
 
-    A cached image whose sha256 already matches the release is returned without
+    The release ships a compressed `.img.zst` (the raw image exceeds GitHub's 2 GiB
+    asset limit); we verify the .zst's sha256, then decompress to a raw .img in the
+    cache. A cached image whose checksum already matches is reused without
     re-downloading. Raises on checksum mismatch (the bad file is removed).
     """
     rel = get_release(tag, repo)
-    img = rel.find(".img", ".img.raw", ".iso")
+    img = rel.find(".img.zst", ".img", ".img.raw", ".iso")
     if img is None:
-        raise FileNotFoundError(f"release {rel.tag!r} has no .img asset")
+        raise FileNotFoundError(f"release {rel.tag!r} has no image asset")
     cache = cache_dir or default_cache_dir()
     os.makedirs(cache, exist_ok=True)
-    dest = os.path.join(cache, f"{rel.tag}-{img.name}")
+    dest = os.path.join(cache, f"{rel.tag}-{img.name}")  # the downloaded asset
+    raw = dest[: -len(".zst")] if dest.endswith(".zst") else dest  # flashable .img
     expected = _expected_sha(rel, img) if verify else None
 
+    def _ensure_raw() -> str:
+        if dest.endswith(".zst"):
+            if not os.path.exists(raw):
+                _decompress_zst(dest, raw, on_progress)
+            return raw
+        return dest
+
+    # Reuse a cached, checksum-matching download (+ its decompressed image).
     if os.path.exists(dest) and expected:
         on_progress(0.0, "checking cached image")
         if _sha256(dest, on_progress) == expected.lower():
             on_progress(1.0, "cached")
-            return dest  # already good
-    if os.path.exists(dest) and not expected:
-        return dest
+            return _ensure_raw()
+    elif os.path.exists(dest) and not expected:
+        return _ensure_raw()
 
     on_progress(0.0, f"downloading {img.name}")
     _download(img, dest, on_progress)
@@ -164,5 +196,6 @@ def fetch_base_image(
         if got.lower() != expected.lower():
             os.remove(dest)
             raise ValueError(f"sha256 mismatch: got {got}, expected {expected}")
+    result = _ensure_raw()
     on_progress(1.0, "ready")
-    return dest
+    return result

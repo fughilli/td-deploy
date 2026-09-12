@@ -51,17 +51,20 @@ jobs:
           test -n "$IMG"
           echo "img=$IMG" >> "$GITHUB_OUTPUT"
 
-      - name: Decompress + checksum
+      - name: Compress + checksum
         id: pack
         run: |
           set -euo pipefail
           mkdir -p out
           IMG="${{ steps.build.outputs.img }}"
-          NAME="tdplayer-pi3.img"
+          NAME="tdplayer-pi3.img.zst"
+          # Publish the COMPRESSED image: the raw .img is >2 GiB, over GitHub's
+          # release-asset limit. The app decompresses it before flashing
+          # (deploy_engine/download.py). Checksum is over the .zst we upload.
           if [[ "$IMG" == *.zst ]]; then
-            nix run nixpkgs#zstd -- -d -c "$IMG" > "out/$NAME"
-          else
             cp "$IMG" "out/$NAME"
+          else
+            nix run nixpkgs#zstd -- -T0 -19 -c "$IMG" > "out/$NAME"
           fi
           ( cd out && sha256sum "$NAME" | tee "$NAME.sha256" )
           ls -l out
@@ -75,5 +78,5 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           files: |
-            out/tdplayer-pi3.img
-            out/tdplayer-pi3.img.sha256
+            out/tdplayer-pi3.img.zst
+            out/tdplayer-pi3.img.zst.sha256

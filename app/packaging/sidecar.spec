@@ -12,11 +12,18 @@
 #
 # Build:  pyinstaller app/packaging/sidecar.spec
 import os
+import sys
 from PyInstaller.utils.hooks import collect_submodules, collect_all
 
-REPO = os.path.abspath(os.path.join(os.path.dirname(SPECPATH), "..", ".."))
+# SPECPATH is the spec's dir (app/packaging), so the repo root is two levels up.
+REPO = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 APP = os.path.join(REPO, "app")
 COMPILER = os.path.join(REPO, "compiler")
+
+# collect_submodules() runs now (before Analysis applies pathex), so the reused
+# packages must be importable at spec-eval time: deploy_engine (app/), ir/passes/
+# lowering/importer/runtime (repo root), emit_artifact/translate_gles (compiler/).
+sys.path[:0] = [REPO, APP, COMPILER]
 
 # Reused pure-Python compiler packages -> pull in every submodule.
 hidden = []
@@ -27,8 +34,8 @@ hidden += ["emit_artifact", "translate_gles"]
 
 datas = []
 binaries = []
-# PyAV ships FFmpeg shared libs + submodules; collect everything.
-for mod in ("av", "PIL"):
+# PyAV ships FFmpeg shared libs + submodules; zstandard has a C extension; PIL too.
+for mod in ("av", "PIL", "zstandard"):
     d, b, h = collect_all(mod)
     datas += d
     binaries += b
