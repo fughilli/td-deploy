@@ -8,11 +8,13 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
+    "dev": "electronmon .",
     "dist": "electron-builder"
   },
   "devDependencies": {
     "electron": "^31.3.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "electronmon": "^2.0.3"
   },
   "build": {
     "appId": "com.fughilli.tddeploystudio",

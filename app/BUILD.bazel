@@ -1,0 +1,18 @@
+"""//app — td-deploy Studio desktop app (Electron UI + Python sidecar).
+
+The app itself is built/packaged with npm + electron-builder (see packaging/), not
+Bazel. This target is just a convenience launcher for interactive development:
+
+  bazel run //app:dev     # launch the app with live-reload (see dev.sh)
+"""
+
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+# Interactive dev launcher. dev.sh uses $BUILD_WORKSPACE_DIRECTORY so it operates
+# on the real source tree (npm/electronmon watch actual files), not the sandbox.
+sh_binary(
+    name = "dev",
+    srcs = ["dev.sh"],
+)
