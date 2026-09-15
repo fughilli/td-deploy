@@ -53,15 +53,33 @@ jobs:
 
       - name: Image size breakdown
         # Diagnostic only (never fails the build): report the raw image size and the
-        # largest store paths so we can see what dominates the closure (mesa/LLVM,
-        # glibc locale-archive, linux-firmware, nix, …) before trimming. On a fresh
-        # CI builder the store ≈ this image's build closure, so `path-info --all` is
-        # a good proxy for what lands in the image.
+        # largest packages in the ACTUAL system closure, so we can see what dominates
+        # the image (mesa/LLVM, glibc locale-archive, linux-firmware, nix, …) before
+        # trimming. We resolve the NixOS toplevel from the image's deriver and size
+        # its closure numerically (Nix's `-h` output doesn't sort, and `--all` would
+        # include Bazel/Nix build tooling that never lands in the image).
         run: |
+          set -uo pipefail
           IMG="${{ steps.build.outputs.img }}"
           echo "== raw image =="; ls -lh "$IMG" || true
-          echo "== 40 largest store paths (self size) =="
-          nix path-info --all -s -h 2>/dev/null | sort -h -k2 | tail -40 || true
+          imgdir="$(cd "$(dirname "$IMG")/.." && pwd)"
+          drv="$(nix-store -q --deriver "$imgdir" 2>/dev/null || true)"
+          top=""
+          if [ -n "$drv" ]; then
+            topdrv="$(nix-store -q --references "$drv" 2>/dev/null \
+              | grep -E 'nixos-system-.*\.drv$' | head -1)"
+            [ -n "$topdrv" ] && top="$(nix-store -q --outputs "$topdrv" 2>/dev/null | head -1)"
+          fi
+          echo "== toplevel: ${top:-<unresolved>} =="
+          if [ -n "$top" ] && [ -e "$top" ]; then
+            echo "== total image closure size =="
+            nix path-info -S -h "$top" || true
+            echo "== 30 largest packages in the image closure =="
+            nix path-info -r --json "$top" | python3 .github/scripts/closure_top.py 30 || true
+          else
+            echo "toplevel unresolved; whole-store proxy (INCLUDES build tooling):"
+            nix path-info --all --json | python3 .github/scripts/closure_top.py 40 || true
+          fi
         continue-on-error: true
 
       - name: Compress + checksum
