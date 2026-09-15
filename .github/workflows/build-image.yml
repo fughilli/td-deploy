@@ -51,6 +51,19 @@ jobs:
           test -n "$IMG"
           echo "img=$IMG" >> "$GITHUB_OUTPUT"
 
+      - name: Image size breakdown
+        # Diagnostic only (never fails the build): report the raw image size and the
+        # largest store paths so we can see what dominates the closure (mesa/LLVM,
+        # glibc locale-archive, linux-firmware, nix, …) before trimming. On a fresh
+        # CI builder the store ≈ this image's build closure, so `path-info --all` is
+        # a good proxy for what lands in the image.
+        run: |
+          IMG="${{ steps.build.outputs.img }}"
+          echo "== raw image =="; ls -lh "$IMG" || true
+          echo "== 40 largest store paths (self size) =="
+          nix path-info --all -s -h 2>/dev/null | sort -h -k2 | tail -40 || true
+        continue-on-error: true
+
       - name: Compress + checksum
         id: pack
         run: |
