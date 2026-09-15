@@ -14,10 +14,28 @@ Entry points:
 
 from __future__ import annotations
 
+import errno
 import os
 import sys
 
 CHUNK = 8 << 20  # 8 MiB
+
+
+def _open_help(device: str, e: OSError) -> str:
+    """Turn an EPERM/EACCES on the raw device into an actionable message.
+
+    On macOS Sonoma/Sequoia, raw access to removable media is gated by TCC (Full
+    Disk Access) even for a root process — the elevated write is attributed to the
+    GUI app, so opening /dev/rdiskN returns EPERM ("Operation not permitted") until
+    the app is granted access. No code can bypass this; the user must grant it."""
+    if sys.platform == "darwin" and e.errno in (errno.EPERM, errno.EACCES):
+        return (
+            f"macOS blocked raw disk access to {device}. Grant 'td-deploy Studio' "
+            "Full Disk Access in System Settings > Privacy & Security > Full Disk "
+            "Access (toggle it on, then relaunch the app) and flash again. "
+            f"[{e.strerror}]"
+        )
+    return f"cannot open {device} for writing: {e.strerror}"
 
 
 def raw_write(image: str, device: str, progress_file: str) -> int:
@@ -26,7 +44,10 @@ def raw_write(image: str, device: str, progress_file: str) -> int:
     # Unbuffered write to the whole device; O_SYNC keeps the SD honest.
     flags = os.O_WRONLY
     flags |= getattr(os, "O_SYNC", 0)
-    dst = os.open(device, flags)
+    try:
+        dst = os.open(device, flags)
+    except OSError as e:
+        raise OSError(_open_help(device, e)) from e
     try:
         with open(image, "rb") as src, open(progress_file, "w") as pf:
             pf.write(f"0 {total}\n")
