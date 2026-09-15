@@ -35,7 +35,10 @@ hidden += ["emit_artifact", "translate_gles"]
 datas = []
 binaries = []
 # PyAV ships FFmpeg shared libs + submodules; zstandard has a C extension; PIL too.
-for mod in ("av", "PIL", "zstandard"):
+# certifi ships cacert.pem as data so the frozen app can verify HTTPS (image
+# download); collect_all + PyInstaller's certifi hook place it where certifi.where()
+# resolves at runtime.
+for mod in ("av", "PIL", "zstandard", "certifi"):
     d, b, h = collect_all(mod)
     datas += d
     binaries += b

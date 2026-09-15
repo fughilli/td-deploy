@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import ssl
 import urllib.request
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -22,6 +23,28 @@ from typing import Callable, Optional
 REPO = os.environ.get("TDDEPLOY_REPO", "fughilli/td-deploy")
 _API = "https://api.github.com/repos/{repo}/releases/{ref}"
 OnProgress = Callable[[float, str], None]
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """A verifying TLS context that works in the PyInstaller-frozen app.
+
+    The frozen interpreter has no OpenSSL CA store, so the system default context
+    fails GitHub's cert with CERTIFICATE_VERIFY_FAILED. `certifi` is bundled (see
+    packaging/requirements.txt + sidecar.spec) to supply the trust roots; in a
+    plain dev checkout without certifi we fall back to the system defaults, which
+    are configured there. SSL_CERT_FILE still overrides either, if set.
+    """
+    if not os.environ.get("SSL_CERT_FILE"):
+        try:
+            import certifi
+
+            return ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            pass
+    return ssl.create_default_context()
+
+
+_SSL = _ssl_context()
 
 
 def _noop(_frac: float, _msg: str) -> None:
@@ -60,7 +83,7 @@ def _get(url: str, accept: str = "application/vnd.github+json") -> bytes:
     tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if tok:
         req.add_header("Authorization", f"Bearer {tok}")
-    with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310 - github https
+    with urllib.request.urlopen(req, timeout=30, context=_SSL) as r:  # noqa: S310 - github https
         return r.read()
 
 
@@ -83,7 +106,7 @@ def get_release(tag: str = "latest", repo: str = REPO) -> Release:
 def _download(asset: Asset, dest: str, on_progress: OnProgress) -> None:
     req = urllib.request.Request(asset.url, headers={"User-Agent": "td-deploy-studio"})
     tmp = dest + ".part"
-    with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310 - github https
+    with urllib.request.urlopen(req, timeout=60, context=_SSL) as r:  # noqa: S310 - github https
         total = int(r.headers.get("Content-Length") or asset.size or 0)
         done = 0
         with open(tmp, "wb") as f:
