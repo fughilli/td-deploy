@@ -5,6 +5,16 @@
 # Each OS job pulls its cross-toolchain bundle from build-toolchain, freezes the
 # Python sidecar with PyInstaller, then runs electron-builder. BASE_IMAGE_TAG is
 # stamped so a fresh install's "Flash SD" pulls the matching base image.
+#
+# The macOS build is Developer ID signed and notarized so Gatekeeper lets users
+# open it (an unsigned/ad-hoc build is quarantined and rejected with a "contains
+# malware" error). These credentials live in the "release-signing" GitHub
+# Environment (Settings > Environments); add them there as environment secrets:
+#   CSC_LINK                    - base64 of the Developer ID Application .p12
+#   CSC_KEY_PASSWORD            - password for that .p12
+#   APPLE_ID                    - Apple ID email for notarytool
+#   APPLE_APP_SPECIFIC_PASSWORD - app-specific password (appleid.apple.com)
+#   APPLE_TEAM_ID               - 10-char Apple Developer Team ID
 name: build-app
 
 on:
@@ -22,6 +32,12 @@ jobs:
 
   app:
     needs: toolchain
+    # The macOS signing/notarization credentials live in this GitHub Environment
+    # (Settings > Environments > release-signing) rather than as plain repo secrets.
+    # This lets you gate them behind required reviewers and restrict them to release
+    # tags via the environment's deployment branch/tag rules. Environment secrets are
+    # referenced with the same secrets.* syntax below.
+    environment: release-signing
     strategy:
       fail-fast: false
       matrix:
@@ -33,11 +49,6 @@ jobs:
             artifact: toolchain-windows
             build: powershell -ExecutionPolicy Bypass -File app/packaging/build_app.ps1
     runs-on: ${{ matrix.os }}
-    env:
-      # Produce unsigned installers in CI. To ship signed/notarized builds, add the
-      # cert secrets (CSC_LINK/CSC_KEY_PASSWORD, and APPLE_ID/APPLE_APP_SPECIFIC_
-      # PASSWORD/APPLE_TEAM_ID for notarization) and flip this to true.
-      CSC_IDENTITY_AUTO_DISCOVERY: false
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
@@ -58,6 +69,19 @@ jobs:
         run: echo "BASE_IMAGE_TAG=${{ github.event.release.tag_name || 'latest' }}" >> "$GITHUB_ENV"
 
       - name: Build app
+        env:
+          # macOS signing + notarization. electron-builder signs with the Developer
+          # ID cert imported from CSC_LINK (base64 .p12) and, because mac.notarize is
+          # true in package.json, notarizes with notarytool using the APPLE_* creds.
+          # Guarded to the macOS job so the Windows build never receives a mac .p12 as
+          # its CSC_LINK. If these secrets are unset the mac build fails loudly at the
+          # notarize step rather than silently shipping an unsigned (Gatekeeper-
+          # rejected) app.
+          CSC_LINK: ${{ matrix.os == 'macos-14' && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ matrix.os == 'macos-14' && secrets.CSC_KEY_PASSWORD || '' }}
+          APPLE_ID: ${{ matrix.os == 'macos-14' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.os == 'macos-14' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ matrix.os == 'macos-14' && secrets.APPLE_TEAM_ID || '' }}
         run: ${{ matrix.build }}
 
       # Always upload the installers so a manual (workflow_dispatch) run is

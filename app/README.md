@@ -51,3 +51,27 @@ powershell -File app\packaging\build_app.ps1                 # Windows
 CI (`.github/workflows/`): `build-image` (Pi `.img` → Release), `build-toolchain`
 (per-OS cross toolchain), `build-app` (dmg/exe → Release). One release tag drives
 all three.
+
+### macOS signing + notarization
+
+The `.dmg` must be Developer ID signed **and** notarized, otherwise macOS
+quarantines the downloaded app and Gatekeeper rejects it ("… was not opened
+because it contains malware"). `build-app` does this using credentials from the
+**`release-signing` GitHub Environment** (Settings → Environments → New
+environment → add these as environment secrets):
+
+| Secret                        | What it is                                                                          |
+| ----------------------------- | ----------------------------------------------------------------------------------- |
+| `CSC_LINK`                    | base64 of your **Developer ID Application** `.p12` (`base64 -i cert.p12 \| pbcopy`) |
+| `CSC_KEY_PASSWORD`            | password for that `.p12`                                                            |
+| `APPLE_ID`                    | Apple ID email used with `notarytool`                                               |
+| `APPLE_APP_SPECIFIC_PASSWORD` | app-specific password from appleid.apple.com                                        |
+| `APPLE_TEAM_ID`               | 10-character Apple Developer Team ID                                                |
+
+Using an environment (rather than plain repo secrets) lets you gate the creds
+behind required reviewers and restrict them to release tags via the
+environment's deployment branch/tag rules.
+
+Requires a paid Apple Developer account. `mac.notarize` is enabled in
+`electron/package.json`, so with the secrets unset the mac job **fails at the
+notarize step** rather than silently shipping a Gatekeeper-rejected app.
