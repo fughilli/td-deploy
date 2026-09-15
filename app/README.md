@@ -60,13 +60,13 @@ because it contains malware"). `build-app` does this using credentials from the
 **`release-signing` GitHub Environment** (Settings → Environments → New
 environment → add these as environment secrets):
 
-| Secret | What it is |
-| --- | --- |
-| `CSC_LINK` | base64 of your **Developer ID Application** `.p12` (`base64 -i cert.p12 \| pbcopy`) |
-| `CSC_KEY_PASSWORD` | password for that `.p12` |
-| `APPLE_ID` | Apple ID email used with `notarytool` |
-| `APPLE_APP_SPECIFIC_PASSWORD` | app-specific password from appleid.apple.com |
-| `APPLE_TEAM_ID` | 10-character Apple Developer Team ID |
+| Secret                        | What it is                                                                          |
+| ----------------------------- | ----------------------------------------------------------------------------------- |
+| `CSC_LINK`                    | base64 of your **Developer ID Application** `.p12` (`base64 -i cert.p12 \| pbcopy`) |
+| `CSC_KEY_PASSWORD`            | password for that `.p12`                                                            |
+| `APPLE_ID`                    | Apple ID email used with `notarytool`                                               |
+| `APPLE_APP_SPECIFIC_PASSWORD` | app-specific password from appleid.apple.com                                        |
+| `APPLE_TEAM_ID`               | 10-character Apple Developer Team ID                                                |
 
 Using an environment (rather than plain repo secrets) lets you gate the creds
 behind required reviewers and restrict them to release tags via the
