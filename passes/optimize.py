@@ -32,9 +32,20 @@ def dead_node_elim(g: Graph, report: list[str]) -> None:
         report.append("dead_node_elim: nothing to drop")
 
 
+def _tok(v, default):
+    """First whitespace token of a .parm value as an int (values may carry a
+    trailing default/expr, e.g. `512` or `512 "…"`)."""
+    try:
+        return int(float(str(v).split()[0]))
+    except (ValueError, IndexError):
+        return default
+
+
 def infer_format(g: Graph, report: list[str], out_res: int = 256) -> None:
-    """Assign node.out_type = {w,h,fmt}. image_in keeps its native size; crop
-    rescales to the project output resolution `out_res`; other ops inherit input 0."""
+    """Assign node.out_type = {w,h,fmt}. image_in keeps its native size; crop sets
+    the resolution — from its own `outputresolution`/`resolutionw`/`resolutionh`
+    params when set (so bumping crop res in TD takes effect), else `out_res`; other
+    ops inherit input 0."""
     for nid in g.topo_order():
         n = g.nodes[nid]
         if n.op == "image_in":
@@ -43,7 +54,18 @@ def infer_format(g: Graph, report: list[str], out_res: int = 256) -> None:
             n.out_type = {"w": w, "h": h, "fmt": n.params.get("fmt", "rgba8")}
         elif n.op == "crop":
             fmt = g.nodes[n.inputs[0].node].out_type["fmt"] if n.inputs else "rgba8"
-            n.out_type = {"w": out_res, "h": out_res, "fmt": fmt}
+            mode = str(n.params.get("outputresolution", "")).split()[0:1]
+            mode = mode[0] if mode else ""
+            if mode == "input" and n.inputs:
+                src = g.nodes[n.inputs[0].node].out_type
+                w, h = int(src["w"]), int(src["h"])
+            elif "resolutionw" in n.params or "resolutionh" in n.params:
+                # TD "custom" output resolution — honor the crop's own w/h.
+                w = _tok(n.params.get("resolutionw"), out_res)
+                h = _tok(n.params.get("resolutionh"), out_res)
+            else:
+                w = h = out_res
+            n.out_type = {"w": w, "h": h, "fmt": fmt}
         elif n.inputs:
             src = g.nodes[n.inputs[0].node]
             if src.out_type is None:
