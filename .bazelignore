@@ -1,0 +1,3 @@
+# sbc-deploy scratch/GC-root dir from pre-fix deploys (now goes to the
+# cache dir, not here) — never let a stray one trip up Bazel workspace scans.
+.sbc-build

@@ -184,8 +184,9 @@ git_override(
     module_name = "sbc_deploy",
     # chore/lean-drop-git (matches deploy/nix/flake.lock — keep the two in sync).
     # Adds the `.seed_wifi` target; includes build_data + the deploy brick-guard,
-    # the hermetic flake-source staging + macOS builder fix, and the lean git drop.
+    # the hermetic flake-source staging + macOS builder fix, the lean git drop, and
+    # moving .sbc-build out of the workspace into the cache dir.
     # TODO: repoint to build-data once sbc-deploy PR #20 merges.
-    commit = "37c9067c0fc7dabfecc110795bb356db198f9c42",
+    commit = "94c7e67b25b6d2e981659be78b485957599922c2",
     remote = "https://github.com/fughilli/sbc-deploy.git",
 )
