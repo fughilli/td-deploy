@@ -32,13 +32,16 @@ if [ ! -x "$elbin" ]; then
   rm -rf node_modules/electron && npm install
 fi
 
-# macOS Gatekeeper quarantines npm's prebuilt (unsigned) Electron.app, so it
-# refuses to launch in dev with "…contains malware" (and can delete the binary).
-# Strip the quarantine attr BEFORE launch — no quarantine means no Gatekeeper
-# scan, so the fresh binary survives. (The *packaged* app is separately
+# macOS refuses to launch npm's prebuilt dev Electron with "…contains malware"
+# (and can delete the binary). On Sequoia+, clearing quarantine isn't enough —
+# Apple Silicon requires a VALID signature to exec, and the downloaded binary's
+# is missing/broken, which reads as malware. So clear ALL xattrs AND ad-hoc
+# re-sign the bundle before launch. (The *packaged* app is separately
 # signed/notarized; this only touches the dev binary.) Idempotent + non-fatal.
 if [ "$(uname -s)" = "Darwin" ] && [ -e "$elapp" ]; then
-  xattr -dr com.apple.quarantine "$elapp" 2>/dev/null || true
+  xattr -cr "$elapp" 2>/dev/null || true
+  codesign --force --deep --sign - "$elapp" 2>/dev/null \
+    || echo "app/dev: warning: ad-hoc codesign of Electron.app failed (need Xcode CLT?)" >&2
 fi
 
 export TOXC_DEV=1
