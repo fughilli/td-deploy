@@ -13,7 +13,7 @@
 
   description = "td-deploy — Raspberry Pi image + live-deploy (sbc-deploy consumer)";
 
-  inputs.sbc-deploy.url = "github:fughilli/sbc-deploy/chore/lean-drop-git?dir=nix";
+  inputs.sbc-deploy.url = "github:fughilli/sbc-deploy/build-data?dir=nix";
 
   outputs = { self, sbc-deploy, ... }:
     sbc-deploy.lib.mkSbcProject {
