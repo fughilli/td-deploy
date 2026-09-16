@@ -37,5 +37,7 @@ EOS
 
 b64="$(printf '%s' "$BUNDLE" | base64 | tr -d '\n')"
 echo "== inspecting $host (read-only) via the deploy ssh key =="
-exec "$bazel" run //deploy:tdplayer_pi3.ssh -- "$host" -- \
-  sh -c "echo $b64 | base64 -d | sh"
+# ONE arg, no `sh -c` wrapper — the .ssh target hands args to `ssh`, which re-joins
+# them for the REMOTE login shell to parse; a wrapped `sh -c "…"` gets mangled, but
+# a single pipeline string runs correctly (the remote shell supplies the -c).
+exec "$bazel" run //deploy:tdplayer_pi3.ssh -- "$host" -- "echo $b64 | base64 -d | sh"

@@ -47,4 +47,8 @@ EOS
 rb64="$(printf '%s' "$remote" | base64 | tr -d '\n')"
 
 echo "== seeding tailscale on $host (key -> /var/lib/tailscale/authkey, then autoconnect) =="
-exec "$bazel" run //deploy:tdplayer_pi3.ssh -- "$host" -- sh -c "echo $rb64 | base64 -d | sh"
+# Pass the pipeline as ONE arg (no `sh -c` wrapper): the .ssh target forwards args
+# straight to `ssh`, which re-joins them with spaces so the REMOTE login shell
+# parses the command — a `sh -c "…"` wrapper gets mangled (the string becomes $0),
+# but a single pipeline string is run correctly by the remote shell's own -c.
+exec "$bazel" run //deploy:tdplayer_pi3.ssh -- "$host" -- "echo $rb64 | base64 -d | sh"
