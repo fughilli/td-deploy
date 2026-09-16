@@ -253,8 +253,19 @@ image is validated at 356 MB download / 1040 MB closure. If ever revisited: pref
 (B) module compression; for (A), re-inspect WITH the Twister plugged to capture its
 modules first.
 
-**FINAL: closure 2439 → 1040 MB (−57%), raw 4.1 → 2.4 GB, .img.zst 621 → 356 MB
-(−43%), + tailnet reachability. Validated on a real Pi 3.**
+**Raw-image zero padding = the 1 GB FIRMWARE partition, NOT rootfs slack.** A
+diagnostic trim (reading the MBR + ext4 superblock) showed the root ext4 already
+FILLS its partition (~1.46 GB of genuine inode/metadata for the ~1 GB closure —
+not truncatable), and the padding is the FAT firmware partition: nixos-raspberrypi
+defaults `sdImage.firmwareSize=1024` MiB but /boot/firmware only uses ~26 MB
+(vendor fw + u-boot + config.txt + dtbs + extlinux; kernel/initrd live in the ext4
+rootfs). Fix: `image.nix` sets `sdImage.firmwareSize = lib.mkForce 128` (~5x usage)
+→ **raw .img 2.4 → 1.5 GB (~38% faster SD write)**; .img.zst unchanged (356 MB, zeros
+already compressed away). (Scrapped the earlier shrink-sd-image.nix post-process —
+it targeted the wrong partition.)
+
+**FINAL: closure 2439 → 1040 MB (−57%), raw 4.1 → 1.5 GB (−63%), .img.zst 621 →
+356 MB (−43%), + tailnet reachability. Validated on a real Pi 3.**
 Everything left is the OS floor: kernel 152, rpi-fw 78, perl 61 (systemd/activation),
 systemd 56, glibc 42, nix 36, mesa 30, systemd-min 26, NM 21, modemmgr 15, …
 Further nibbles (diminishing): perl (activation-bound, hard), modemmanager 15 (drop
