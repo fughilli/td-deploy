@@ -5,17 +5,26 @@
 # which runs `tailscale up` from it. After this the board is on the tailnet and
 # reachable by its hostname from anywhere on the tailnet, regardless of LAN.
 #
-#   deploy/seed_tailscale.sh <host> <tskey-...>
+#   deploy/seed_tailscale.sh <host>                 # reads deploy/secrets/tailscale-authkey
+#   deploy/seed_tailscale.sh <host> <tskey-...>     # explicit key
 #   TS_AUTHKEY=tskey-... deploy/seed_tailscale.sh <host>
 #
 # Get a reusable/ephemeral auth key from the tailnet admin console (Settings →
 # Keys). Runs over the sbc-deploy deploy SSH key (the .ssh target), same as a deploy.
 set -uo pipefail
 
-host="${1:?usage: seed_tailscale.sh <host> <authkey>   (or set TS_AUTHKEY)}"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+host="${1:?usage: seed_tailscale.sh <host> [authkey]   (else deploy/secrets/tailscale-authkey or \$TS_AUTHKEY)}"
+# Key resolution, most explicit first. The default is the gitignored secrets file,
+# so the key never lands on a command line, in shell history, or in git.
 key="${2:-${TS_AUTHKEY:-}}"
-[ -n "$key" ] || { echo "no auth key (arg 2 or \$TS_AUTHKEY)" >&2; exit 2; }
-case "$key" in tskey-*) ;; *) echo "warning: '$key' doesn't look like a tskey-… key" >&2 ;; esac
+keyfile="$here/secrets/tailscale-authkey"
+if [ -z "$key" ] && [ -f "$keyfile" ]; then
+  key="$(tr -d '[:space:]' < "$keyfile")"
+  echo "== using auth key from $keyfile =="
+fi
+[ -n "$key" ] || { echo "no auth key: pass it as arg 2, set \$TS_AUTHKEY, or put it in $keyfile" >&2; exit 2; }
+case "$key" in tskey-*) ;; *) echo "warning: key doesn't look like a tskey-… key" >&2 ;; esac
 
 bazel="${TOXC_BAZEL:-bazel}"
 unset SBC_CROSS SBC_BUILD_PLATFORM   # ssh only; keep the operator env clean
