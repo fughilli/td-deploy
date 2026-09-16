@@ -48,7 +48,13 @@ class Toolchain:
 
 
 class NixToolchain(Toolchain):
-    clang_flags = []  # native (aarch64 container == Pi arch)
+    # The Pi is ALWAYS aarch64-linux, so cross-target it regardless of the deploy
+    # host (macOS/Windows-with-nix would otherwise emit a Mach-O/PE the Pi can't
+    # dlopen — "invalid ELF header"). Same flags as BundledToolchain: no sysroot,
+    # libm resolved on-device at dlopen. On the aarch64-linux container this is a
+    # no-op cross (target == host).
+    clang_flags = ["--target=aarch64-unknown-linux-gnu", "-fuse-ld=lld", "-nostdlib"]
+    link_libs: list[str] = []  # libm resolved at dlopen on the Pi
 
     def __init__(self, repo_root: str | None = None):
         self.repo = repo_root or _paths.REPO_ROOT
@@ -59,9 +65,24 @@ class NixToolchain(Toolchain):
         }
 
     def run_pipeline(self, commands: list[list[str]]) -> None:
-        # One nix shell for the whole pipeline (fast): join argv into a bash script.
-        script = "set -e\n" + "\n".join(shlex.join(cmd) for cmd in commands)
-        subprocess.run([self._shell, "bash", "-c", script], check=True, env=self._env, **_STDERR)
+        # mlir-opt/mlir-translate are host tools (they emit a triple-neutral .ll
+        # from the portable .mlir); run them in the pinned mlir shell. The final
+        # `clang` must CROSS-compile to aarch64-linux — the mlir shell's clang is
+        # the host's WRAPPED clang, whose darwin/host driver flags break an ELF
+        # cross-link, so run clang via the UNWRAPPED clang + lld instead (matches
+        # BundledToolchain's direct-binary approach). The .ll is on disk between
+        # the two shells, so splitting them is safe.
+        mlir_cmds = [c for c in commands if c and c[0] != "clang"]
+        clang_cmds = [c for c in commands if c and c[0] == "clang"]
+        if mlir_cmds:
+            script = "set -e\n" + "\n".join(shlex.join(cmd) for cmd in mlir_cmds)
+            subprocess.run([self._shell, "bash", "-c", script], check=True, env=self._env, **_STDERR)
+        for cmd in clang_cmds:
+            subprocess.run(
+                ["nix", "shell", "nixpkgs#llvmPackages_18.clang-unwrapped", "nixpkgs#lld",
+                 "--command", *cmd],
+                check=True, env=self._env, **_STDERR,
+            )
 
     def run_gles(self, art_dir: str) -> None:
         translate = os.path.join(self.repo, "compiler", "translate_gles.py")
