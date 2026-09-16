@@ -236,13 +236,25 @@ a different LAN. Cost: tailscale ~55 MB → closure 984→**1040 MB**, .zst 341�
 For /inspect over the tailnet, the hostbridge's Mac must also be on the tailnet;
 then target `tdplayer2` (tailnet name), not `.local`.
 
-**Kernel (152 MB) = last big lever, NOT done — needs user decision.** Any trim
-recompiles the RPi kernel (loses nixos-raspberrypi cachix → 30-60 min builds) AND
-needs on-device boot verification (HDMI/WiFi/MIDI) that can't be done from the
-container. (A) minimal config = ~90 MB off, higher brick risk; (B) module
-compression (CONFIG_MODULE_COMPRESS_ZSTD) = ~80 MB off, lower risk (keeps all
-modules). Recommend (B) if pursued; else stop — everything else is <10 MB with
-diminishing returns (aws-sdk-cpp 7.4 via nix, sudo 6.9, cracklib 10, etc.).
+**ON-HARDWARE VALIDATION (tdplayer2, Pi 3, the −60% lean image + tailscale):**
+Booted clean; `sbc-tdplayer` active; **rendering 60 fps on the VC4 GPU in HARDWARE**
+(/stats: frame=16.75ms, present:flip=14.75ms DRM page-flip; renderD128 + vc4 module
+loaded; 80k frames). **Confirms the no-LLVM mesa cut works on real hardware — no
+llvmpipe.** WiFi (brcmfmac), tailscale (tun), HDMI audio, SD all up. Reached it via
+the tailnet (`tdplayer2`) through the hostbridge `/inspect` endpoint.
+
+**Kernel trim = DECLINED (user: stop).** Data collected via /inspect: module tree
+113 MB, 81 modules loaded — BUT the loaded set misses HOTPLUG modules (the Twister
+MIDI wasn't plugged in → snd-usb-audio/usbhid absent), so blind removal would break
+MIDI on plug-in. Options were (A) minimal config or (B) CONFIG_MODULE_COMPRESS_ZSTD
+(safer, keeps all). Both recompile the RPi kernel (lose cachix, 30-60 min builds) +
+need flash-and-boot verify, for ~25 MB off the download. Judged not worth it — the
+image is validated at 356 MB download / 1040 MB closure. If ever revisited: prefer
+(B) module compression; for (A), re-inspect WITH the Twister plugged to capture its
+modules first.
+
+**FINAL: closure 2439 → 1040 MB (−57%), raw 4.1 → 2.4 GB, .img.zst 621 → 356 MB
+(−43%), + tailnet reachability. Validated on a real Pi 3.**
 Everything left is the OS floor: kernel 152, rpi-fw 78, perl 61 (systemd/activation),
 systemd 56, glibc 42, nix 36, mesa 30, systemd-min 26, NM 21, modemmgr 15, …
 Further nibbles (diminishing): perl (activation-bound, hard), modemmanager 15 (drop
