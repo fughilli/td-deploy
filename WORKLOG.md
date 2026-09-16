@@ -2,6 +2,258 @@
 
 Newest first. See `docs/design/tox-to-pi.md` for the full design.
 
+## 2026-09-15 — Pi image size reduction (IN PROGRESS, branch tbd)
+
+**Goal (user):** get the Pi SD image as small as possible — both the raw `.img`
+(fast decompress + flash) and the published `.zst` (fast download). Agreed
+approach: **measure first**, then trim.
+
+**Ground truth** (from the `build-image` CI "Image size breakdown" step, run
+35027659025 on `main`, Pi 3 image): raw `.img` **4.1 GB**; system closure **2439
+MB / 763 paths**. Top offenders:
+
+| MB | path | notes |
+|----|------|-------|
+| 507.5 | llvm-19.1.7-lib | **#1** — pulled in only by Mesa's llvmpipe SW rasterizer |
+| 206.5 | mesa-25.0.7 | |
+| 185.6 | source | UNIDENTIFIED — likely the RPi kernel/firmware `src`; needs `nix why-depends` |
+| 152.2 | linux_rpi kernel | |
+| 116.8 | python3-3.12.12 | pulled by ? (systemd/udev/activation); needs why-depends |
+| 78.5 | raspberrypi-firmware | bootloader/GPU fw (unavoidable) |
+| 61.4 | perl | likely `environment.defaultPackages` — dropped by `lean` |
+| 56.3 | systemd | |
+| 55.7 | git (+15.2 git-doc) | needed on-device? deploy_live uses nix, maybe not git |
+| 45.2 | gtk+3 | why on a headless image? needs why-depends (NM plugins already dropped upstream) |
+| 43.1 | vim | RPi sd-image rescue toolkit — dropped by `lean` |
+| 41.6 | glibc / 40.2 icu4c / 36.5 nix / 25.7 nix-doc / 25.4 nixos-manual-html / 15.0 texinfo | docs dropped by `lean`; nix needed on-device for deploy_live |
+
+**Key findings this session (resumed after container restart):**
+
+- **The `lean` seam is UNUSED.** sbc-deploy `sbc_application` has `lean=False`
+  default; setting `lean=True` exports `$SBC_LEAN=1`, and at our LOCKED rev
+  (`4d88be7`) `mkSbcSystem` then: disables `profiles/base.nix` (rescue toolkit —
+  **vim** + testdisk/ddrescue/sshfs/tcpdump), forces `documentation.*=false`
+  (**nixos-manual-html, man, texinfo, doc/info**), and `environment.defaultPackages
+  = []` (**perl/rsync/strace**). **First win: add `lean = True` to BOTH
+  `sbc_application` calls in `deploy/BUILD.bazel`.** Safe, purpose-built, ~100–150+
+  MB. Does NOT touch LLVM/mesa.
+- **LLVM 507 MB is the whale** and is Mesa's llvmpipe dependency, NOT our MLIR
+  toolchain (apps.nix uses `llvmPackages_18` mlir/clang only as build-time
+  `nativeBuildInputs` to compile exprs.mlir→libexprs.so; that's LLVM 18 and stays
+  out of the runtime closure — the closure's LLVM is 19, mesa's). To drop it we
+  must build Mesa without llvmpipe (`mesa.override { galliumDrivers = [ "vc4"
+  "v3d" "kmsro" ]; vulkanDrivers = []; ... }` — VC4/V3D gallium don't need LLVM).
+  **Tradeoff: no software-GL fallback.** Needs user sign-off + verifying mesa
+  builds w/o llvmpipe and VC4 still works.
+- **INCONSISTENCY to resolve first:** `deploy/BUILD.bazel` lines 32–34 comment
+  says "We run llvmpipe, so desktop_gl", but `deploy/nix/apps.nix` sets
+  `softwareGL = false` (VC4 hardware, gles2). WORKLOG 2026-09-10(2) confirms the
+  move to VC4 hardware. If we truly run VC4 hw, llvmpipe is only a fallback and is
+  droppable. Confirm on-device which renderer is actually used
+  (`journalctl -u sbc-tdplayer | grep '\[gl\]'`) before removing llvmpipe.
+
+**Measurement loop:** `build-image.yml` (native arm64 runner) → step "Image size
+breakdown" (continue-on-error) prints the closure top-N via
+`.github/scripts/closure_top.py`. Trigger via `workflow_dispatch` (needs a `tag`
+input; the final release-attach step will fail w/o a real release but the size
+step runs before it). Read logs via the GitHub API — NB the job-logs endpoint
+302-redirects to a signed blob, so STRIP the Authorization header on redirect.
+
+**Decisions (user, this session):**
+- Remove llvmpipe/LLVM — **VC4/V3D hardware is confirmed** by the user (safe to
+  lose the SW-GL fallback).
+- **Build on the MAC HOST** via the hostdeploy tooling (Mac has the aarch64
+  builder VM), NOT via CI. `/workspace` is a **virtiofs bind mount from the Mac
+  (Lima)**, so edits here ARE what the Mac builds — **no git push needed**.
+- **Keep local nix** (the overlay) — useful for `why-depends`/dev-shell/tool
+  realizations in the container, even though the image build runs on the Mac.
+
+**Container nix overlay ADDED + WORKING** (`.claude-container-overlay/Dockerfile`):
+Determinate Nix (`--init none`, no sudo, flakes, `build-users-group=`,
+`sandbox=false`, `max-jobs=auto`), the **nixos-raspberrypi cachix** substituter
+(key `…4iMO9LXa8BqhU+Rpg6LQKiGa2lsNh/j2oiYLNOQ5sPI=`), nix on PATH. Post-restart
+`nix 3.22.3` evaluates + realizes as uid 501, rpi cachix + cache.nixos.org active.
+BUG hit + FIXED: the skill's `rm -rf profiles/per-user` ORPHANED Determinate's
+default profile (`default -> per-user/root/profile`) → nix vanished from PATH.
+Overlay now repoints `default` at the concrete determinate-nix store pkg BEFORE
+deleting per-user. See memory determinate-nix-overlay-per-user-profile.
+
+**Flake gotcha:** `deploy/nix/mesa-lean.nix` is git-STAGED (not committed) so
+git-based flake eval sees it (untracked files are invisible to flakes).
+
+**Edits APPLIED this session (uncommitted, on the shared mount):**
+- `deploy/BUILD.bazel`: `lean = True` on both `sbc_application` (drops
+  vim/docs/perl/rsync/strace). Also fixed the stale "we run llvmpipe" comment.
+- `deploy/nix/mesa-lean.nix` (NEW) + wired into `flake.nix` systemModules: global
+  `nixpkgs.overlays` building Mesa with `galliumDrivers=["vc4" "v3d"]`,
+  `vulkanDrivers=["broadcom"]`, PLUS `overrideAttrs` appending mesonFlags to
+  disable `gallium-rusticl` (OpenCL — the OTHER llvm puller, hardcoded true in
+  nixpkgs), `gallium-vdpau`/`va`/`xa` (video/X state trackers that REQUIRE a
+  desktop gallium driver we dropped → meson errors without this), and `teflon`.
+  Dropping galliumDrivers ALONE is insufficient: (a) rusticl still links libLLVM,
+  (b) `-Dauto_features=enabled` + vc4/v3d-only makes vdpau's meson check fail
+  ("VDPAU requires r600/radeonsi/nouveau/d3d12"). Binary-cache MISS → Mesa builds
+  from source on the aarch64 VM (kernel/firmware stay cache hits).
+- `deploy/measure_image_size.sh` (NEW): mirrors the CI size step (resolve
+  toplevel → `nix path-info -S` + `closure_top.py`), plus `--why PKG` to run
+  `nix why-depends` for the mystery whales. Run it on the machine holding the
+  built image (the Mac): `deploy/measure_image_size.sh build.log 30 --why source --why python3`.
+
+**How to build+measure on the Mac (bind-mounted, so it builds THESE edits):**
+Two ways, same result (`deploy/build_and_measure.sh <board> <top_n>` under the
+hood → builds `…image_sd --no-write`, then `measure_image_size.sh`):
+- HTTP-driven via the hostbridge (NEW `/build` endpoint, token-gated, fixed prog,
+  board enum only — mirrors `/deploy`): `POST /build {board:"pi3"}` then poll
+  `GET /build?id=build-N&from=<next>`. Advertised in `/health`.
+- By hand on the Mac: `deploy/build_and_measure.sh pi3 30`
+  (or `bazel run //deploy:tdplayer_pi3.image_sd -- --no-write | tee build.log`
+  then `deploy/measure_image_size.sh build.log 30 --why source --why python3`).
+
+Baseline to beat: raw 4.1 GB, closure 2439 MB. Expected wins: −507 MB (LLVM,
+mesa-lean) + ~100-150 MB (lean seam). The `/build` hostbridge additions
+(`build_start`/`build_poll` + `_BUILD_SCRIPT`) are py_compile'd + smoke-tested.
+Bridge now binds LOOPBACK by default (`--host 127.0.0.1`) — reachable from the
+container via Docker's host gateway (`host.docker.internal:8770`), NOT the LAN.
+
+**SBC_CROSS gotcha (fixed):** the first host build cross-compiled on the Mac
+(building the aarch64 cross-toolchain + would rebuild mesa+kernel from source)
+instead of using `SBC_BUILDER_DISK`. Cause: `sbc_deploy.sh choose_backend` takes
+the cross path whenever `$SBC_CROSS` is set in the env, and the bridge inherited a
+stray `SBC_CROSS`. macOS DEFAULT (no --cross/--builder) already auto-manages the
+sized builder VM honoring `SBC_BUILDER_DISK`. Fix: `build_and_measure.sh` now
+`unset SBC_CROSS SBC_BUILD_PLATFORM` so it always takes the auto-managed-builder
+path. Confirmed: build-2 logs "Using auto-managed aarch64-linux builder VM" +
+`--lean` active. (Also fixed macOS mktemp: trailing X's only.) No bridge restart
+needed for script fixes — `/build` re-reads the script each call.
+Future nicety: expose `--keep-builder` via /build for warm iteration.
+
+**MEASURED (host builds via /build, Pi 3):**
+- Baseline (main): raw 4.1 GB, closure 2439 MB.
+- build-4 (lean + mesa driver/rusticl trim, but MISSING -Dllvm): raw **3.5 GB**,
+  closure **2088 MB** (−351). mesa 206→**30.7 MB** ✓; vim/nixos-manual/nix-doc/
+  texinfo gone ✓. BUT llvm-19 **still 507 MB** — `why-depends` = `mesa → llvm`:
+  nixpkgs doesn't set `-Dllvm`, so `auto_features=enabled` links libLLVM into
+  libgallium regardless of drivers/rusticl. Fix = `-Dllvm=disabled` (build-5,
+  in flight). Expected closure after: ~1580 MB.
+- Build iteration gotchas hit + fixed in mesa-lean.nix: (1) meson vdpau error →
+  disable vdpau/va/xa; (2) `spirv2dxil` output "failed to produce" (d3d12 gone) →
+  `mkdir -p "$spirv2dxil"` in postInstall; (3) the real llvm puller = `-Dllvm`.
+
+**Next whales (from build-4 why-depends) — the follow-on cuts:**
+- `source` 186 MB ← `etc → nix/registry.json → source`: the nix flake registry
+  pins the FULL nixpkgs source into the image. Kill via `nix.registry = lib.mkForce
+  {};` + clear `nix.nixPath`/flake-registry, if on-device flake ref isn't needed.
+- `python3` 117 MB ← `system-path → git → python3`: GIT drags python3. If git
+  isn't needed on-device (deploy_live uses nix copy, not git), drop git from
+  systemPath → likely drops python3 + git-doc 15 + git 56 too.
+- `gtk+3` 45 MB ← `networkmanager → openconnect → stoken → gtk3`: a VPN dep NM
+  still pulls despite `networkmanager.plugins=[]`. Trim NM's openconnect/VPN
+  runtime dep (or a leaner NM) → drops gtk3 + openconnect + stoken.
+- `perl` 61 MB: still present (pulled outside defaultPackages, likely systemd/
+  activation). Harder; revisit last.
+
+- build-5 (`-Dllvm=disabled` added): **WIN.** raw **3.0 GB**, closure **1580 MB**
+  (−859 / −35% vs baseline). `why-depends llvm` = "no closure path matching 'llvm'"
+  — the 507 MB whale is fully gone; mesa 30 MB, vc4/v3d hardware GL intact. This is
+  the committed state of mesa-lean.nix.
+
+**Remaining top whales @ 1580 MB:** source 186, kernel 152, python3 117, rpi-fw 78,
+perl 61, systemd 56, git 56, gtk3 45, glibc 42, icu4c 40, nix 36, mesa 30.
+
+- build-6 (`deploy/nix/lean-extra.nix`: `nix.registry`/`nix.nixPath` mkForce empty
+  + `stoken.override{withGTK3=false}`): raw **2.7 GB**, closure **1235 MB**
+  (−345 from build-5). `why-depends` = source GONE, gtk+3 GONE (gtk3 cascaded its
+  pango/cairo/gdk-pixbuf subtree too). User confirmed deploy = `nix copy` + switch,
+  so on-device flake registry not needed. **Cumulative: 2439 → 1235 MB (−49%).**
+
+**Committed-state cuts (all validated on real Pi3 host builds):**
+`lean=True` (BUILD.bazel) · `mesa-lean.nix` (−507 llvm, mesa 206→30) ·
+`lean-extra.nix` (−source 186, −gtk3 subtree). Files: deploy/BUILD.bazel,
+deploy/nix/{mesa-lean,lean-extra}.nix + flake.nix wiring.
+
+**LAST big cut — git+python3 (~188 MB), needs a sbc-deploy change:**
+`ssh-deploy.nix:64` = `environment.systemPackages = [ git rsync ]` ("toolchain the
+remote nixos-rebuild switch needs"). git → python3 (117) + git-doc (15) + git (56).
+NixOS can't subtract a package another module adds, and overlaying git to a stub
+breaks fetchers, so the fix is upstream: gate git behind SBC_LEAN in ssh-deploy.nix
+(`[ rsync ] ++ lib.optionals (getEnv "SBC_LEAN" != "1") [ git ]`). Two-repo change:
+commit to sbc-deploy build-data + bump deploy/nix/flake.lock + MODULE.bazel
+git_override. Validating locally via a path: input override first.
+
+**Remaining floor @ 1235 MB:** kernel 152, python3 117 (git), rpi-fw 78, perl 61,
+systemd 56, git 56, glibc 42, nix 36, mesa 30, systemd-min 26, NM 21, modemmgr 15.
+After git: ~1047 MB. Perl (61) is systemd/activation-pulled (hard). Floor ~1.0 GB.
+
+**git cut — sbc-deploy PR #20 (`chore/lean-drop-git`, commit 37c9067):** gates git
+behind SBC_LEAN in ssh-deploy.nix. PINS BUMPED to that branch commit for
+validation: `deploy/nix/flake.nix` url → `chore/lean-drop-git`, flake.lock re-locked,
+MODULE.bazel git_override → 37c9067. **COORDINATION TODO:** once the user merges
+PR #20 into build-data, repoint flake.nix url → `build-data` + `nix flake update
+sbc-deploy` + MODULE.bazel commit → the merged build-data rev (TODO in MODULE.bazel).
+
+- build-7 (git cut): raw **2.5 GB**, closure **1150 MB** (−85). git + git-doc GONE.
+  BUT python3 (117) STAYED — its real referrer is **mesa → python3** (mesa installs
+  a python-shebang script; `patchShebangs $out/bin/*` in mesa postFixup pulls the
+  whole interpreter). So git removal saved only git+doc, not python3.
+  **CUMULATIVE: 2439 → 1150 MB (−53%); raw 4.1 → 2.5 GB.** llvm/source/gtk3/git all
+  verified GONE via why-depends.
+
+- build-8 (`why-depends --precise`): the python3 referrer is exactly
+  `mesa/bin/mesa-overlay-control.py` (a python-shebang debug helper for the Vulkan
+  overlay-HUD layer — NOT a runtime GL/GLES component).
+- build-9 (mesa-lean.nix postInstall `rm -f $out/bin/mesa-overlay-control.py`):
+  **python3 GONE.** raw **2.4 GB**, closure **1033 MB**. why-depends confirms
+  llvm/source/python3/gtk3 all "no closure path".
+
+**RESULT (build-10): closure 2439 → 1033 MB (−58%); raw 4.1 → 2.4 GB; .img.zst
+(zstd -19, the download) 621 → 348 MB (−44%).** measure_image_size.sh takes `--zst`.
+
+**More cuts (build-12/13), all in lean-extra.nix, clean NixOS levers:**
+- `system.disableInstallerTools = true` → drops nixos-option/rebuild/generate-config/
+  install → drops man-db + groff (nixos-option baked them into PATH). Safe:
+  deploy_live runs switch-to-configuration on the board, never nixos-rebuild.
+- `networking.modemmanager.enable = false` (service side) + NM overrideAttrs
+  `mesonFlags += -Dmodem_manager=false` (the REAL fix — NM's `libnm-wwan.so`
+  embedded a ref to modemmanager regardless of the service). Drops modemmanager
+  15 + libqmi 7.5. NM rebuilds from source (~5 min). WiFi/ethernet unaffected.
+- **build-13: closure 984 MB (−60% cumulative), .img.zst 341 MB, raw 2.3 GB.**
+  modemmanager + groff verified gone.
+
+**Raw-image zero padding explained (make-ext4-fs.nix):** ext4 sized at
+`2×8KB×numFiles + 1.2×content`; `resize2fs -M` shrinks the FS but the image file
+is NOT truncated back (nixpkgs #125121 caveats), leaving ~1.4 GB sparse zeros.
+Compresses away (doesn't hit the 341 MB download); only costs flash-write time.
+Fixable by truncating the .img to the shrunk-FS size — not done (user chose the
+content cuts instead).
+
+**Kernel (152 MB) = last big lever, NOT done — needs user decision.** Any trim
+recompiles the RPi kernel (loses nixos-raspberrypi cachix → 30-60 min builds) AND
+needs on-device boot verification (HDMI/WiFi/MIDI) that can't be done from the
+container. (A) minimal config = ~90 MB off, higher brick risk; (B) module
+compression (CONFIG_MODULE_COMPRESS_ZSTD) = ~80 MB off, lower risk (keeps all
+modules). Recommend (B) if pursued; else stop — everything else is <10 MB with
+diminishing returns (aws-sdk-cpp 7.4 via nix, sudo 6.9, cracklib 10, etc.).
+Everything left is the OS floor: kernel 152, rpi-fw 78, perl 61 (systemd/activation),
+systemd 56, glibc 42, nix 36, mesa 30, systemd-min 26, NM 21, modemmgr 15, …
+Further nibbles (diminishing): perl (activation-bound, hard), modemmanager 15 (drop
+if no cellular), sd-image free-space padding (raw .img has ~1.4 GB empty above the
+~1 GB closure; expandOnBoot fills the card anyway — compresses to ~nothing in .zst
+but affects decompress/write time).
+
+**COORDINATION / HANDOFF:**
+- sbc-deploy PR #20 (chore/lean-drop-git) → user reviews/merges → then repoint
+  td-deploy pins to build-data (flake.nix url + `nix flake update sbc-deploy` +
+  MODULE.bazel commit; TODO marker in MODULE.bazel).
+- td-deploy changes are UNCOMMITTED (BUILD.bazel, flake.nix, flake.lock, MODULE.bazel,
+  mesa-lean.nix, lean-extra.nix, hostbridge/td_host_server.py, build_and_measure.sh,
+  measure_image_size.sh, .claude-container-overlay/, WORKLOG.md) — user to commit.
+- PR #10 (dev live-reload) still open + mergeable — user's call.
+
+**State:** PR #10 (`feat/dev-live-reload`, interactive dev target + live-reload)
+is OPEN + mergeable, awaiting the user's merge call — not mine to merge. All the
+above edits are UNCOMMITTED on this branch (working tree survives restart).
+
+
 ## 2026-09-10 (3) — Zero-copy GPU→HDMI (GBM scanout) + present 124ms→0.65ms
 
 The dumb-buffer HDMI sink read the GPU's finished frame back to the CPU and copied

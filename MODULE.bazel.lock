@@ -225,7 +225,7 @@
     "@@rules_nixpkgs_core+//extensions:package.bzl%nix_pkg": {
       "general": {
         "bzlTransitiveDigest": "2alEQC7q9PgrArc8ZeI662VmDHLGfuswqnzBJvVDnmg=",
-        "usagesDigest": "mox4hi3GHWHHr3G4+lq+HaUI9tIW8egOkchUXmZeXao=",
+        "usagesDigest": "AasO6WFPr9O/3YAL+5QTDiubBuxR6AkeHDbGCtYwTcs=",
         "recordedInputs": [
           "REPO_MAPPING:,nixpkgs rules_nixpkgs_core++nix_repo+nixpkgs",
           "REPO_MAPPING:rules_nixpkgs_core+,bazel_skylib bazel_skylib+"

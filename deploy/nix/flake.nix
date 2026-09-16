@@ -13,7 +13,7 @@
 
   description = "td-deploy — Raspberry Pi image + live-deploy (sbc-deploy consumer)";
 
-  inputs.sbc-deploy.url = "github:fughilli/sbc-deploy/build-data?dir=nix";
+  inputs.sbc-deploy.url = "github:fughilli/sbc-deploy/chore/lean-drop-git?dir=nix";
 
   outputs = { self, sbc-deploy, ... }:
     sbc-deploy.lib.mkSbcProject {
@@ -22,8 +22,12 @@
       # $SBC_BOARD (so //deploy:tdplayer_pi3 targets a Pi 3 off the same flake).
       board = "raspberry-pi-5";
       appModules = [ ./apps.nix ];
-      # Baked into BOTH images (full + base): skip zstd compression for a much
-      # faster image build (see image.nix). Uncompressed .img, flashed as-is.
-      systemModules = [ ./image.nix ];
+      # Baked into BOTH images (full + base):
+      #   image.nix    — skip zstd compression for a much faster image build.
+      #   mesa-lean.nix — build Mesa without the LLVM software renderers (VC4/V3D
+      #                   hardware only), dropping the ~507 MB llvm-*-lib closure.
+      #   lean-extra.nix — drop the on-device flake registry/nixPath (186 MB
+      #                   nixpkgs source) + gtk3 (stoken CLI-only, 45 MB).
+      systemModules = [ ./image.nix ./mesa-lean.nix ./lean-extra.nix ];
     };
 }
