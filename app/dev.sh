@@ -22,6 +22,16 @@ cd "$repo/app/electron"
 # Install dev deps (incl. electronmon) only when missing.
 [ -x node_modules/.bin/electronmon ] || npm install
 
+# macOS Gatekeeper quarantines npm's prebuilt (unsigned) Electron.app, so it
+# refuses to launch in dev with "…contains malware". Strip the quarantine attr.
+# (The *packaged* app is properly signed/notarized; this only touches the dev
+# binary.) Idempotent + non-fatal; runs every launch since a later `npm install`
+# re-downloads a fresh (re-quarantined) Electron.
+if [ "$(uname -s)" = "Darwin" ]; then
+  el="node_modules/electron/dist/Electron.app"
+  [ -e "$el" ] && xattr -dr com.apple.quarantine "$el" 2>/dev/null || true
+fi
+
 export TOXC_DEV=1
 export TOXC_PYTHON="${TOXC_PYTHON:-$repo/nix/dev.sh}"
 exec npm run dev
