@@ -49,6 +49,42 @@ function toSidecar(obj) {
   if (sidecar && sidecar.stdin.writable) sidecar.stdin.write(JSON.stringify(obj) + '\n');
 }
 
+// --- dev live-reload of the Python sidecar (guarded by TOXC_DEV) ---------------
+// electronmon reloads/restarts the Electron side (main/preload/renderer) on edit;
+// this restarts the sidecar subprocess when the Python engine changes, so the whole
+// app hot-reloads with the window still open. No effect in a packaged build.
+function restartSidecar() {
+  if (sidecar) {
+    try {
+      sidecar.removeAllListeners(); // don't fire the "sidecar exited" error toast
+      sidecar.kill();
+    } catch (e) {
+      /* already gone */
+    }
+    sidecar = null;
+  }
+  startSidecar();
+  if (win && !win.isDestroyed())
+    win.webContents.send('sidecar-event', { type: 'log', line: '[dev] sidecar reloaded' });
+}
+
+function watchSidecarDev() {
+  const repo = path.resolve(__dirname, '..', '..'); // app/electron -> repo root
+  const targets = [path.join(repo, 'app', 'sidecar.py'), path.join(repo, 'app', 'deploy_engine')];
+  let timer = null;
+  const bounce = () => {
+    clearTimeout(timer);
+    timer = setTimeout(restartSidecar, 200); // debounce editor save bursts
+  };
+  for (const t of targets) {
+    try {
+      fs.watch(t, { recursive: true }, bounce);
+    } catch (e) {
+      /* target missing: skip */
+    }
+  }
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 760, height: 620, minWidth: 620, minHeight: 480,
@@ -61,6 +97,7 @@ function createWindow() {
 app.whenReady().then(() => {
   createWindow();
   startSidecar();
+  if (process.env.TOXC_DEV) watchSidecarDev();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 

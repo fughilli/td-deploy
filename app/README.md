@@ -36,9 +36,26 @@ lowering/ importer/ compiler/`) exactly as the dev CLI does. stdlib only; the
 ```bash
 # from the repo root, with the dev Nix toolchain available:
 python app/toxc_deploy_cli.py /path/project.toe --pi tdplayer.local --target gles2
-# run the GUI against the repo's python sidecar:
-cd app/electron && npm install && TOXC_PYTHON=../../nix/dev.sh npm start
 ```
+
+### Interactive GUI dev (live-reload)
+
+```bash
+bazel run //app:dev      # or: app/dev.sh
+```
+
+Launches the GUI with the window kept open across edits:
+
+- **Renderer** (`renderer/**`) reloads on save.
+- **Main / preload** (`main.js`, `preload.js`) restart the app automatically
+  (via `electronmon`).
+- **Python sidecar** (`sidecar.py`, `deploy_engine/**`) hot-restarts in place —
+  `main.js` watches them when `TOXC_DEV` is set.
+
+The sidecar runs under the repo's Nix dev env by default
+(`TOXC_PYTHON=nix/dev.sh`, so Pillow/PyAV/zstandard/certifi are present); export
+`TOXC_PYTHON` to point at a different interpreter. For a one-off without
+live-reload: `cd app/electron && npm install && TOXC_PYTHON=../../nix/dev.sh npm start`.
 
 ## Build the app
 
