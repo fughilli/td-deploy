@@ -10,7 +10,16 @@
 # and its stream_image only runs `zstd -dc` for `.zst`, else streams the raw
 # image straight to the card. (expandOnBoot still grows the rootfs to fill the
 # card on first boot, so the uncompressed image needn't match the card size.)
-{ ... }:
+{ lib, ... }:
 {
   sdImage.compressImage = false;
+
+  # Shrink the FAT firmware partition — the raw image's "zero padding". The Pi
+  # image (nixos-raspberrypi) defaults sdImage.firmwareSize = 1024 MiB, but it
+  # only holds the RPi vendor firmware + u-boot + config.txt + dtbs + extlinux
+  # (~26 MB on the booted board); the kernel/initrd live in the ext4 rootfs, not
+  # here. So a 1 GB FAT partition is ~1 GB of zeros between /boot/firmware and the
+  # rootfs. 128 MiB is ~5x the real usage. This drops the RAW image ~2.5 → ~1.6 GB
+  # (faster SD write); it doesn't change the downloaded .zst (zeros compress away).
+  sdImage.firmwareSize = lib.mkForce 128;
 }

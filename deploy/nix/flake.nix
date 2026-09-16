@@ -23,7 +23,8 @@
       board = "raspberry-pi-5";
       appModules = [ ./apps.nix ];
       # Baked into BOTH images (full + base):
-      #   image.nix    — skip zstd compression for a much faster image build.
+      #   image.nix    — skip zstd compression + shrink the oversized firmware
+      #                   partition (the raw-image "zero padding").
       #   mesa-lean.nix — build Mesa without the LLVM software renderers (VC4/V3D
       #                   hardware only), dropping the ~507 MB llvm-*-lib closure.
       #   lean-extra.nix — drop the on-device flake registry/nixPath (186 MB
