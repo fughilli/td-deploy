@@ -28,6 +28,8 @@
       #                   hardware only), dropping the ~507 MB llvm-*-lib closure.
       #   lean-extra.nix — drop the on-device flake registry/nixPath (186 MB
       #                   nixpkgs source) + gtk3 (stoken CLI-only, 45 MB).
-      systemModules = [ ./image.nix ./mesa-lean.nix ./lean-extra.nix ];
+      #   tailscale.nix — join the tailnet (reachable across LANs); authkey seeded
+      #                   out of band via deploy/seed_tailscale.sh (adds ~30 MB).
+      systemModules = [ ./image.nix ./mesa-lean.nix ./lean-extra.nix ./tailscale.nix ];
     };
 }

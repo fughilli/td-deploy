@@ -226,6 +226,16 @@ Compresses away (doesn't hit the 341 MB download); only costs flash-write time.
 Fixable by truncating the .img to the shrunk-FS size — not done (user chose the
 content cuts instead).
 
+**Tailscale added (build-14):** `deploy/nix/tailscale.nix` (systemModule, modeled on
+splanc pi/hitl) — `services.tailscale` + `authKeyFile=/var/lib/tailscale/authkey`
+(`--ssh --hostname=<host>`) + a `tailscale-hostname` pin service + trustedInterfaces.
+Auth seeded OUT OF BAND via `deploy/seed_tailscale.sh <host> <tskey-…>` (run from a
+box on the board's LAN; writes the key + restarts tailscaled-autoconnect over the
+deploy SSH). Reason: `tdplayer2.local` mDNS only works same-L2; the board deploys to
+a different LAN. Cost: tailscale ~55 MB → closure 984→**1040 MB**, .zst 341→**356 MB**.
+For /inspect over the tailnet, the hostbridge's Mac must also be on the tailnet;
+then target `tdplayer2` (tailnet name), not `.local`.
+
 **Kernel (152 MB) = last big lever, NOT done — needs user decision.** Any trim
 recompiles the RPi kernel (loses nixos-raspberrypi cachix → 30-60 min builds) AND
 needs on-device boot verification (HDMI/WiFi/MIDI) that can't be done from the
