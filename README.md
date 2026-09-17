@@ -57,6 +57,17 @@ Put the card in the Pi, connect HDMI + power, and it boots into the player.
 Turn on **Watch — auto-deploy on save** and the app redeploys automatically every time
 you save in TouchDesigner, so you can dial in your visuals against the real hardware.
 
+## Which TouchDesigner projects work
+
+td-deploy understands a **growing subset** of TouchDesigner's operators — not the whole
+set (TouchDesigner has hundreds). Today that covers common image (TOP) operators — Movie
+File In, GLSL, Transform, Crop, Level — plus OSC In and MIDI In for live control. The
+full, always-current list lives in the developer docs:
+[**Supported operators**](DEVELOPERS.md#supported-operators).
+
+If your project uses an operator td-deploy doesn't recognize yet, the **Log** panel calls
+it out by name rather than failing silently, so you know exactly what's missing.
+
 ## Troubleshooting
 
 - **The app can't reach the Pi.** Give the card ~30 s to boot, make sure your computer
