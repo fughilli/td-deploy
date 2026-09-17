@@ -1013,14 +1013,15 @@ align-items:center;justify-content:center;height:100vh'>\
 
 // Count of clients currently pulling frames. The render loop only renders +
 // encodes while this is > 0, so an idle box (no viewer) spends no CPU/GPU.
-fn serve_http(port: u16, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<AtomicUsize>, prof: Prof) {
+fn serve_http(port: u16, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<AtomicUsize>, prof: Prof, store: Chops) {
     let l = TcpListener::bind(("0.0.0.0", port)).expect("bind http");
-    println!("[stream] native MJPEG on http://0.0.0.0:{port}/  (perf counters at /stats)");
+    println!("[stream] native MJPEG on http://0.0.0.0:{port}/  (perf counters at /stats, CHOP/MIDI store at /chops)");
     for c in l.incoming().flatten() {
         let latest = latest.clone();
         let clients = clients.clone();
         let prof = prof.clone();
-        thread::spawn(move || handle_conn(c, latest, clients, prof));
+        let store = store.clone();
+        thread::spawn(move || handle_conn(c, latest, clients, prof, store));
     }
 }
 
@@ -1032,7 +1033,7 @@ impl Drop for ClientGuard {
     }
 }
 
-fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<AtomicUsize>, prof: Prof) {
+fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<AtomicUsize>, prof: Prof, store: Chops) {
     let mut buf = [0u8; 2048];
     let n = s.read(&mut buf).unwrap_or(0);
     let req = String::from_utf8_lossy(&buf[..n]);
@@ -1040,6 +1041,14 @@ fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<Atomi
     if path.starts_with("/stats") {
         // Per-node performance counters (JSON) — where the frame budget goes.
         let body = prof_json(&prof);
+        let hdr = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\n\r\n", body.len());
+        let _ = s.write_all(hdr.as_bytes());
+        let _ = s.write_all(body.as_bytes());
+    } else if path.starts_with("/chops") {
+        // The live CHOP/MIDI store: chop_name -> { channel -> value }. Wiggle a
+        // knob and GET /chops to see the exact key a controller produces (e.g.
+        // `{"midiin1":{"ch1ctrl21":100.0,"cc21":100.0,"21":100.0}}`).
+        let body = serde_json::to_string(&*store.lock().unwrap()).unwrap_or_else(|_| "{}".into());
         let hdr = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\n\r\n", body.len());
         let _ = s.write_all(hdr.as_bytes());
         let _ = s.write_all(body.as_bytes());
@@ -1109,7 +1118,8 @@ fn stream(dir: &str, port: u16, fps: f64, target: &str) {
         let latest = latest.clone();
         let clients = clients.clone();
         let prof = prof.clone();
-        thread::spawn(move || serve_http(port, latest, clients, prof));
+        let store = r.store.clone();
+        thread::spawn(move || serve_http(port, latest, clients, prof, store));
     }
     let start = Instant::now();
     let period = Duration::from_secs_f64(1.0 / fps.max(1.0));

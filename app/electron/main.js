@@ -70,7 +70,16 @@ function restartSidecar() {
 
 function watchSidecarDev() {
   const repo = path.resolve(__dirname, '..', '..'); // app/electron -> repo root
-  const targets = [path.join(repo, 'app', 'sidecar.py'), path.join(repo, 'app', 'deploy_engine')];
+  // Restart the sidecar on edits to the deploy engine AND the toxc compiler libs
+  // it imports (compile.py pulls in ir/importer/passes/lowering/compiler/runtime),
+  // so a compiler change hot-reloads without a manual //app:dev restart.
+  const targets = [
+    path.join(repo, 'app', 'sidecar.py'),
+    path.join(repo, 'app', 'deploy_engine'),
+    ...['ir', 'importer', 'passes', 'lowering', 'compiler', 'runtime', 'runtime_expr'].map((d) =>
+      path.join(repo, d)
+    ),
+  ];
   let timer = null;
   const bounce = () => {
     clearTimeout(timer);
