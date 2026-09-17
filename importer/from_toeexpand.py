@@ -365,9 +365,13 @@ def import_dir(dirroot: str) -> ImportResult:
             path_val = fv[0] if fv else None
             params["path"] = path_val
             if path_val and not os.path.isfile(path_val):
+                # Only a note, not a verdict: TouchDesigner stores movie paths relative
+                # to the project, so this almost always misses here. The deploy path
+                # resolves against the .toe dir, its parent and any configured asset
+                # roots, and reports the real outcome (with the dirs it searched).
                 coverage.append(
-                    f"{path}: asset {path_val!r} not local -> testcard "
-                    f"substitute (add a bridge /readfile to fetch host assets)"
+                    f"{path}: asset {path_val!r} is not relative to the CWD — "
+                    f"resolving it against the project dir and asset roots"
                 )
 
         nodes[path] = Node(

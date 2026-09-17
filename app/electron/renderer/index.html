@@ -43,6 +43,19 @@
     </div>
   </section>
 
+  <section id="assets" class="card assets hidden">
+    <div class="assets-head">Missing assets</div>
+    <p class="assets-help">
+      These files weren't found, so a test image is showing in their place. Fix the path
+      in TouchDesigner, add a folder to search, or pick a replacement — then re-deploy.
+    </p>
+    <ul id="assets-list" class="assets-list"></ul>
+    <div class="row">
+      <button id="assets-addroot">Add search folder…</button>
+      <button id="assets-redeploy" class="primary">Re-deploy</button>
+    </div>
+  </section>
+
   <section class="card settings">
     <div class="row">
       <label>Pi host <input id="pi" type="text" value="tdplayer.local" /></label>

@@ -46,6 +46,8 @@ def deploy(
     artifact_dir: str | None = None,
     strict_unsupported: bool = True,
     magic_chop: bool = False,
+    asset_roots: list[str] | None = None,
+    asset_map: dict[str, str] | None = None,
     progress: Progress = Progress(),
 ) -> dict:
     """Full pipeline: compile -> finish -> push. Returns {artifact, info, staging}.
@@ -64,6 +66,8 @@ def deploy(
         bridge=bridge,
         strict_unsupported=strict_unsupported,
         magic_chop=magic_chop,
+        asset_roots=asset_roots,
+        asset_map=asset_map,
         progress=progress,
     )
     finish(art, target, toolchain or default_toolchain(), progress)

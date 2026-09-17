@@ -11,45 +11,27 @@ import tempfile
 import urllib.parse
 
 from . import _paths
+from .assets import resolve_local_asset
 from .expand import expand, http_get_bytes
 from .progress import Progress
 
 _paths.ensure_on_path()
 
 
-def _resolve_local_asset(p: str, toe_path: str) -> str | None:
-    """Find an image_in file on disk. TouchDesigner stores movie paths RELATIVE to
-    the project dir — usually the .toe's own dir or its parent — NOT the app's CWD,
-    so a param like `toxc/Banana.tif` won't resolve against CWD. Try those bases
-    (and the bare basename in each); return the first that exists, else None."""
-    if os.path.isfile(p):
-        return os.path.abspath(p)
-    toedir = os.path.dirname(os.path.abspath(toe_path)) if toe_path else os.getcwd()
-    bases = [os.getcwd(), toedir, os.path.dirname(toedir)]
-    seen = set()
-    for b in bases:
-        for cand in (os.path.join(b, p), os.path.join(b, os.path.basename(p))):
-            cand = os.path.abspath(cand)
-            if cand not in seen and os.path.isfile(cand):
-                return cand
-            seen.add(cand)
-    return None
-
-
-def _fetch_host_assets(
-    g, bridge: str | None, assetdir: str, toe_path: str, progress: Progress
-) -> None:
-    """Ensure each image_in has a locally-readable file + native size. Resolve the
-    path locally first (relative to the .toe dir, not CWD); only pull from the dev
-    bridge if it can't be found on this machine."""
+def _fetch_host_assets(g, bridge, assetdir, toe_path, progress, roots=(), asset_map=None):
+    """Ensure each image_in has a locally-readable file + native size. Resolve locally
+    first (substitution map, then the search roots); fall back to the dev bridge. Returns
+    a list of still-missing assets ``[{"path","node","searched"}]`` for the UI to make
+    actionable (fix the TD path / add a root / pick a replacement)."""
     os.makedirs(assetdir, exist_ok=True)
     from PIL import Image
 
-    for n in g.nodes.values():
+    missing = []
+    for nid, n in g.nodes.items():
         p = n.params.get("path") if n.op == "image_in" else None
         if not p:
             continue
-        local = _resolve_local_asset(p, toe_path)
+        local, searched = resolve_local_asset(p, toe_path, roots, asset_map)
         if local:
             n.params["path"] = local  # normalize so emit reads the resolved file
         elif bridge:
@@ -62,12 +44,15 @@ def _fetch_host_assets(
                 n.params["path"] = local
                 progress.log(f"asset {os.path.basename(p)} ({len(data)}B)")
             except Exception as e:  # noqa: BLE001
-                progress.log(f"asset {p} unavailable ({e}); testcard substitute")
+                missing.append({"path": p, "node": nid, "searched": searched})
+                progress.log(f"asset {p!r} unavailable via bridge ({e}); testcard substitute")
                 continue
         else:
+            missing.append({"path": p, "node": nid, "searched": searched})
             progress.log(
-                f"asset {p} not found (tried CWD + .toe dir + parent) and no bridge;"
-                " testcard substitute"
+                f"asset {p!r} not found — searched: {', '.join(searched) or '(none)'}. "
+                "Fix the path in the TD project, add a search folder, or choose a "
+                "replacement file; using a testcard for now."
             )
             continue
         try:
@@ -77,6 +62,7 @@ def _fetch_host_assets(
             n.params["w"], n.params["h"] = int(w), int(h)
         except Exception:  # noqa: BLE001
             pass
+    return missing
 
 
 def compile_toe(
@@ -90,6 +76,8 @@ def compile_toe(
     keep_expanded: str | None = None,
     strict_unsupported: bool = True,
     magic_chop: bool = False,
+    asset_roots: list[str] | None = None,
+    asset_map: dict[str, str] | None = None,
     progress: Progress = Progress(),
 ) -> dict:
     """Expand + import + optimize + lower + emit into `outdir`. Returns emit info,
@@ -173,7 +161,15 @@ def compile_toe(
             g.nodes[nid].params["path"] = fpath
             progress.log(f"set-file {nid} <- {fpath}")
 
-    _fetch_host_assets(g, bridge, os.path.join(workdir, "assets"), toe_path, progress)
+    missing_assets = _fetch_host_assets(
+        g,
+        bridge,
+        os.path.join(workdir, "assets"),
+        toe_path,
+        progress,
+        roots=asset_roots or [],
+        asset_map=asset_map or {},
+    )
 
     progress.phase("optimize", 0.0, f"{len(g.nodes)} nodes")
     for line in optimize(g, out_res=res):
@@ -191,5 +187,6 @@ def compile_toe(
         info["unsupported"] = unsupported
         info["unsupported_chops"] = chop_types
         info["magic_chops"] = magic_chops
+        info["missing_assets"] = missing_assets
     progress.log(f"artifact: {info}")
     return info
