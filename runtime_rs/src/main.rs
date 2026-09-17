@@ -344,14 +344,18 @@ fn start_midi(name: String, device: Option<String>, store: Chops) {
                 break; // EOF: device unplugged — fall through to reopen
             }
             if let Some((chan, ctrl, v, is_note)) = parser.push(byte[0]) {
-                let td_ch = chan + 1; // TD's MIDI In CHOP numbers channels from 1
+                // TD's MIDI In CHOP is 1-based in BOTH parts of chNctrlM: channel N
+                // = wire channel + 1, and controller M = raw CC + 1 (verified on an
+                // Akai MidiMix — wire CC 16/20 show as ch1ctrl17/ch1ctrl21 in TD).
+                let td_ch = chan + 1;
+                let td_num = ctrl + 1;
                 if is_note {
-                    midi_set(&store, &name, format!("ch{td_ch}note{ctrl}"), v); // TD chNnoteM
-                    midi_set(&store, &name, format!("n{ctrl}"), v); // legacy op('midiin1')['nN']
+                    midi_set(&store, &name, format!("ch{td_ch}note{td_num}"), v); // TD chNnoteM
+                    midi_set(&store, &name, format!("n{ctrl}"), v); // legacy (raw note #)
                 } else {
-                    midi_set(&store, &name, format!("ch{td_ch}ctrl{ctrl}"), v); // TD chNctrlM
-                    midi_set(&store, &name, format!("cc{ctrl}"), v); // legacy op('midiin1')['ccN']
-                    midi_set(&store, &name, format!("{ctrl}"), v); // legacy op('midiin1')[N] (= CC #)
+                    midi_set(&store, &name, format!("ch{td_ch}ctrl{td_num}"), v); // TD chNctrlM
+                    midi_set(&store, &name, format!("cc{ctrl}"), v); // legacy op('midiin1')['ccN'] (raw CC #)
+                    midi_set(&store, &name, format!("{ctrl}"), v); // legacy op('midiin1')[N] (raw CC #)
                 }
             }
         }
