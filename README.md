@@ -1,117 +1,99 @@
-# td-deploy — TouchDesigner `.tox` → Raspberry Pi compiler
+# td-deploy
 
-> Built on **`toxc`**, the TOX Compiler — the CLI/Bazel target (`//:toxc`) and MLIR
-> dialect keep the `toxc` name.
+[![CI](https://github.com/fughilli/td-deploy/actions/workflows/test.yml/badge.svg)](https://github.com/fughilli/td-deploy/actions/workflows/test.yml)
+[![Latest release](https://img.shields.io/github/v/release/fughilli/td-deploy?sort=semver&display_name=tag&label=release&color=4f8cff)](https://github.com/fughilli/td-deploy/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/fughilli/td-deploy/total?label=downloads&color=37c06a)](https://github.com/fughilli/td-deploy/releases)
+![Platforms](https://img.shields.io/badge/app-macOS%20%7C%20Windows-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-Compile a TouchDesigner project into a native real-time media graph that runs on a
-Raspberry Pi, with TouchDesigner removed from the deployment path. See the full
-design in [`docs/design/tox-to-pi.md`](docs/design/tox-to-pi.md).
+**Run your TouchDesigner visuals on a Raspberry Pi — no TouchDesigner on the Pi, no
+command line.** Point the **td-deploy Studio** app at your `.toe` project; it compiles
+the graph and sends it to the Pi. Flip on **Watch** and every save in TouchDesigner
+redeploys live.
 
-## Build with Bazel (the top-level driver)
+<p align="center">
+  <img src="docs/img/studio-main.png" width="620"
+       alt="td-deploy Studio — pick a .toe, watch, and deploy to the Pi" />
+</p>
 
-Bazel drives the whole thing — the Python compiler, the Rust runtime, and the Pi
-SD-image / live-deploy targets. Toolchains are hermetic (a pinned nixpkgs via
-rules_nixpkgs for Mesa/LLVM; rules_python + rules_rust for the rest); `nix` is a
-system requirement.
+## What you get
 
-```sh
-bazel build //...                        # build the whole graph
-bazel test  //...                        # hermetic tests (pipeline + lock)
-bazel query //...                        # see every target
+- 🎛️ **A desktop app** (macOS + Windows). Pick a project, click **Deploy** — done.
+- 🔁 **Live reload.** With **Watch** on, saving in TouchDesigner auto-deploys to the Pi.
+- 💾 **One-click SD flashing.** The app writes a ready-to-boot Pi card for you.
+- 🍓 **A tiny, fast Pi appliance.** The card boots straight into your visuals on
+  hardware graphics — no desktop, no TouchDesigner, no setup.
 
-# compile + render (in-container, no hardware):
-bazel run //:toxc -- graphs/blur_demo.json --backend cpu --out /tmp/out
-bazel run //:toxc -- graphs/blur_demo.json --emit-artifact /tmp/art --target gles2
+## 1. Install the app
 
-# image an SD card for the Pi and play the compiled graph (see deploy/README.md):
-bazel run //deploy:tdplayer_pi3.image_sd -- --device /dev/sdX     # Pi 3
-bazel run //deploy:tdplayer.image_sd     -- --device /dev/sdX     # Pi 5
-```
+Download the latest build from the [**Releases page**](https://github.com/fughilli/td-deploy/releases/latest):
 
-Key targets: `//ir` `//passes` `//lowering` `//runtime` (pipeline libs), `//:toxc`
-(CLI), `//:expand` (`.toe`→IR, needs the Mac bridge), `//compiler:emit` +
-`//compiler:build_exprs` (native lowering), `//runtime_rs:toxc_runtime` (Rust
-runtime), `//deploy:toxc_artifact` + `//deploy:tdplayer{,_pi3}.*` (SD-image /
-live-deploy). The `toxc` compiler name is unchanged; only the repo/project is
-`td-deploy`.
+- **macOS** — open `td-deploy Studio-*.dmg` and drag the app to Applications. It's
+  signed and notarized, so it opens normally.
+- **Windows** — run `td-deploy Studio Setup *.exe`.
 
-## Status
+## 2. Prepare an SD card
 
-- **Host bridge** (`hostbridge/`): zero-dependency HTTP server, run on the Mac, exposes
-  `toeexpand`/`toecollapse` (and experimentally TD headless render) to the pipeline.
-- **Downstream pipeline** (everything after import) is **working and validated** on the
-  `image → GLSL gaussian blur → display` slice:
-  `IR → passes(fold/infer/DCE) → lowering(GLSL codegen) → runtime`.
-  Two runtime backends — real offscreen **OpenGL** (EGL-surfaceless / Mesa llvmpipe) and a
-  **numpy reference** — agree to **1 LSB**.
-- **Not yet**: the `.tox` importer (needs the host bridge + a real project), feedback/state,
-  the MLIR compile backend, and the Pi/HDMI + sbc-deploy target.
+Insert an SD card (8 GB or larger), then in the app click **Flash SD card…**, pick your
+card from the list of removable disks, and hit **Erase & Flash**.
 
-## Layout
+<p align="center">
+  <img src="docs/img/studio-flash.png" width="620"
+       alt="Flash SD card dialog — choose a removable disk and flash the Pi image" />
+</p>
 
-```text
-hostbridge/td_host_server.py   Mac-side HTTP bridge to toeexpand/TD
-ir/graph.py                    typed operator-graph IR (JSON) — importer target
-passes/optimize.py             fold / infer_format / dead-node-elim
-lowering/shaders.py            GLSL + desktop-GL⇄GLES targeting shim
-lowering/lower.py              IR -> RuntimePlan (ordered steps + baked GLSL)
-runtime/egl_context.py         headless EGL surfaceless context (host seam; Pi swaps this)
-runtime/backend_gl.py          GL backend (executes the plan's GLSL)
-runtime/backend_cpu.py         numpy reference backend (conformance oracle)
-runtime/run.py                 driver: load → optimize → lower → run → validate
-graphs/blur_demo.json          the M1 sample graph
-nix/dev.nix, nix/dev.sh        rootless Nix env (python+mesa) for the runtime
-```
+> ⚠️ Flashing **permanently erases** the selected disk. The app lists only removable
+> disks to help you avoid picking the wrong one, but **always double-check the device
+> name and size before you flash** — you are responsible for choosing the right disk.
 
-## Run the downstream slice (in-container, no hardware)
+Put the card in the Pi, connect HDMI + power, and it boots into the player.
 
-```sh
-cd toxc
-nix/dev.sh python3 -m runtime.run graphs/blur_demo.json --backend both --out out
-# -> out/gl.png, out/cpu.png, out/diff8x.png  + a GL-vs-CPU LSB report
-```
+## 3. Deploy your project
 
-## Live realtime preview (stream to a browser window)
+1. Click **Choose .toe…** and pick your TouchDesigner project.
+2. Set **Pi host** — the default `tdplayer.local` works out of the box.
+3. Click **Deploy now**.
 
-**Model: the container renders, the Mac views.** The GL render path is Linux-only
-(EGL-surfaceless + Mesa) — the same path the Pi uses (V3D/GLES), so the container
-preview is Pi-faithful. Rendering on macOS is intentionally unsupported (you'll get a
-clear error, not a crash); view the stream instead.
+Turn on **Watch — auto-deploy on save** and the app redeploys automatically every time
+you save in TouchDesigner, so you can dial in your visuals against the real hardware.
 
-Start (or restart) the stream **inside the container**:
+## Which TouchDesigner projects work
 
-```sh
-tools/stream.sh /workspace/ascii_project.toe          # convenience: kills old, starts new
-# equivalently: nix/dev.sh python3 -m cli <project.tox> --stream --port 8788 [--fps N --res N]
-```
+td-deploy understands a **growing subset** of TouchDesigner's operators — not the whole
+set (TouchDesigner has hundreds). Today that covers common image (TOP) operators — Movie
+File In, GLSL, Transform, Crop, Level — plus OSC In and MIDI In for live control. The
+full, always-current list lives in the developer docs:
+[**Supported operators**](DEVELOPERS.md#supported-operators).
 
-View on the **Mac** (nothing to run there):
+If your project uses an operator td-deploy doesn't recognize yet, the **Log** panel calls
+it out by name rather than failing silently, so you know exactly what's missing.
 
-```text
-http://toxc.$CLAUDE_SERVICE_INSTANCE.claude.localhost/     (fallback: ...:8484/)
-```
+## Troubleshooting
 
-It's MJPEG on a wall-clock timebase, so animated params (e.g. a Transform's
-`rotate = absTime.seconds*10`) move live. Routes: `/` viewer, `/stream`, `/frame.jpg`,
-`/stats`. `--res 256` trades resolution for fps. After you re-export a `.tox`, re-run
-`tools/stream.sh <path>` (or just ask the agent to reload) — no reload endpoint yet.
+- **The app can't reach the Pi.** Give the card ~30 s to boot, make sure your computer
+  and the Pi are on the same network, and try again. If `tdplayer.local` doesn't
+  resolve, use the Pi's IP address in the **Pi host** field.
+- **Which Target do I pick?** Leave it on **gles2 (Pi VC4)** for a Pi 3. Use **gles**
+  for a Pi 4/5.
+- **The screen is black.** Confirm your project actually renders in TouchDesigner, then
+  re-deploy. The **Log** panel at the bottom shows each step and any errors.
 
-Exposed via a claude-container named service
-(`.claude-container-overlay/overlay.json` -> `{"services":{"toxc":8788}}`).
+## Supported hardware
 
-## Run the host bridge (on the Mac, where TouchDesigner is installed)
+Raspberry Pi 3 and Pi 4/5. HDMI output. The player image is a minimal, headless build
+that uses the Pi's hardware GPU.
 
-```sh
-python3 hostbridge/td_host_server.py --port 8770
-curl -s http://<mac-ip>:8770/health | python3 -m json.tool
-curl -s --data-binary @project.tox \
-  'http://<mac-ip>:8770/expand?name=project.tox&format=json' > expanded.json
-```
+## License & disclaimer
 
-## Notes
+td-deploy is released under the [MIT License](LICENSE) by Fughilli Industries, LLC. The
+software is provided **"as is", without warranty of any kind**, express or implied. To
+the maximum extent permitted by law, Fughilli Industries, LLC is not liable for any
+claim, damages, or other liability arising from the use of this software. Use it at your
+own risk.
 
-- Host reference GL is desktop core 3.3 via llvmpipe (surfaceless EGL); the `--target gles`
-  lowering emits `#version 310 es` shaders for the Pi's V3D. `egl_context.py` is the only
-  file that changes between host and Pi.
-- The numpy backend is both a no-hardware validator and the conformance reference the design
-  calls for (TD becomes a third oracle once the host bridge is wired).
+Contributions are welcome — see the [Contributor License Agreement](CLA.md).
+
+---
+
+Building from source, the compiler internals, CI, and releases live in
+**[DEVELOPERS.md](DEVELOPERS.md)**.
