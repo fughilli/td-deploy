@@ -148,6 +148,19 @@ class Sidecar:
             self._watch = False
             self._watch_stop.set()
         emit({"type": "watch", "enabled": self._watch})
+        if self._watch:
+            # Name the file we actually poll. Without this a watch on the wrong path
+            # (or on nothing at all) is indistinguishable from a broken watcher.
+            emit(
+                {
+                    "type": "log",
+                    "line": (
+                        f"watching {os.path.abspath(self.toe)}"
+                        if self.toe
+                        else "watch enabled, but no project is selected yet — pick a .toe"
+                    ),
+                }
+            )
 
     def _watch_loop(self) -> None:
         last = self._mtime()

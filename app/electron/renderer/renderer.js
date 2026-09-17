@@ -71,7 +71,13 @@ for (const el of [els.pi, els.target, els.key]) el.onchange = pushSettings;
 window.td.onEvent((evt) => {
   switch (evt.type) {
     case 'ready':
+      // A fresh sidecar knows nothing: not the picked project, not whether Watch is
+      // on. That happens on first launch AND every dev hot-restart (watchSidecarDev
+      // respawns it on any engine edit), so re-push the renderer's state or Watch
+      // silently stops firing while its checkbox still reads "on".
       pushSettings();
+      if (state.toe) window.td.send({ cmd: 'pick_toe', toe: state.toe });
+      if (els.watch.checked) window.td.send({ cmd: 'watch', enable: true, toe: state.toe });
       if (evt.settings && evt.settings.base_image_tag)
         fm.tag.value = evt.settings.base_image_tag;   // CI-stamped default
       log('sidecar ready');
