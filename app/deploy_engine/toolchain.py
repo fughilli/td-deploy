@@ -76,12 +76,22 @@ class NixToolchain(Toolchain):
         clang_cmds = [c for c in commands if c and c[0] == "clang"]
         if mlir_cmds:
             script = "set -e\n" + "\n".join(shlex.join(cmd) for cmd in mlir_cmds)
-            subprocess.run([self._shell, "bash", "-c", script], check=True, env=self._env, **_STDERR)
+            subprocess.run(
+                [self._shell, "bash", "-c", script], check=True, env=self._env, **_STDERR
+            )
         for cmd in clang_cmds:
             subprocess.run(
-                ["nix", "shell", "nixpkgs#llvmPackages_18.clang-unwrapped", "nixpkgs#lld",
-                 "--command", *cmd],
-                check=True, env=self._env, **_STDERR,
+                [
+                    "nix",
+                    "shell",
+                    "nixpkgs#llvmPackages_18.clang-unwrapped",
+                    "nixpkgs#lld",
+                    "--command",
+                    *cmd,
+                ],
+                check=True,
+                env=self._env,
+                **_STDERR,
             )
 
     def run_gles(self, art_dir: str) -> None:

@@ -44,9 +44,9 @@
           (lib.mesonEnable "llvm" false)
           (lib.mesonBool "gallium-rusticl" false) # OpenCL -> drops clang/libLLVM
           (lib.mesonEnable "gallium-vdpau" false) # video state trackers need a
-          (lib.mesonEnable "gallium-va" false)    # desktop gallium driver we
-          (lib.mesonEnable "gallium-xa" false)    # no longer build (headless too)
-          (lib.mesonBool "teflon" false)          # TensorFlow NPU frontend, unused
+          (lib.mesonEnable "gallium-va" false) # desktop gallium driver we
+          (lib.mesonEnable "gallium-xa" false) # no longer build (headless too)
+          (lib.mesonBool "teflon" false) # TensorFlow NPU frontend, unused
         ];
         # With d3d12/rusticl gone, the `spirv2dxil` output gets no files, so its
         # dir is never created and nix fails ("failed to produce output path").

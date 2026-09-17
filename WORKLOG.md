@@ -12,20 +12,20 @@ approach: **measure first**, then trim.
 35027659025 on `main`, Pi 3 image): raw `.img` **4.1 GB**; system closure **2439
 MB / 763 paths**. Top offenders:
 
-| MB | path | notes |
-|----|------|-------|
-| 507.5 | llvm-19.1.7-lib | **#1** — pulled in only by Mesa's llvmpipe SW rasterizer |
-| 206.5 | mesa-25.0.7 | |
-| 185.6 | source | UNIDENTIFIED — likely the RPi kernel/firmware `src`; needs `nix why-depends` |
-| 152.2 | linux_rpi kernel | |
-| 116.8 | python3-3.12.12 | pulled by ? (systemd/udev/activation); needs why-depends |
-| 78.5 | raspberrypi-firmware | bootloader/GPU fw (unavoidable) |
-| 61.4 | perl | likely `environment.defaultPackages` — dropped by `lean` |
-| 56.3 | systemd | |
-| 55.7 | git (+15.2 git-doc) | needed on-device? deploy_live uses nix, maybe not git |
-| 45.2 | gtk+3 | why on a headless image? needs why-depends (NM plugins already dropped upstream) |
-| 43.1 | vim | RPi sd-image rescue toolkit — dropped by `lean` |
-| 41.6 | glibc / 40.2 icu4c / 36.5 nix / 25.7 nix-doc / 25.4 nixos-manual-html / 15.0 texinfo | docs dropped by `lean`; nix needed on-device for deploy_live |
+| MB    | path                                                                                 | notes                                                                            |
+| ----- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| 507.5 | llvm-19.1.7-lib                                                                      | **#1** — pulled in only by Mesa's llvmpipe SW rasterizer                         |
+| 206.5 | mesa-25.0.7                                                                          |                                                                                  |
+| 185.6 | source                                                                               | UNIDENTIFIED — likely the RPi kernel/firmware `src`; needs `nix why-depends`     |
+| 152.2 | linux_rpi kernel                                                                     |                                                                                  |
+| 116.8 | python3-3.12.12                                                                      | pulled by ? (systemd/udev/activation); needs why-depends                         |
+| 78.5  | raspberrypi-firmware                                                                 | bootloader/GPU fw (unavoidable)                                                  |
+| 61.4  | perl                                                                                 | likely `environment.defaultPackages` — dropped by `lean`                         |
+| 56.3  | systemd                                                                              |                                                                                  |
+| 55.7  | git (+15.2 git-doc)                                                                  | needed on-device? deploy_live uses nix, maybe not git                            |
+| 45.2  | gtk+3                                                                                | why on a headless image? needs why-depends (NM plugins already dropped upstream) |
+| 43.1  | vim                                                                                  | RPi sd-image rescue toolkit — dropped by `lean`                                  |
+| 41.6  | glibc / 40.2 icu4c / 36.5 nix / 25.7 nix-doc / 25.4 nixos-manual-html / 15.0 texinfo | docs dropped by `lean`; nix needed on-device for deploy_live                     |
 
 **Key findings this session (resumed after container restart):**
 
@@ -34,7 +34,7 @@ MB / 763 paths**. Top offenders:
   (`4d88be7`) `mkSbcSystem` then: disables `profiles/base.nix` (rescue toolkit —
   **vim** + testdisk/ddrescue/sshfs/tcpdump), forces `documentation.*=false`
   (**nixos-manual-html, man, texinfo, doc/info**), and `environment.defaultPackages
-  = []` (**perl/rsync/strace**). **First win: add `lean = True` to BOTH
+= []` (**perl/rsync/strace**). **First win: add `lean = True` to BOTH
   `sbc_application` calls in `deploy/BUILD.bazel`.** Safe, purpose-built, ~100–150+
   MB. Does NOT touch LLVM/mesa.
 - **LLVM 507 MB is the whale** and is Mesa's llvmpipe dependency, NOT our MLIR
@@ -42,7 +42,7 @@ MB / 763 paths**. Top offenders:
   `nativeBuildInputs` to compile exprs.mlir→libexprs.so; that's LLVM 18 and stays
   out of the runtime closure — the closure's LLVM is 19, mesa's). To drop it we
   must build Mesa without llvmpipe (`mesa.override { galliumDrivers = [ "vc4"
-  "v3d" "kmsro" ]; vulkanDrivers = []; ... }` — VC4/V3D gallium don't need LLVM).
+"v3d" "kmsro" ]; vulkanDrivers = []; ... }` — VC4/V3D gallium don't need LLVM).
   **Tradeoff: no software-GL fallback.** Needs user sign-off + verifying mesa
   builds w/o llvmpipe and VC4 still works.
 - **INCONSISTENCY to resolve first:** `deploy/BUILD.bazel` lines 32–34 comment
@@ -60,6 +60,7 @@ step runs before it). Read logs via the GitHub API — NB the job-logs endpoint
 302-redirects to a signed blob, so STRIP the Authorization header on redirect.
 
 **Decisions (user, this session):**
+
 - Remove llvmpipe/LLVM — **VC4/V3D hardware is confirmed** by the user (safe to
   lose the SW-GL fallback).
 - **Build on the MAC HOST** via the hostdeploy tooling (Mac has the aarch64
@@ -82,6 +83,7 @@ deleting per-user. See memory determinate-nix-overlay-per-user-profile.
 git-based flake eval sees it (untracked files are invisible to flakes).
 
 **Edits APPLIED this session (uncommitted, on the shared mount):**
+
 - `deploy/BUILD.bazel`: `lean = True` on both `sbc_application` (drops
   vim/docs/perl/rsync/strace). Also fixed the stale "we run llvmpipe" comment.
 - `deploy/nix/mesa-lean.nix` (NEW) + wired into `flake.nix` systemModules: global
@@ -102,6 +104,7 @@ git-based flake eval sees it (untracked files are invisible to flakes).
 **How to build+measure on the Mac (bind-mounted, so it builds THESE edits):**
 Two ways, same result (`deploy/build_and_measure.sh <board> <top_n>` under the
 hood → builds `…image_sd --no-write`, then `measure_image_size.sh`):
+
 - HTTP-driven via the hostbridge (NEW `/build` endpoint, token-gated, fixed prog,
   board enum only — mirrors `/deploy`): `POST /build {board:"pi3"}` then poll
   `GET /build?id=build-N&from=<next>`. Advertised in `/health`.
@@ -128,6 +131,7 @@ needed for script fixes — `/build` re-reads the script each call.
 Future nicety: expose `--keep-builder` via /build for warm iteration.
 
 **MEASURED (host builds via /build, Pi 3):**
+
 - Baseline (main): raw 4.1 GB, closure 2439 MB.
 - build-4 (lean + mesa driver/rusticl trim, but MISSING -Dllvm): raw **3.5 GB**,
   closure **2088 MB** (−351). mesa 206→**30.7 MB** ✓; vim/nixos-manual/nix-doc/
@@ -140,9 +144,10 @@ Future nicety: expose `--keep-builder` via /build for warm iteration.
   `mkdir -p "$spirv2dxil"` in postInstall; (3) the real llvm puller = `-Dllvm`.
 
 **Next whales (from build-4 why-depends) — the follow-on cuts:**
+
 - `source` 186 MB ← `etc → nix/registry.json → source`: the nix flake registry
   pins the FULL nixpkgs source into the image. Kill via `nix.registry = lib.mkForce
-  {};` + clear `nix.nixPath`/flake-registry, if on-device flake ref isn't needed.
+{};` + clear `nix.nixPath`/flake-registry, if on-device flake ref isn't needed.
 - `python3` 117 MB ← `system-path → git → python3`: GIT drags python3. If git
   isn't needed on-device (deploy_live uses nix copy, not git), drop git from
   systemPath → likely drops python3 + git-doc 15 + git 56 too.
@@ -161,10 +166,10 @@ Future nicety: expose `--keep-builder` via /build for warm iteration.
 perl 61, systemd 56, git 56, gtk3 45, glibc 42, icu4c 40, nix 36, mesa 30.
 
 - build-6 (`deploy/nix/lean-extra.nix`: `nix.registry`/`nix.nixPath` mkForce empty
-  + `stoken.override{withGTK3=false}`): raw **2.7 GB**, closure **1235 MB**
-  (−345 from build-5). `why-depends` = source GONE, gtk+3 GONE (gtk3 cascaded its
-  pango/cairo/gdk-pixbuf subtree too). User confirmed deploy = `nix copy` + switch,
-  so on-device flake registry not needed. **Cumulative: 2439 → 1235 MB (−49%).**
+  - `stoken.override{withGTK3=false}`): raw **2.7 GB**, closure **1235 MB**
+    (−345 from build-5). `why-depends` = source GONE, gtk+3 GONE (gtk3 cascaded its
+    pango/cairo/gdk-pixbuf subtree too). User confirmed deploy = `nix copy` + switch,
+    so on-device flake registry not needed. **Cumulative: 2439 → 1235 MB (−49%).**
 
 **Committed-state cuts (all validated on real Pi3 host builds):**
 `lean=True` (BUILD.bazel) · `mesa-lean.nix` (−507 llvm, mesa 206→30) ·
@@ -209,6 +214,7 @@ sbc-deploy` + MODULE.bazel commit → the merged build-data rev (TODO in MODULE.
 (zstd -19, the download) 621 → 348 MB (−44%).** measure_image_size.sh takes `--zst`.
 
 **More cuts (build-12/13), all in lean-extra.nix, clean NixOS levers:**
+
 - `system.disableInstallerTools = true` → drops nixos-option/rebuild/generate-config/
   install → drops man-db + groff (nixos-option baked them into PATH). Safe:
   deploy_live runs switch-to-configuration on the board, never nixos-rebuild.
@@ -274,6 +280,7 @@ if no cellular), sd-image free-space padding (raw .img has ~1.4 GB empty above t
 but affects decompress/write time).
 
 **COORDINATION / HANDOFF:**
+
 - sbc-deploy PR #20 (chore/lean-drop-git) → user reviews/merges → then repoint
   td-deploy pins to build-data (flake.nix url + `nix flake update sbc-deploy` +
   MODULE.bazel commit; TODO marker in MODULE.bazel).
@@ -285,7 +292,6 @@ but affects decompress/write time).
 **State:** PR #10 (`feat/dev-live-reload`, interactive dev target + live-reload)
 is OPEN + mergeable, awaiting the user's merge call — not mine to merge. All the
 above edits are UNCOMMITTED on this branch (working tree survives restart).
-
 
 ## 2026-09-10 (3) — Zero-copy GPU→HDMI (GBM scanout) + present 124ms→0.65ms
 

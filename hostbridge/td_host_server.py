@@ -634,7 +634,13 @@ class Handler(BaseHTTPRequestHandler):
         cmd = ["bash", script, board, str(top_n)]
         job = _start_job("build", cmd, cwd, env=env)
         return self._send_json(
-            {"id": job["id"], "cmd": job["cmd"], "cwd": cwd, "board": board, "builder_disk": builder_disk}
+            {
+                "id": job["id"],
+                "cmd": job["cmd"],
+                "cwd": cwd,
+                "board": board,
+                "builder_disk": builder_disk,
+            }
         )
 
     def build_poll(self, q):
@@ -677,7 +683,6 @@ class Handler(BaseHTTPRequestHandler):
             }
         return self._send_json(resp)
 
-
     # -- inspect (read-only diagnostics on a booted board) --------------------
     def inspect_start(self):
         """POST /inspect {host?} — read-only diagnostics on a booted board.
@@ -719,9 +724,15 @@ class Handler(BaseHTTPRequestHandler):
         if not jid:
             with _JOBS_LOCK:
                 jobs = [
-                    {"id": j["id"], "running": not j["done"], "rc": j["rc"],
-                     "nlines": len(j["lines"]), "started": j["started"]}
-                    for j in _JOBS.values() if j["label"] == "inspect"
+                    {
+                        "id": j["id"],
+                        "running": not j["done"],
+                        "rc": j["rc"],
+                        "nlines": len(j["lines"]),
+                        "started": j["started"],
+                    }
+                    for j in _JOBS.values()
+                    if j["label"] == "inspect"
                 ]
             return self._send_json({"jobs": jobs})
         frm = int((q.get("from", ["0"])[0]) or 0)
@@ -732,9 +743,14 @@ class Handler(BaseHTTPRequestHandler):
             lines = job["lines"][frm:]
             end = job["ended"] or time.time()
             resp = {
-                "id": jid, "cmd": job["cmd"], "running": not job["done"],
-                "rc": job["rc"], "from": frm, "next": frm + len(lines),
-                "nlines": len(job["lines"]), "elapsed": round(end - job["started"], 1),
+                "id": jid,
+                "cmd": job["cmd"],
+                "running": not job["done"],
+                "rc": job["rc"],
+                "from": frm,
+                "next": frm + len(lines),
+                "nlines": len(job["lines"]),
+                "elapsed": round(end - job["started"], 1),
                 "lines": lines,
             }
         return self._send_json(resp)
