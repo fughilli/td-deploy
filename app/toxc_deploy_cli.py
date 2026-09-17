@@ -3,7 +3,8 @@
 
     python app/toxc_deploy_cli.py project.toe --pi tdplayer.local --target gles2 \
         [--set-file project1/moviefilein1=/path/Banana.tif] [--bridge host.docker.internal:8770] \
-        [--skip-unsupported] [--magic-chop]
+        [--skip-unsupported] [--magic-chop] \
+        [--asset-root /media/library] [--asset-map Banana.tif=/path/other.png]
 
 Compiles the .toe, finishes it for aarch64 on THIS host, and live-updates the Pi.
 In the dev container (no local toeexpand) pass --bridge to expand via the Mac host
@@ -50,7 +51,28 @@ def main() -> int:
         action="store_true",
         help="drive unsupported CHOPs with random sinusoids so the piece still animates",
     )
+    ap.add_argument(
+        "--asset-root",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="extra folder to search for movie/image assets (repeatable)",
+    )
+    ap.add_argument(
+        "--asset-map",
+        action="append",
+        default=[],
+        metavar="ASSET=PATH",
+        help="substitute a missing asset, keyed by its full path or bare basename " "(repeatable)",
+    )
     args = ap.parse_args()
+
+    asset_map = {}
+    for spec in args.asset_map:
+        key, sep, repl = spec.partition("=")
+        if not sep:
+            ap.error(f"--asset-map expects ASSET=PATH, got {spec!r}")
+        asset_map[key] = repl
 
     res = deploy(
         args.toe,
@@ -65,6 +87,8 @@ def main() -> int:
         artifact_dir=args.keep_artifact,
         strict_unsupported=not args.skip_unsupported,
         magic_chop=args.magic_chop,
+        asset_roots=args.asset_root,
+        asset_map=asset_map,
         progress=cli_progress(),
     )
     print(f"[done] live on {args.pi}: {res['staging']}")
