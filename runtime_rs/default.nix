@@ -5,7 +5,7 @@
 { pkgs ? import <nixpkgs> { } }:
 pkgs.rustPlatform.buildRustPackage {
   pname = "toxc-runtime";
-  version = "0.2.0";
+  version = "0.1.0";
   src = ./.;
   cargoLock.lockFile = ./Cargo.lock;
   doCheck = false;
