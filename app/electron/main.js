@@ -137,3 +137,19 @@ ipcMain.handle('copy-text', (_e, text) => {
   clipboard.writeText(String(text ?? ''));
   return true;
 });
+
+// Missing-asset resolution: pick a replacement file, or a folder to add to the search roots.
+ipcMain.handle('pick-file', async () => {
+  const r = await dialog.showOpenDialog(win, {
+    title: 'Choose a replacement file',
+    properties: ['openFile'],
+  });
+  return r.canceled || !r.filePaths.length ? null : r.filePaths[0];
+});
+ipcMain.handle('pick-dir', async () => {
+  const r = await dialog.showOpenDialog(win, {
+    title: 'Add a folder to search for assets',
+    properties: ['openDirectory'],
+  });
+  return r.canceled || !r.filePaths.length ? null : r.filePaths[0];
+});

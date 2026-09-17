@@ -18,7 +18,9 @@ Events (stdout):
   {"type":"ready"} {"type":"settings",...} {"type":"start","toe":...}
   {"type":"progress","phase":...,"frac":..,"overall":..,"message":...}
   {"type":"log","line":...} {"type":"done","ok":true,"staging":...}
-  {"type":"error","message":...} {"type":"watch","enabled":bool} {"type":"pong"}
+  {"type":"error","message":...,"fixPrompt":...} {"type":"watch","enabled":bool}
+  {"type":"warning","message":...,"fixPrompt":...}   # deployed with substitutions
+  {"type":"assets","missing":[{"path":...,"node":...,"searched":[...]}]} {"type":"pong"}
   {"type":"disks","disks":[{"id":..,"name":..,"size_gb":..,"bus":..}]}
   {"type":"flash_start","disk":..,"tag":..}
   {"type":"flash_progress","stage":"download|write","frac":..,"message":..}
@@ -142,6 +144,8 @@ class Sidecar:
             "user": "root",
             "skip_unsupported": False,  # lenient "warn but continue" mode (TOP ops)
             "magic_chop": False,  # drive unsupported CHOPs with random sinusoids
+            "asset_roots": [],  # extra directories to search for movie/image assets
+            "asset_map": {},  # explicit substitutions: original path/basename -> local file
             "base_image_tag": _base_image_tag(),
         }
         self.toe: str | None = None
@@ -186,10 +190,18 @@ class Sidecar:
                     key=s["key"],
                     strict_unsupported=not s.get("skip_unsupported"),
                     magic_chop=bool(s.get("magic_chop")),
+                    asset_roots=s.get("asset_roots") or [],
+                    asset_map=s.get("asset_map") or {},
                     progress=self._progress(),
                 )
                 emit({"type": "done", "ok": True, "staging": res["staging"]})
                 info = res.get("info") or {}
+                missing = info.get("missing_assets") or []
+                if missing:
+                    # Distinct from the fix-it prompt: a missing local asset is the user's
+                    # file, not a code bug — surface it with the roots searched so they can
+                    # fix the TD path, add a search folder, or pick a replacement.
+                    emit({"type": "assets", "missing": missing})
                 # Deploy succeeded but the engine made substitutions — surface a
                 # non-blocking warning with the same fix-it prompt.
                 warn = _warning_event(

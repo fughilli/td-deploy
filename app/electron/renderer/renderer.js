@@ -10,10 +10,14 @@ const els = {
   fixit: $('fixit'), fixitTitle: $('fixit-title'), fixitMsg: $('fixit-msg'),
   fixitCopy: $('fixit-copy'), fixitCopied: $('fixit-copied'),
   skipUnsupported: $('skip-unsupported'), magicChop: $('magic-chop'),
+  assets: $('assets'), assetsList: $('assets-list'),
+  assetsAddRoot: $('assets-addroot'), assetsRedeploy: $('assets-redeploy'),
 };
 
 const STORE = 'td-deploy-settings';
 let state = { toe: null, busy: false };
+let assetRoots = [];      // extra folders to search for assets
+let assetMap = {};        // original asset path/basename -> chosen replacement file
 
 function loadSettings() {
   try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch (e) { return {}; }
@@ -22,6 +26,7 @@ function saveSettings() {
   const s = {
     pi: els.pi.value, target: els.target.value, key: els.key.value, toe: state.toe,
     skipUnsupported: els.skipUnsupported.checked, magicChop: els.magicChop.checked,
+    assetRoots, assetMap,
   };
   localStorage.setItem(STORE, JSON.stringify(s));
   return s;
@@ -31,6 +36,7 @@ function pushSettings() {
   window.td.send({ cmd: 'set_settings', settings: {
     pi: s.pi, target: s.target, key: s.key || null,
     skip_unsupported: !!s.skipUnsupported, magic_chop: !!s.magicChop,
+    asset_roots: assetRoots, asset_map: assetMap,
   }});
 }
 
@@ -72,6 +78,45 @@ els.fixitCopy.onclick = async () => {
   els.fixitCopied.classList.remove('hidden');
 };
 
+// --- missing assets: actionable panel (add a search root / pick a replacement) ---
+function renderAssets(missing) {
+  els.assetsList.innerHTML = '';
+  if (!missing || !missing.length) { els.assets.classList.add('hidden'); return; }
+  for (const a of missing) {
+    const li = document.createElement('li');
+    const info = document.createElement('div');
+    info.className = 'asset-info';
+    const roots = (a.searched || []).join(', ') || '(none)';
+    info.innerHTML =
+      `<code>${a.path}</code><span class="asset-searched">searched: ${roots}</span>`;
+    const pick = document.createElement('button');
+    pick.textContent = 'Choose file…';
+    pick.onclick = async () => {
+      const f = await window.td.pickFile();
+      if (!f) return;
+      assetMap[a.path] = f;                 // substitute this asset on the next deploy
+      pushSettings();
+      li.classList.add('resolved');
+      pick.textContent = '→ ' + f.split(/[\\/]/).pop();
+      pick.disabled = true;
+    };
+    li.append(info, pick);
+    els.assetsList.appendChild(li);
+  }
+  els.assets.classList.remove('hidden');
+}
+
+els.assetsAddRoot.onclick = async () => {
+  const d = await window.td.pickDir();
+  if (!d) return;
+  if (!assetRoots.includes(d)) assetRoots.push(d);
+  pushSettings();
+  log('asset search folder added: ' + d);
+};
+els.assetsRedeploy.onclick = () => {
+  if (state.toe) window.td.send({ cmd: 'deploy', toe: state.toe });
+};
+
 function setToe(toe) {
   state.toe = toe;
   els.toePath.textContent = toe || 'No project selected';
@@ -111,6 +156,7 @@ window.td.onEvent((evt) => {
       setBusy(true, 'start');
       els.log.textContent = '';
       els.fixit.classList.add('hidden');
+      els.assets.classList.add('hidden');
       log('deploy ' + evt.toe);
       els.bar.style.width = '0%';
       break;
@@ -136,6 +182,9 @@ window.td.onEvent((evt) => {
     case 'warning':
       log('WARNING: ' + evt.message, 'err');
       showFixit(evt, 'warning');
+      break;
+    case 'assets':
+      renderAssets(evt.missing || []);
       break;
     case 'watch':
       els.watch.checked = !!evt.enabled;
@@ -229,5 +278,7 @@ fm.go.onclick = () => {
   if (s.key) els.key.value = s.key;
   if (s.skipUnsupported) els.skipUnsupported.checked = true;
   if (s.magicChop) els.magicChop.checked = true;
+  if (Array.isArray(s.assetRoots)) assetRoots = s.assetRoots;
+  if (s.assetMap && typeof s.assetMap === 'object') assetMap = s.assetMap;
   if (s.toe) setToe(s.toe);
 })();

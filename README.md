@@ -108,6 +108,25 @@ piece looks frozen. Tick **Magic chop** and td-deploy feeds each unsupported CHO
 a gentle sine wave at a random period, so there's motion to preview while real support is
 added. It's still listed in the log and the fix-it prompt, so nothing is hidden.
 
+### Missing images or movies
+
+If td-deploy can't find an image or movie your project uses, it shows a **test image** in
+its place and lists exactly what's missing and every folder it looked in:
+
+<p align="center">
+  <img src="docs/img/studio-assets.png" width="620"
+       alt="Missing assets panel: not-found files, the folders searched, and fix buttons" />
+</p>
+
+From there you can:
+
+- **Fix the path** in TouchDesigner (the log shows the path it looked for), or
+- **Add a search folder** — point td-deploy at the directory your media lives in, or
+- **Choose a replacement** file for any specific asset.
+
+Then click **Re-deploy**. Your search folders and replacements are remembered for next
+time.
+
 ## Troubleshooting
 
 - **The app can't reach the Pi.** Give the card ~30 s to boot, make sure your computer

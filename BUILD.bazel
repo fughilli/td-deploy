@@ -174,3 +174,10 @@ py_test(
         ":passes",
     ],
 )
+
+py_test(
+    name = "assets_test",
+    srcs = ["tests/assets_test.py"],
+    data = ["//app:deploy_engine/assets.py"],
+    imports = ["."],
+)

@@ -8,4 +8,6 @@ contextBridge.exposeInMainWorld('td', {
   send: (obj) => ipcRenderer.send('command', obj),
   onEvent: (cb) => ipcRenderer.on('sidecar-event', (_e, evt) => cb(evt)),
   copyText: (text) => ipcRenderer.invoke('copy-text', text),
+  pickFile: () => ipcRenderer.invoke('pick-file'),
+  pickDir: () => ipcRenderer.invoke('pick-dir'),
 });
