@@ -33,6 +33,7 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": "dmg",
+      "icon": "build/icon.png",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "notarize": true,
@@ -40,7 +41,8 @@
       "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.png"
     }
   }
 }
