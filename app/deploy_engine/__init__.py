@@ -44,12 +44,27 @@ def deploy(
     service: str = DEFAULT_SERVICE,
     toolchain: Toolchain | None = None,
     artifact_dir: str | None = None,
+    strict_unsupported: bool = True,
+    magic_chop: bool = False,
     progress: Progress = Progress(),
 ) -> dict:
-    """Full pipeline: compile -> finish -> push. Returns {artifact, info, staging}."""
+    """Full pipeline: compile -> finish -> push. Returns {artifact, info, staging}.
+
+    `strict_unsupported=False` enables lenient "warn but continue" — unsupported TOP
+    operators become placeholders instead of raising. `magic_chop=True` drives
+    unsupported CHOPs with random sinusoids so the piece still animates (see
+    `compile_toe`)."""
     art = artifact_dir or tempfile.mkdtemp(prefix="toxc_artifact_")
     info = compile_toe(
-        toe_path, art, target=target, res=res, set_file=set_file, bridge=bridge, progress=progress
+        toe_path,
+        art,
+        target=target,
+        res=res,
+        set_file=set_file,
+        bridge=bridge,
+        strict_unsupported=strict_unsupported,
+        magic_chop=magic_chop,
+        progress=progress,
     )
     finish(art, target, toolchain or default_toolchain(), progress)
     staging = push(art, pi_host, user=user, key=key, service=service, progress=progress)

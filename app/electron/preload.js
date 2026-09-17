@@ -7,4 +7,5 @@ contextBridge.exposeInMainWorld('td', {
   pickKey: () => ipcRenderer.invoke('pick-key'),
   send: (obj) => ipcRenderer.send('command', obj),
   onEvent: (cb) => ipcRenderer.on('sidecar-event', (_e, evt) => cb(evt)),
+  copyText: (text) => ipcRenderer.invoke('copy-text', text),
 });

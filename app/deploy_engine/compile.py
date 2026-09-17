@@ -88,15 +88,31 @@ def compile_toe(
     set_file: list[str] | None = None,
     bridge: str | None = None,
     keep_expanded: str | None = None,
+    strict_unsupported: bool = True,
+    magic_chop: bool = False,
     progress: Progress = Progress(),
 ) -> dict:
-    """Expand + import + optimize + lower + emit into `outdir`. Returns emit info."""
+    """Expand + import + optimize + lower + emit into `outdir`. Returns emit info,
+    including what the engine couldn't handle natively:
+      `unsupported`       — unsupported render-path TOP operators;
+      `unsupported_chops` — unsupported CHOP types feeding parameter expressions;
+      `magic_chops`       — CHOPs replaced with sinusoids (when `magic_chop`).
+
+    When the render path uses an unsupported TOP operator, `strict_unsupported` (default)
+    raises `UnsupportedOperatorError`; set it False for lenient "warn but continue" — the
+    operator degrades to a placeholder (identity passthrough, or a blank testcard source).
+    Unsupported CHOPs never fail the build: they resolve to 0, or — with `magic_chop` —
+    are driven by random sinusoids so the piece still animates. Any of these are surfaced
+    (logged + returned) so the UI can offer a 'fix and file' prompt."""
     from ir.graph import Graph
     from lowering.lower import lower
+    from passes import magic_chop as magic
     from passes.optimize import optimize
 
     os.makedirs(outdir, exist_ok=True)
     workdir = keep_expanded or tempfile.mkdtemp(prefix="toxc_import_")
+
+    unsupported: list[str] = []
 
     # expand + import
     if toe_path.endswith(".json"):
@@ -108,7 +124,45 @@ def compile_toe(
         progress.phase("import", 0.0, os.path.basename(dirroot))
         from importer.from_toeexpand import import_dir
 
-        g = import_dir(dirroot).graph
+        result = import_dir(dirroot)
+        g = result.graph
+        unsupported = list(result.unsupported)
+        for line in result.coverage:
+            progress.log(line)
+
+    # Unsupported CHOPs (LFO/noise/audio/... driving parameter exprs): never fatal — they
+    # resolve to a dead 0, or get random sinusoids in magic-chop mode. Detect BEFORE the
+    # magic rewrite (which inlines + drops them). Reported for the fix-it prompt either way.
+    unsupported_chop_defs = magic.unsupported_chops(g)
+    chop_types = sorted({f"CHOP:{c.get('type', '?')}" for c in unsupported_chop_defs})
+    magic_chops: list[dict] = []
+    if unsupported_chop_defs:
+        if magic_chop:
+            magic_chops = magic.apply(g)
+            for r in magic_chops:
+                progress.log(
+                    f"magic-chop: unsupported CHOP {r['name']} ({r['type']}) driven by "
+                    f"random sinusoids on channel(s) {', '.join(r['channels'])}"
+                )
+        else:
+            names = ", ".join(f"{c['name']} ({c.get('type', '?')})" for c in unsupported_chop_defs)
+            progress.log(
+                f"WARNING: unsupported CHOP(s) {names} resolve to 0 — enable Magic Chop to "
+                "animate them, or add support (fix-it)"
+            )
+
+    if unsupported:
+        # An unmapped render-path operator degrades to a placeholder, which produces
+        # wrong output. By default fail loudly so the UI can offer a fix-it prompt; in
+        # lenient mode, warn and ship the placeholder version.
+        if strict_unsupported:
+            from .fixit import UnsupportedOperatorError
+
+            raise UnsupportedOperatorError(unsupported)
+        progress.log(
+            "WARNING: unsupported operators replaced with placeholders "
+            f"(deploying anyway): {', '.join(unsupported)}"
+        )
 
     # --set-file overrides (match by full id or trailing name)
     for spec in set_file or []:
@@ -133,5 +187,9 @@ def compile_toe(
     from emit_artifact import emit  # from compiler/ (on path)
 
     info = emit(plan, g, outdir)
+    if isinstance(info, dict):
+        info["unsupported"] = unsupported
+        info["unsupported_chops"] = chop_types
+        info["magic_chops"] = magic_chops
     progress.log(f"artifact: {info}")
     return info

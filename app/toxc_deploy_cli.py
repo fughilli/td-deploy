@@ -2,7 +2,8 @@
 """CLI harness for the td-deploy engine (Phase-1 verification).
 
     python app/toxc_deploy_cli.py project.toe --pi tdplayer.local --target gles2 \
-        [--set-file project1/moviefilein1=/path/Banana.tif] [--bridge host.docker.internal:8770]
+        [--set-file project1/moviefilein1=/path/Banana.tif] [--bridge host.docker.internal:8770] \
+        [--skip-unsupported] [--magic-chop]
 
 Compiles the .toe, finishes it for aarch64 on THIS host, and live-updates the Pi.
 In the dev container (no local toeexpand) pass --bridge to expand via the Mac host
@@ -38,6 +39,17 @@ def main() -> int:
     )
     ap.add_argument("--service", default="sbc-tdplayer")
     ap.add_argument("--keep-artifact", default=None, help="write the artifact here (keep it)")
+    ap.add_argument(
+        "--skip-unsupported",
+        action="store_true",
+        help="lenient 'deploy anyway': unsupported TOPs become placeholders + a warning, "
+        "instead of failing the build",
+    )
+    ap.add_argument(
+        "--magic-chop",
+        action="store_true",
+        help="drive unsupported CHOPs with random sinusoids so the piece still animates",
+    )
     args = ap.parse_args()
 
     res = deploy(
@@ -51,6 +63,8 @@ def main() -> int:
         key=args.key,
         service=args.service,
         artifact_dir=args.keep_artifact,
+        strict_unsupported=not args.skip_unsupported,
+        magic_chop=args.magic_chop,
         progress=cli_progress(),
     )
     print(f"[done] live on {args.pi}: {res['staging']}")

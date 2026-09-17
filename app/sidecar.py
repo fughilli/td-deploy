@@ -39,9 +39,11 @@ import os
 import sys
 import threading
 import time
+import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from deploy_engine import Progress, deploy  # noqa: E402
+from deploy_engine.fixit import UnsupportedOperatorError, build_fix_prompt  # noqa: E402
 from deploy_engine.progress import PHASES  # noqa: E402
 
 _out_lock = threading.Lock()
@@ -51,6 +53,57 @@ def emit(obj: dict) -> None:
     with _out_lock:
         sys.stdout.write(json.dumps(obj) + "\n")
         sys.stdout.flush()
+
+
+def _error_event(evt_type: str, exc: Exception, *, action: str, **ctx) -> dict:
+    """Build an error event carrying a copy-paste 'fix and file' agent prompt (message +
+    trace + context), so the UI can offer a one-click fix-it button."""
+    unsupported = exc.operators if isinstance(exc, UnsupportedOperatorError) else None
+    prompt = build_fix_prompt(
+        str(exc),
+        traceback.format_exc(),
+        action=action,
+        unsupported=unsupported,
+        **ctx,
+    )
+    return {
+        "type": evt_type,
+        "message": str(exc),
+        "errorKind": "unsupported_operator" if unsupported else "error",
+        "fixPrompt": prompt,
+    }
+
+
+def _warning_event(unsupported, chops, magic, *, toe=None, target=None, version=None):
+    """A non-blocking warning for a deploy that succeeded but with substitutions —
+    unsupported TOP operators degraded to placeholders and/or unsupported CHOPs resolving
+    to 0 (or driven by magic sinusoids). Carries the same 'fix and file' prompt. Returns
+    None when there's nothing to warn about."""
+    if not unsupported and not chops:
+        return None
+    bits = []
+    if unsupported:
+        bits.append(f"operator(s) replaced by placeholders: {', '.join(unsupported)}")
+    if chops:
+        driver = "driven by magic sinusoids" if magic else "resolving to 0"
+        bits.append(f"CHOP(s) {driver}: {', '.join(chops)}")
+    message = "Deployed with unsupported " + "; ".join(bits) + "."
+    prompt = build_fix_prompt(
+        message,
+        "",
+        action="deploying your project",
+        toe=toe,
+        target=target,
+        version=version,
+        unsupported=unsupported or None,
+        chops=chops or None,
+    )
+    return {
+        "type": "warning",
+        "message": message,
+        "errorKind": "unsupported_operator",
+        "fixPrompt": prompt,
+    }
 
 
 def _overall(phase: str, frac: float) -> float:
@@ -87,6 +140,8 @@ class Sidecar:
             "set_file": [],
             "bridge": os.environ.get("TOXC_HOST"),
             "user": "root",
+            "skip_unsupported": False,  # lenient "warn but continue" mode (TOP ops)
+            "magic_chop": False,  # drive unsupported CHOPs with random sinusoids
             "base_image_tag": _base_image_tag(),
         }
         self.toe: str | None = None
@@ -129,11 +184,35 @@ class Sidecar:
                     bridge=s["bridge"],
                     user=s["user"],
                     key=s["key"],
+                    strict_unsupported=not s.get("skip_unsupported"),
+                    magic_chop=bool(s.get("magic_chop")),
                     progress=self._progress(),
                 )
                 emit({"type": "done", "ok": True, "staging": res["staging"]})
+                info = res.get("info") or {}
+                # Deploy succeeded but the engine made substitutions — surface a
+                # non-blocking warning with the same fix-it prompt.
+                warn = _warning_event(
+                    info.get("unsupported") or [],
+                    info.get("unsupported_chops") or [],
+                    info.get("magic_chops") or [],
+                    toe=toe,
+                    target=s.get("target"),
+                    version=s.get("base_image_tag"),
+                )
+                if warn:
+                    emit(warn)
             except Exception as e:  # noqa: BLE001 - surface every failure to the UI
-                emit({"type": "error", "message": str(e)})
+                emit(
+                    _error_event(
+                        "error",
+                        e,
+                        action="deploying your project",
+                        toe=toe,
+                        target=s.get("target"),
+                        version=s.get("base_image_tag"),
+                    )
+                )
 
     def request_deploy(self) -> None:
         self._deploy_req.set()
@@ -206,7 +285,7 @@ class Sidecar:
             )
             emit({"type": "flash_done", "disk": disk.to_dict()})
         except Exception as e:  # noqa: BLE001 - surface to UI
-            emit({"type": "flash_error", "message": str(e)})
+            emit(_error_event("flash_error", e, action="flashing an SD card"))
 
     def start_flash(self, disk_id: str, tag: str, image: str | None) -> None:
         threading.Thread(target=self._flash_worker, args=(disk_id, tag, image), daemon=True).start()
