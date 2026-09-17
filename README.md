@@ -71,8 +71,9 @@ offers a one-click way to get it fixed.
 
 ### Get missing operators added — one click
 
-Whenever a deploy or flash fails (most often because a project uses an operator that
-isn't supported yet), Studio shows a **Copy fix-it prompt** button:
+Whenever a deploy fails — or finishes but the engine had to substitute something it
+doesn't support yet (an operator or a CHOP) — Studio calls it out in the **Log** and
+shows a **Copy fix-it prompt** button:
 
 <p align="center">
   <img src="docs/img/studio-fixit.png" width="620"
@@ -89,6 +90,23 @@ Paste that into an AI coding assistant (Claude Code, Cursor, ChatGPT, …) and i
 You don't have to write any code — you click **Copy**, paste, and approve the result. If
 you haven't set up a GitHub account or credentials, the prompt tells the assistant to
 walk you through forking the project and signing in first.
+
+### Or deploy anyway
+
+If you'd rather watch the rest of your project run while an operator is still unsupported,
+tick **Skip unsupported operators (deploy anyway)** in the settings. Instead of stopping,
+td-deploy swaps each unsupported operator for a placeholder — an effect in the chain
+passes its input through untouched; a source with nothing to pass through becomes a blank
+test image — then deploys and shows the fix-it prompt as a non-blocking **warning** so you
+can still get it added.
+
+### Magic chop — keep it moving
+
+Projects often drive parameters from CHOPs td-deploy can't run yet — an LFO, a noise or
+pattern generator, an audio-reactive channel. Left alone, those inputs sit at zero and the
+piece looks frozen. Tick **Magic chop** and td-deploy feeds each unsupported CHOP channel
+a gentle sine wave at a random period, so there's motion to preview while real support is
+added. It's still listed in the log and the fix-it prompt, so nothing is hidden.
 
 ## Troubleshooting
 

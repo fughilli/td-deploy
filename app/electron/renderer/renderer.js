@@ -9,6 +9,7 @@ const els = {
   dot: $('status-dot'),
   fixit: $('fixit'), fixitTitle: $('fixit-title'), fixitMsg: $('fixit-msg'),
   fixitCopy: $('fixit-copy'), fixitCopied: $('fixit-copied'),
+  skipUnsupported: $('skip-unsupported'), magicChop: $('magic-chop'),
 };
 
 const STORE = 'td-deploy-settings';
@@ -18,7 +19,10 @@ function loadSettings() {
   try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch (e) { return {}; }
 }
 function saveSettings() {
-  const s = { pi: els.pi.value, target: els.target.value, key: els.key.value, toe: state.toe };
+  const s = {
+    pi: els.pi.value, target: els.target.value, key: els.key.value, toe: state.toe,
+    skipUnsupported: els.skipUnsupported.checked, magicChop: els.magicChop.checked,
+  };
   localStorage.setItem(STORE, JSON.stringify(s));
   return s;
 }
@@ -26,6 +30,7 @@ function pushSettings() {
   const s = saveSettings();
   window.td.send({ cmd: 'set_settings', settings: {
     pi: s.pi, target: s.target, key: s.key || null,
+    skip_unsupported: !!s.skipUnsupported, magic_chop: !!s.magicChop,
   }});
 }
 
@@ -46,12 +51,16 @@ function setBusy(busy, phase) {
 
 let fixPrompt = null;
 
-function showFixit(evt, isFlash) {
+function showFixit(evt, kind) {  // kind: 'error' | 'warning'
   fixPrompt = evt.fixPrompt || null;
   if (!fixPrompt) { els.fixit.classList.add('hidden'); return; }
-  els.fixitTitle.textContent = evt.errorKind === 'unsupported_operator'
-    ? 'Unsupported TouchDesigner operator'
-    : (isFlash ? 'Flashing failed' : 'Deploy failed');
+  const warn = kind === 'warning';
+  els.fixit.classList.toggle('warn', warn);
+  const unsupported = evt.errorKind === 'unsupported_operator';
+  els.fixitTitle.textContent = unsupported
+    ? (warn ? 'Unsupported operators — deployed with placeholders'
+            : 'Unsupported TouchDesigner operator')
+    : (warn ? 'Warning' : 'Something went wrong');
   els.fixitMsg.textContent = evt.message || '';
   els.fixitCopied.classList.add('hidden');
   els.fixit.classList.remove('hidden');
@@ -86,7 +95,8 @@ els.deploy.onclick = () => {
 els.watch.onchange = () => {
   window.td.send({ cmd: 'watch', enable: els.watch.checked, toe: state.toe });
 };
-for (const el of [els.pi, els.target, els.key]) el.onchange = pushSettings;
+for (const el of [els.pi, els.target, els.key, els.skipUnsupported, els.magicChop])
+  el.onchange = pushSettings;
 
 // --- sidecar events -> UI ---
 window.td.onEvent((evt) => {
@@ -121,7 +131,11 @@ window.td.onEvent((evt) => {
       setBusy(false);
       els.phase.textContent = 'Error';
       log('ERROR: ' + evt.message, 'err');
-      showFixit(evt, false);
+      showFixit(evt, 'error');
+      break;
+    case 'warning':
+      log('WARNING: ' + evt.message, 'err');
+      showFixit(evt, 'warning');
       break;
     case 'watch':
       els.watch.checked = !!evt.enabled;
@@ -150,7 +164,7 @@ window.td.onEvent((evt) => {
       fm.cancel.disabled = false;
       fm.phase.textContent = 'Error';
       log('FLASH ERROR: ' + evt.message, 'err');
-      showFixit(evt, true);
+      showFixit(evt, 'error');
       break;
   }
 });
@@ -213,5 +227,7 @@ fm.go.onclick = () => {
   if (s.pi) els.pi.value = s.pi;
   if (s.target) els.target.value = s.target;
   if (s.key) els.key.value = s.key;
+  if (s.skipUnsupported) els.skipUnsupported.checked = true;
+  if (s.magicChop) els.magicChop.checked = true;
   if (s.toe) setToe(s.toe);
 })();

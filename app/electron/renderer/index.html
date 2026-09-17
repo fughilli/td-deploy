@@ -59,6 +59,16 @@
       <button id="pick-key">…</button>
     </div>
     <div class="row">
+      <label class="toggle" title="Deploy even if the project uses operators td-deploy doesn't support yet — they're replaced with placeholders and you get a warning.">
+        <input type="checkbox" id="skip-unsupported" /> Skip unsupported operators (deploy anyway)
+      </label>
+    </div>
+    <div class="row">
+      <label class="toggle" title="Drive unsupported CHOPs (LFO, noise, audio-reactive, …) with random sinusoids so the piece still animates.">
+        <input type="checkbox" id="magic-chop" /> Magic chop (fake unsupported CHOPs with sinusoids)
+      </label>
+    </div>
+    <div class="row">
       <button id="flash">Flash SD card…</button>
     </div>
   </section>

@@ -29,8 +29,8 @@ class UnsupportedOperatorError(Exception):
         )
 
 
-_UNSUPPORTED_GUIDANCE = """\
-This failure is an **unsupported TouchDesigner operator**: {ops}. td-deploy only
+_TOP_GUIDANCE = """\
+The project uses **unsupported TouchDesigner TOP operator(s)**: {ops}. td-deploy only
 understands a subset of TouchDesigner's operators — see the "Supported operators" table
 in `DEVELOPERS.md`. To add support:
 
@@ -45,6 +45,19 @@ in `DEVELOPERS.md`. To add support:
    `tools/gen_supported_ops.py`, then run `python3 tools/gen_supported_ops.py` to refresh
    the supported-operators list in `DEVELOPERS.md`.
 4. Add a test under `tests/` that imports and lowers a small graph using the operator."""
+
+_CHOP_GUIDANCE = """\
+The project drives parameters from **unsupported CHOP(s)**: {chops}. td-deploy evaluates
+only a few CHOP types (constant, speed, and passthrough-style null/select); others resolve
+to 0 (or to a placeholder sinusoid in "magic chop" mode). To add real support:
+
+1. Build the CHOP's def (its `inputs`/`channels`) in `importer/from_toeexpand.py`
+   (`_collect_chops`), the way `constant` is handled.
+2. Evaluate it per frame in the runtime: add a match arm in `runtime_rs/src/main.rs`
+   `eval_chops` alongside the `constant` / `speed` arms (and/or lower it natively via
+   `compiler/chop_lower.py`). `absTime.seconds`, `absTime.frame`, and a per-frame `dt`
+   are available to expressions.
+3. Add a test under `tests/` that exercises the CHOP feeding a parameter expression."""
 
 _GENERIC_GUIDANCE = """\
 Diagnose the failure from the trace above. Find the root cause in the pipeline
@@ -129,14 +142,17 @@ def build_fix_prompt(
     target: str | None = None,
     version: str | None = None,
     unsupported=None,
+    chops=None,
 ) -> str:
-    """Build the copy-paste agent prompt for a failure. `unsupported`, when given, is the
-    list of `FAMILY:optype` strings that steers the guidance toward adding operator
-    support."""
+    """Build the copy-paste agent prompt for a failure or degradation. `unsupported` is
+    the list of `FAMILY:optype` TOP operators; `chops` the list of `CHOP:type` control
+    operators — either steers the guidance toward adding operator support."""
+    parts = []
     if unsupported:
-        guidance = _UNSUPPORTED_GUIDANCE.format(ops=", ".join(f"`{o}`" for o in unsupported))
-    else:
-        guidance = _GENERIC_GUIDANCE
+        parts.append(_TOP_GUIDANCE.format(ops=", ".join(f"`{o}`" for o in unsupported)))
+    if chops:
+        parts.append(_CHOP_GUIDANCE.format(chops=", ".join(f"`{c}`" for c in chops)))
+    guidance = "\n\n".join(parts) if parts else _GENERIC_GUIDANCE
     return _TEMPLATE.format(
         action=action,
         error_summary=(error_message or "(no message)").strip().replace("\n", "\n    "),

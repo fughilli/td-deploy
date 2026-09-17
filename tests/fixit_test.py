@@ -55,6 +55,21 @@ class BuildFixPromptTest(unittest.TestCase):
         self.assertNotIn("OP_MAP", p)
         self.assertIn("regression test", p)
 
+    def test_chop_guidance(self):
+        p = fixit.build_fix_prompt("nope", "trace", chops=["CHOP:lfo", "CHOP:noise"])
+        self.assertIn("CHOP:lfo", p)
+        self.assertIn("CHOP:noise", p)
+        self.assertIn("eval_chops", p)  # points the agent at the runtime CHOP eval
+
+    def test_combined_top_and_chop_guidance(self):
+        p = fixit.build_fix_prompt(
+            "nope", "trace", unsupported=["TOP:feedback"], chops=["CHOP:lfo"]
+        )
+        self.assertIn("OP_MAP", p)  # TOP guidance
+        self.assertIn("eval_chops", p)  # CHOP guidance
+        self.assertIn("TOP:feedback", p)
+        self.assertIn("CHOP:lfo", p)
+
 
 if __name__ == "__main__":
     unittest.main()

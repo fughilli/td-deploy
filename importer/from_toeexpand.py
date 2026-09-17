@@ -342,7 +342,11 @@ def import_dir(dirroot: str) -> ImportResult:
         kernel = OP_MAP.get(key, "PASSTHROUGH?")
         if kernel == "PASSTHROUGH?":
             unsupported.add(f"{op.family}:{op.optype}")
-            kernel = None  # degrade to passthrough
+            # Degrade so the graph still renders if the deploy path chooses to continue
+            # (lenient mode): identity on input 0 when there's something to pass through,
+            # else a blank testcard `image_in` source (a "null" placeholder — the runtime
+            # already synths a testcard for a pathless image_in).
+            kernel = None if top_ins else "image_in"
         params = dict(op.params)
         if kernel == "glsl_top":
             # resolve pixeldat -> its .text shader
