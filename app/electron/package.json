@@ -12,9 +12,9 @@
     "dist": "electron-builder"
   },
   "devDependencies": {
-    "electron": "^31.3.0",
-    "electron-builder": "^25.1.8",
-    "electronmon": "^2.0.3"
+    "electron": "^44.4.1",
+    "electron-builder": "^26.15.3",
+    "electronmon": "^2.0.4"
   },
   "build": {
     "appId": "com.fughilli.tddeploystudio",

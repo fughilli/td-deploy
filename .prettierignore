@@ -6,4 +6,5 @@ deploy/prebuilt/
 MODULE.bazel.lock
 requirements.lock
 runtime_rs/Cargo.lock
+app/electron/package-lock.json
 app/electron/node_modules/
