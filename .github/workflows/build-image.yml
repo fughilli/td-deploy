@@ -104,10 +104,25 @@ jobs:
         id: tag
         run: echo "tag=${{ github.event.release.tag_name || github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
 
+      # Same transient release-upload failures as build-app (the .sha256 sidecar hit
+      # "Error creating asset temp dir" on v0.2.0 and only landed on a manual re-run),
+      # so upload with the CLI and retry rather than failing the whole image build.
       - name: Attach image to the release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          files: |
-            out/tdplayer-pi3.img.zst
-            out/tdplayer-pi3.img.zst.sha256
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          for f in out/tdplayer-pi3.img.zst out/tdplayer-pi3.img.zst.sha256; do
+            for attempt in 1 2 3 4 5; do
+              echo "uploading $(basename "$f") (attempt $attempt)"
+              if gh release upload "$TAG" "$f" --clobber; then
+                break
+              fi
+              if [ "$attempt" -eq 5 ]; then
+                echo "::error::failed to upload $f after 5 attempts" >&2
+                exit 1
+              fi
+              sleep $((attempt * 30))
+            done
+          done

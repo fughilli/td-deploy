@@ -96,10 +96,37 @@ jobs:
             app/electron/dist/*.exe
           if-no-files-found: warn
 
+      # Attached with the GitHub CLI and explicit retries rather than a marketplace
+      # action: release-asset uploads of this size fail transiently on GitHub's side
+      # and the action reports the first failure as fatal. Observed on v0.2.0 — the
+      # 290 MB .dmg died instantly on "Error creating asset temp dir" (a GitHub API
+      # message, not the action's) and the 238 MB .exe on "other side closed" after
+      # 31 minutes, while the builds themselves were fine. bash runs on the Windows
+      # runner too, so one step covers both matrix legs.
       - name: Attach installers to the release
         if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            app/electron/dist/*.dmg
-            app/electron/dist/*.exe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(app/electron/dist/*.dmg app/electron/dist/*.exe)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no installers found under app/electron/dist" >&2
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            for attempt in 1 2 3 4 5; do
+              echo "uploading $(basename "$f") (attempt $attempt)"
+              if gh release upload "$TAG" "$f" --clobber; then
+                break
+              fi
+              if [ "$attempt" -eq 5 ]; then
+                echo "::error::failed to upload $f after 5 attempts" >&2
+                exit 1
+              fi
+              sleep $((attempt * 30))
+            done
+          done
