@@ -94,16 +94,24 @@ function watchSidecarDev() {
   }
 }
 
+// The app icon (electron-builder bakes build/icon.png into the packaged app; this is for
+// the window/dock in `npm start` / bazel run //app:dev, where there's no bundle icon).
+const APP_ICON = path.join(__dirname, 'build', 'icon.png');
+
 function createWindow() {
   win = new BrowserWindow({
     width: 760, height: 620, minWidth: 620, minHeight: 480,
     title: 'td-deploy Studio',
+    icon: fs.existsSync(APP_ICON) ? APP_ICON : undefined, // Windows/Linux window icon
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 
 app.whenReady().then(() => {
+  if (process.platform === 'darwin' && app.dock && fs.existsSync(APP_ICON)) {
+    try { app.dock.setIcon(APP_ICON); } catch (e) { /* dev-only nicety */ }
+  }
   createWindow();
   startSidecar();
   if (process.env.TOXC_DEV) watchSidecarDev();

@@ -1,4 +1,8 @@
-# td-deploy
+<p align="center">
+  <img src="docs/img/logo.png" width="180" alt="td-deploy logo" />
+</p>
+
+<h1 align="center">td-deploy</h1>
 
 [![CI](https://github.com/fughilli/td-deploy/actions/workflows/test.yml/badge.svg)](https://github.com/fughilli/td-deploy/actions/workflows/test.yml)
 [![Latest release](https://img.shields.io/github/v/release/fughilli/td-deploy?sort=semver&display_name=tag&label=release&color=4f8cff)](https://github.com/fughilli/td-deploy/releases/latest)
