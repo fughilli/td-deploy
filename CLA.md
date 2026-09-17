@@ -1,7 +1,7 @@
 # Individual Contributor License Agreement
 
 Thank you for your interest in contributing to **td-deploy** (the "Project"), maintained
-by fughilli (the "Project Owner"). This Contributor License Agreement ("Agreement")
+by Fughilli Industries, LLC (the "Project Owner"). This Contributor License Agreement ("Agreement")
 documents the rights granted by contributors to the Project. This is a standard
 agreement adapted from the Apache Software Foundation Individual CLA (v2.0).
 

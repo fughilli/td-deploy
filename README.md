@@ -74,11 +74,11 @@ that uses the Pi's hardware GPU.
 
 ## License & disclaimer
 
-td-deploy is released under the [MIT License](LICENSE). The software is provided
-**"as is", without warranty of any kind**, express or implied. To the maximum extent
-permitted by law, the authors and copyright holders are not liable for any claim,
-damages, or other liability arising from the use of this software. Use it at your own
-risk.
+td-deploy is released under the [MIT License](LICENSE) by Fughilli Industries, LLC. The
+software is provided **"as is", without warranty of any kind**, express or implied. To
+the maximum extent permitted by law, Fughilli Industries, LLC is not liable for any
+claim, damages, or other liability arising from the use of this software. Use it at your
+own risk.
 
 Contributions are welcome — see the [Contributor License Agreement](CLA.md).
 
