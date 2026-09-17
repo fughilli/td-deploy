@@ -282,10 +282,11 @@ struct MidiParser {
 }
 
 impl MidiParser {
-    // Returns (control_or_note, raw_value 0..127, is_note). RAW (not normalized):
-    // TD's MIDI In CHOP is un-normalized, and exprs divide by 127 themselves
-    // (e.g. `op('midiin1')[0][0]/127 - 0.5`).
-    fn push(&mut self, b: u8) -> Option<(u8, f64, bool)> {
+    // Returns (channel 0-15, control_or_note, raw_value 0..127, is_note). RAW (not
+    // normalized): TD's MIDI In CHOP is un-normalized, and exprs divide by 127
+    // themselves (e.g. `op('midiin1')[0][0]/127 - 0.5`). The channel lets us name
+    // the store the way TD does (chNctrlM), N = 1-based MIDI channel.
+    fn push(&mut self, b: u8) -> Option<(u8, u8, f64, bool)> {
         if b >= 0xF8 {
             return None; // system realtime: single byte, ignore (may interleave)
         }
@@ -300,16 +301,17 @@ impl MidiParser {
         self.data[self.have] = b;
         self.have += 1;
         let hi = self.status & 0xF0;
+        let chan = self.status & 0x0F; // MIDI channel 0-15
         let need = if hi == 0xC0 || hi == 0xD0 { 1 } else { 2 };
         if self.have < need {
             return None;
         }
         self.have = 0; // keep status for running status
         match hi {
-            0xB0 => Some((self.data[0], self.data[1] as f64, false)),
+            0xB0 => Some((chan, self.data[0], self.data[1] as f64, false)),
             // note-on with velocity 0 is a note-off
-            0x90 => Some((self.data[0], if self.data[1] == 0 { 0.0 } else { self.data[1] as f64 }, true)),
-            0x80 => Some((self.data[0], 0.0, true)),
+            0x90 => Some((chan, self.data[0], if self.data[1] == 0 { 0.0 } else { self.data[1] as f64 }, true)),
+            0x80 => Some((chan, self.data[0], 0.0, true)),
             _ => None,
         }
     }
@@ -341,12 +343,15 @@ fn start_midi(name: String, device: Option<String>, store: Chops) {
             if n == 0 {
                 break; // EOF: device unplugged — fall through to reopen
             }
-            if let Some((ctrl, v, is_note)) = parser.push(byte[0]) {
+            if let Some((chan, ctrl, v, is_note)) = parser.push(byte[0]) {
+                let td_ch = chan + 1; // TD's MIDI In CHOP numbers channels from 1
                 if is_note {
-                    midi_set(&store, &name, format!("n{ctrl}"), v);
+                    midi_set(&store, &name, format!("ch{td_ch}note{ctrl}"), v); // TD chNnoteM
+                    midi_set(&store, &name, format!("n{ctrl}"), v); // legacy op('midiin1')['nN']
                 } else {
-                    midi_set(&store, &name, format!("cc{ctrl}"), v); // op('midiin1')['ccN']
-                    midi_set(&store, &name, format!("{ctrl}"), v); // op('midiin1')[N] (channel = CC #)
+                    midi_set(&store, &name, format!("ch{td_ch}ctrl{ctrl}"), v); // TD chNctrlM
+                    midi_set(&store, &name, format!("cc{ctrl}"), v); // legacy op('midiin1')['ccN']
+                    midi_set(&store, &name, format!("{ctrl}"), v); // legacy op('midiin1')[N] (= CC #)
                 }
             }
         }
@@ -359,7 +364,8 @@ fn start_midi(name: String, device: Option<String>, store: Chops) {
 mod midi_tests {
     use super::MidiParser;
 
-    fn drive(bytes: &[u8]) -> Vec<(u8, f64, bool)> {
+    // (channel, control_or_note, raw_value, is_note)
+    fn drive(bytes: &[u8]) -> Vec<(u8, u8, f64, bool)> {
         let mut p = MidiParser::default();
         bytes.iter().filter_map(|&b| p.push(b)).collect()
     }
@@ -367,26 +373,34 @@ mod midi_tests {
     #[test]
     fn cc_is_raw() {
         // CC13 = 127 (raw; exprs normalize themselves via /127). false = not a note.
-        assert_eq!(drive(&[0xB0, 13, 127]), vec![(13, 127.0, false)]);
+        // 0xB0 = CC on channel 0 -> TD ch1.
+        assert_eq!(drive(&[0xB0, 13, 127]), vec![(0, 13, 127.0, false)]);
+    }
+
+    #[test]
+    fn cc_channel_is_captured() {
+        // 0xB1 = CC on channel 1 (TD ch2). The MidiMix's ch1ctrl17/ch1ctrl21 come
+        // in on channel 0 (0xB0); this checks a non-zero channel isn't masked off.
+        assert_eq!(drive(&[0xB1, 17, 100]), vec![(1, 17, 100.0, false)]);
     }
 
     #[test]
     fn running_status_repeats_cc() {
         // status byte sent once, then two data pairs (running status).
         let out = drive(&[0xB0, 1, 64, 2, 0]);
-        assert_eq!(out, vec![(1, 64.0, false), (2, 0.0, false)]);
+        assert_eq!(out, vec![(0, 1, 64.0, false), (0, 2, 0.0, false)]);
     }
 
     #[test]
     fn note_on_zero_velocity_is_note_off() {
         let out = drive(&[0x90, 60, 100, 0x90, 60, 0]);
-        assert_eq!(out, vec![(60, 100.0, true), (60, 0.0, true)]);
+        assert_eq!(out, vec![(0, 60, 100.0, true), (0, 60, 0.0, true)]);
     }
 
     #[test]
     fn realtime_clock_interleaves_without_breaking_message() {
         // 0xF8 (clock) between the CC data bytes must be ignored, not corrupt it.
-        assert_eq!(drive(&[0xB0, 13, 0xF8, 100]), vec![(13, 100.0, false)]);
+        assert_eq!(drive(&[0xB0, 13, 0xF8, 100]), vec![(0, 13, 100.0, false)]);
     }
 }
 
