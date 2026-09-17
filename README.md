@@ -4,6 +4,7 @@
 [![Latest release](https://img.shields.io/github/v/release/fughilli/td-deploy?sort=semver&display_name=tag&label=release&color=4f8cff)](https://github.com/fughilli/td-deploy/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/fughilli/td-deploy/total?label=downloads&color=37c06a)](https://github.com/fughilli/td-deploy/releases)
 ![Platforms](https://img.shields.io/badge/app-macOS%20%7C%20Windows-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 **Run your TouchDesigner visuals on a Raspberry Pi — no TouchDesigner on the Pi, no
 command line.** Point the **td-deploy Studio** app at your `.toe` project; it compiles
@@ -41,8 +42,9 @@ card from the list of removable disks, and hit **Erase & Flash**.
        alt="Flash SD card dialog — choose a removable disk and flash the Pi image" />
 </p>
 
-> ⚠️ Flashing **erases** the selected card. Only removable disks are listed, so you
-> can't overwrite your system drive.
+> ⚠️ Flashing **permanently erases** the selected disk. The app lists only removable
+> disks to help you avoid picking the wrong one, but **always double-check the device
+> name and size before you flash** — you are responsible for choosing the right disk.
 
 Put the card in the Pi, connect HDMI + power, and it boots into the player.
 
@@ -69,6 +71,16 @@ you save in TouchDesigner, so you can dial in your visuals against the real hard
 
 Raspberry Pi 3 and Pi 4/5. HDMI output. The player image is a minimal, headless build
 that uses the Pi's hardware GPU.
+
+## License & disclaimer
+
+td-deploy is released under the [MIT License](LICENSE). The software is provided
+**"as is", without warranty of any kind**, express or implied. To the maximum extent
+permitted by law, the authors and copyright holders are not liable for any claim,
+damages, or other liability arising from the use of this software. Use it at your own
+risk.
+
+Contributions are welcome — see the [Contributor License Agreement](CLA.md).
 
 ---
 

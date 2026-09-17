@@ -149,6 +149,13 @@ Presubmit lints run via `prek` against the pinned hooks in `.pre-commit-config.y
 (black, isort, flake8, shellcheck, buildifier, nixpkgs-fmt, prettier, markdownlint).
 Run locally with `prek run --all-files`.
 
+## Contributing
+
+td-deploy is licensed under the [MIT License](LICENSE). Contributions are accepted under
+the [Individual Contributor License Agreement](CLA.md) — by opening a pull request you
+agree to its terms for that contribution. Run `prek run --all-files` before pushing so
+the presubmit lints pass.
+
 ## Regenerating the app screenshots
 
 The README screenshots (`docs/img/studio-*.png`) are rendered from the real
