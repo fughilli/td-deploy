@@ -7,6 +7,8 @@ const els = {
   phase: $('phase'), bar: $('bar-fill'), pi: $('pi'), target: $('target'),
   key: $('key'), pickKey: $('pick-key'), flash: $('flash'), log: $('log'),
   dot: $('status-dot'),
+  fixit: $('fixit'), fixitTitle: $('fixit-title'), fixitMsg: $('fixit-msg'),
+  fixitCopy: $('fixit-copy'), fixitCopied: $('fixit-copied'),
 };
 
 const STORE = 'td-deploy-settings';
@@ -41,6 +43,25 @@ function setBusy(busy, phase) {
   els.dot.className = 'dot ' + (busy ? 'busy' : 'idle');
   els.dot.title = phase || (busy ? 'working' : 'idle');
 }
+
+let fixPrompt = null;
+
+function showFixit(evt, isFlash) {
+  fixPrompt = evt.fixPrompt || null;
+  if (!fixPrompt) { els.fixit.classList.add('hidden'); return; }
+  els.fixitTitle.textContent = evt.errorKind === 'unsupported_operator'
+    ? 'Unsupported TouchDesigner operator'
+    : (isFlash ? 'Flashing failed' : 'Deploy failed');
+  els.fixitMsg.textContent = evt.message || '';
+  els.fixitCopied.classList.add('hidden');
+  els.fixit.classList.remove('hidden');
+}
+
+els.fixitCopy.onclick = async () => {
+  if (!fixPrompt) return;
+  await window.td.copyText(fixPrompt);
+  els.fixitCopied.classList.remove('hidden');
+};
 
 function setToe(toe) {
   state.toe = toe;
@@ -79,6 +100,7 @@ window.td.onEvent((evt) => {
     case 'start':
       setBusy(true, 'start');
       els.log.textContent = '';
+      els.fixit.classList.add('hidden');
       log('deploy ' + evt.toe);
       els.bar.style.width = '0%';
       break;
@@ -99,6 +121,7 @@ window.td.onEvent((evt) => {
       setBusy(false);
       els.phase.textContent = 'Error';
       log('ERROR: ' + evt.message, 'err');
+      showFixit(evt, false);
       break;
     case 'watch':
       els.watch.checked = !!evt.enabled;
@@ -127,6 +150,7 @@ window.td.onEvent((evt) => {
       fm.cancel.disabled = false;
       fm.phase.textContent = 'Error';
       log('FLASH ERROR: ' + evt.message, 'err');
+      showFixit(evt, true);
       break;
   }
 });

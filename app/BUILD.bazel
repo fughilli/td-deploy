@@ -16,3 +16,7 @@ sh_binary(
     name = "dev",
     srcs = ["dev.sh"],
 )
+
+# The fix-it prompt builder is pure stdlib; expose it so //:fixit_test can load it by
+# path without depending on the whole (unbazeled) deploy_engine package.
+exports_files(["deploy_engine/fixit.py"])

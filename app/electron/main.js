@@ -3,7 +3,7 @@
 // renderer, and provides the native .toe file dialog.
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, clipboard } = require('electron');
 const { spawn } = require('child_process');
 const readline = require('readline');
 const path = require('path');
@@ -130,3 +130,10 @@ ipcMain.handle('pick-key', async () => {
 });
 
 ipcMain.on('command', (_e, obj) => toSidecar(obj));
+
+// Copy the fix-it prompt to the clipboard (renderer file:// isn't a secure context, so
+// navigator.clipboard is unavailable — go through the main-process clipboard).
+ipcMain.handle('copy-text', (_e, text) => {
+  clipboard.writeText(String(text ?? ''));
+  return true;
+});

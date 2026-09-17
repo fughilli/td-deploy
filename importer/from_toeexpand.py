@@ -194,10 +194,13 @@ def _parse_compinputs(dirroot: str, comp_path: str) -> dict[str, str]:
 
 # --- import --------------------------------------------------------------------
 class ImportResult:
-    def __init__(self, graph: Graph, coverage: list[str], sink: str):
+    def __init__(self, graph: Graph, coverage: list[str], sink: str, unsupported=None):
         self.graph = graph
         self.coverage = coverage
         self.sink = sink
+        # `FAMILY:optype` strings for render-path ops with no OP_MAP entry (degraded to
+        # passthrough). Surfaced so the deploy path can turn them into a real error.
+        self.unsupported = sorted(unsupported or [])
 
 
 def _effective_inputs(ops: dict[str, RawOp], compinputs: dict, path: str) -> list[str]:
@@ -410,4 +413,4 @@ def import_dir(dirroot: str) -> ImportResult:
         f"{sorted(unsupported) or 'none'}"
     )
     coverage.insert(0, covline)
-    return ImportResult(g, coverage, sink)
+    return ImportResult(g, coverage, sink, unsupported=unsupported)

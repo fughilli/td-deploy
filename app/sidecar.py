@@ -39,9 +39,11 @@ import os
 import sys
 import threading
 import time
+import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from deploy_engine import Progress, deploy  # noqa: E402
+from deploy_engine.fixit import UnsupportedOperatorError, build_fix_prompt  # noqa: E402
 from deploy_engine.progress import PHASES  # noqa: E402
 
 _out_lock = threading.Lock()
@@ -51,6 +53,25 @@ def emit(obj: dict) -> None:
     with _out_lock:
         sys.stdout.write(json.dumps(obj) + "\n")
         sys.stdout.flush()
+
+
+def _error_event(evt_type: str, exc: Exception, *, action: str, **ctx) -> dict:
+    """Build an error event carrying a copy-paste 'fix and file' agent prompt (message +
+    trace + context), so the UI can offer a one-click fix-it button."""
+    unsupported = exc.operators if isinstance(exc, UnsupportedOperatorError) else None
+    prompt = build_fix_prompt(
+        str(exc),
+        traceback.format_exc(),
+        action=action,
+        unsupported=unsupported,
+        **ctx,
+    )
+    return {
+        "type": evt_type,
+        "message": str(exc),
+        "errorKind": "unsupported_operator" if unsupported else "error",
+        "fixPrompt": prompt,
+    }
 
 
 def _overall(phase: str, frac: float) -> float:
@@ -133,7 +154,16 @@ class Sidecar:
                 )
                 emit({"type": "done", "ok": True, "staging": res["staging"]})
             except Exception as e:  # noqa: BLE001 - surface every failure to the UI
-                emit({"type": "error", "message": str(e)})
+                emit(
+                    _error_event(
+                        "error",
+                        e,
+                        action="deploying your project",
+                        toe=toe,
+                        target=s.get("target"),
+                        version=s.get("base_image_tag"),
+                    )
+                )
 
     def request_deploy(self) -> None:
         self._deploy_req.set()
@@ -193,7 +223,7 @@ class Sidecar:
             )
             emit({"type": "flash_done", "disk": disk.to_dict()})
         except Exception as e:  # noqa: BLE001 - surface to UI
-            emit({"type": "flash_error", "message": str(e)})
+            emit(_error_event("flash_error", e, action="flashing an SD card"))
 
     def start_flash(self, disk_id: str, tag: str, image: str | None) -> None:
         threading.Thread(target=self._flash_worker, args=(disk_id, tag, image), daemon=True).start()

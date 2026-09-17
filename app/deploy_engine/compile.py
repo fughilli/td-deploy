@@ -108,7 +108,16 @@ def compile_toe(
         progress.phase("import", 0.0, os.path.basename(dirroot))
         from importer.from_toeexpand import import_dir
 
-        g = import_dir(dirroot).graph
+        result = import_dir(dirroot)
+        g = result.graph
+        for line in result.coverage:
+            progress.log(line)
+        if result.unsupported:
+            # A render-path operator we don't map yet would silently degrade to a
+            # passthrough (wrong output). Fail loudly so the UI can offer a fix-it prompt.
+            from .fixit import UnsupportedOperatorError
+
+            raise UnsupportedOperatorError(result.unsupported)
 
     # --set-file overrides (match by full id or trailing name)
     for spec in set_file or []:

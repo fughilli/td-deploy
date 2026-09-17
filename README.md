@@ -65,8 +65,30 @@ File In, GLSL, Transform, Crop, Level — plus OSC In and MIDI In for live contr
 full, always-current list lives in the developer docs:
 [**Supported operators**](DEVELOPERS.md#supported-operators).
 
-If your project uses an operator td-deploy doesn't recognize yet, the **Log** panel calls
-it out by name rather than failing silently, so you know exactly what's missing.
+If your project uses an operator td-deploy doesn't recognize yet, the deploy stops and
+names the operator in the **Log** — it never silently ships wrong output — and the app
+offers a one-click way to get it fixed.
+
+### Get missing operators added — one click
+
+Whenever a deploy or flash fails (most often because a project uses an operator that
+isn't supported yet), Studio shows a **Copy fix-it prompt** button:
+
+<p align="center">
+  <img src="docs/img/studio-fixit.png" width="620"
+       alt="Studio showing an unsupported-operator error with a Copy fix-it prompt button" />
+</p>
+
+Click it to copy a ready-made prompt that already includes the error and its details.
+Paste that into an AI coding assistant (Claude Code, Cursor, ChatGPT, …) and it will:
+
+- diagnose the problem in the td-deploy source,
+- add support for the missing operator (or fix the bug), and
+- open a pull request against the project so the fix ships for everyone.
+
+You don't have to write any code — you click **Copy**, paste, and approve the result. If
+you haven't set up a GitHub account or credentials, the prompt tells the assistant to
+walk you through forking the project and signing in first.
 
 ## Troubleshooting
 

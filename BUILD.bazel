@@ -157,3 +157,10 @@ py_test(
         ":lowering",
     ],
 )
+
+py_test(
+    name = "fixit_test",
+    srcs = ["tests/fixit_test.py"],
+    data = ["//app:deploy_engine/fixit.py"],
+    imports = ["."],
+)

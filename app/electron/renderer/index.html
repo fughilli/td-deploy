@@ -30,6 +30,19 @@
     <div class="bar"><div id="bar-fill"></div></div>
   </section>
 
+  <section id="fixit" class="card fixit hidden">
+    <div class="fixit-head">⚠︎ <span id="fixit-title">Something went wrong</span></div>
+    <p id="fixit-msg" class="fixit-msg"></p>
+    <p class="fixit-help">
+      Copy a ready-made prompt (with the error details) and paste it into an AI coding
+      assistant — it will fix the issue and open a pull request to add support upstream.
+    </p>
+    <div class="row">
+      <button id="fixit-copy" class="primary">Copy fix-it prompt</button>
+      <span id="fixit-copied" class="muted hidden">Copied ✓</span>
+    </div>
+  </section>
+
   <section class="card settings">
     <div class="row">
       <label>Pi host <input id="pi" type="text" value="tdplayer.local" /></label>
