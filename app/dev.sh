@@ -22,6 +22,28 @@ cd "$repo/app/electron"
 # Install dev deps (incl. electronmon) only when missing.
 [ -x node_modules/.bin/electronmon ] || npm install
 
+elapp="node_modules/electron/dist/Electron.app"
+elbin="$elapp/Contents/MacOS/Electron"
+# The Electron binary can be MISSING even when the rest of node_modules is there:
+# a failed postinstall download, or — on macOS — a prior Gatekeeper "malware"
+# verdict that outright removed the binary. Re-fetch so electronmon can spawn it.
+if [ ! -x "$elbin" ]; then
+  echo "app/dev: Electron binary missing — reinstalling electron…" >&2
+  rm -rf node_modules/electron && npm install
+fi
+
+# macOS refuses to launch npm's prebuilt dev Electron with "…contains malware"
+# (and can delete the binary). On Sequoia+, clearing quarantine isn't enough —
+# Apple Silicon requires a VALID signature to exec, and the downloaded binary's
+# is missing/broken, which reads as malware. So clear ALL xattrs AND ad-hoc
+# re-sign the bundle before launch. (The *packaged* app is separately
+# signed/notarized; this only touches the dev binary.) Idempotent + non-fatal.
+if [ "$(uname -s)" = "Darwin" ] && [ -e "$elapp" ]; then
+  xattr -cr "$elapp" 2>/dev/null || true
+  codesign --force --deep --sign - "$elapp" 2>/dev/null \
+    || echo "app/dev: warning: ad-hoc codesign of Electron.app failed (need Xcode CLT?)" >&2
+fi
+
 export TOXC_DEV=1
 export TOXC_PYTHON="${TOXC_PYTHON:-$repo/nix/dev.sh}"
 exec npm run dev

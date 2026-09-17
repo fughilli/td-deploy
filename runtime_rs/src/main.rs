@@ -282,10 +282,11 @@ struct MidiParser {
 }
 
 impl MidiParser {
-    // Returns (control_or_note, raw_value 0..127, is_note). RAW (not normalized):
-    // TD's MIDI In CHOP is un-normalized, and exprs divide by 127 themselves
-    // (e.g. `op('midiin1')[0][0]/127 - 0.5`).
-    fn push(&mut self, b: u8) -> Option<(u8, f64, bool)> {
+    // Returns (channel 0-15, control_or_note, raw_value 0..127, is_note). RAW (not
+    // normalized): TD's MIDI In CHOP is un-normalized, and exprs divide by 127
+    // themselves (e.g. `op('midiin1')[0][0]/127 - 0.5`). The channel lets us name
+    // the store the way TD does (chNctrlM), N = 1-based MIDI channel.
+    fn push(&mut self, b: u8) -> Option<(u8, u8, f64, bool)> {
         if b >= 0xF8 {
             return None; // system realtime: single byte, ignore (may interleave)
         }
@@ -300,16 +301,17 @@ impl MidiParser {
         self.data[self.have] = b;
         self.have += 1;
         let hi = self.status & 0xF0;
+        let chan = self.status & 0x0F; // MIDI channel 0-15
         let need = if hi == 0xC0 || hi == 0xD0 { 1 } else { 2 };
         if self.have < need {
             return None;
         }
         self.have = 0; // keep status for running status
         match hi {
-            0xB0 => Some((self.data[0], self.data[1] as f64, false)),
+            0xB0 => Some((chan, self.data[0], self.data[1] as f64, false)),
             // note-on with velocity 0 is a note-off
-            0x90 => Some((self.data[0], if self.data[1] == 0 { 0.0 } else { self.data[1] as f64 }, true)),
-            0x80 => Some((self.data[0], 0.0, true)),
+            0x90 => Some((chan, self.data[0], if self.data[1] == 0 { 0.0 } else { self.data[1] as f64 }, true)),
+            0x80 => Some((chan, self.data[0], 0.0, true)),
             _ => None,
         }
     }
@@ -341,12 +343,19 @@ fn start_midi(name: String, device: Option<String>, store: Chops) {
             if n == 0 {
                 break; // EOF: device unplugged — fall through to reopen
             }
-            if let Some((ctrl, v, is_note)) = parser.push(byte[0]) {
+            if let Some((chan, ctrl, v, is_note)) = parser.push(byte[0]) {
+                // TD's MIDI In CHOP is 1-based in BOTH parts of chNctrlM: channel N
+                // = wire channel + 1, and controller M = raw CC + 1 (verified on an
+                // Akai MidiMix — wire CC 16/20 show as ch1ctrl17/ch1ctrl21 in TD).
+                let td_ch = chan + 1;
+                let td_num = ctrl + 1;
                 if is_note {
-                    midi_set(&store, &name, format!("n{ctrl}"), v);
+                    midi_set(&store, &name, format!("ch{td_ch}note{td_num}"), v); // TD chNnoteM
+                    midi_set(&store, &name, format!("n{ctrl}"), v); // legacy (raw note #)
                 } else {
-                    midi_set(&store, &name, format!("cc{ctrl}"), v); // op('midiin1')['ccN']
-                    midi_set(&store, &name, format!("{ctrl}"), v); // op('midiin1')[N] (channel = CC #)
+                    midi_set(&store, &name, format!("ch{td_ch}ctrl{td_num}"), v); // TD chNctrlM
+                    midi_set(&store, &name, format!("cc{ctrl}"), v); // legacy op('midiin1')['ccN'] (raw CC #)
+                    midi_set(&store, &name, format!("{ctrl}"), v); // legacy op('midiin1')[N] (raw CC #)
                 }
             }
         }
@@ -359,7 +368,8 @@ fn start_midi(name: String, device: Option<String>, store: Chops) {
 mod midi_tests {
     use super::MidiParser;
 
-    fn drive(bytes: &[u8]) -> Vec<(u8, f64, bool)> {
+    // (channel, control_or_note, raw_value, is_note)
+    fn drive(bytes: &[u8]) -> Vec<(u8, u8, f64, bool)> {
         let mut p = MidiParser::default();
         bytes.iter().filter_map(|&b| p.push(b)).collect()
     }
@@ -367,26 +377,34 @@ mod midi_tests {
     #[test]
     fn cc_is_raw() {
         // CC13 = 127 (raw; exprs normalize themselves via /127). false = not a note.
-        assert_eq!(drive(&[0xB0, 13, 127]), vec![(13, 127.0, false)]);
+        // 0xB0 = CC on channel 0 -> TD ch1.
+        assert_eq!(drive(&[0xB0, 13, 127]), vec![(0, 13, 127.0, false)]);
+    }
+
+    #[test]
+    fn cc_channel_is_captured() {
+        // 0xB1 = CC on channel 1 (TD ch2). The MidiMix's ch1ctrl17/ch1ctrl21 come
+        // in on channel 0 (0xB0); this checks a non-zero channel isn't masked off.
+        assert_eq!(drive(&[0xB1, 17, 100]), vec![(1, 17, 100.0, false)]);
     }
 
     #[test]
     fn running_status_repeats_cc() {
         // status byte sent once, then two data pairs (running status).
         let out = drive(&[0xB0, 1, 64, 2, 0]);
-        assert_eq!(out, vec![(1, 64.0, false), (2, 0.0, false)]);
+        assert_eq!(out, vec![(0, 1, 64.0, false), (0, 2, 0.0, false)]);
     }
 
     #[test]
     fn note_on_zero_velocity_is_note_off() {
         let out = drive(&[0x90, 60, 100, 0x90, 60, 0]);
-        assert_eq!(out, vec![(60, 100.0, true), (60, 0.0, true)]);
+        assert_eq!(out, vec![(0, 60, 100.0, true), (0, 60, 0.0, true)]);
     }
 
     #[test]
     fn realtime_clock_interleaves_without_breaking_message() {
         // 0xF8 (clock) between the CC data bytes must be ignored, not corrupt it.
-        assert_eq!(drive(&[0xB0, 13, 0xF8, 100]), vec![(13, 100.0, false)]);
+        assert_eq!(drive(&[0xB0, 13, 0xF8, 100]), vec![(0, 13, 100.0, false)]);
     }
 }
 
@@ -999,14 +1017,15 @@ align-items:center;justify-content:center;height:100vh'>\
 
 // Count of clients currently pulling frames. The render loop only renders +
 // encodes while this is > 0, so an idle box (no viewer) spends no CPU/GPU.
-fn serve_http(port: u16, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<AtomicUsize>, prof: Prof) {
+fn serve_http(port: u16, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<AtomicUsize>, prof: Prof, store: Chops) {
     let l = TcpListener::bind(("0.0.0.0", port)).expect("bind http");
-    println!("[stream] native MJPEG on http://0.0.0.0:{port}/  (perf counters at /stats)");
+    println!("[stream] native MJPEG on http://0.0.0.0:{port}/  (perf counters at /stats, CHOP/MIDI store at /chops)");
     for c in l.incoming().flatten() {
         let latest = latest.clone();
         let clients = clients.clone();
         let prof = prof.clone();
-        thread::spawn(move || handle_conn(c, latest, clients, prof));
+        let store = store.clone();
+        thread::spawn(move || handle_conn(c, latest, clients, prof, store));
     }
 }
 
@@ -1018,7 +1037,7 @@ impl Drop for ClientGuard {
     }
 }
 
-fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<AtomicUsize>, prof: Prof) {
+fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<AtomicUsize>, prof: Prof, store: Chops) {
     let mut buf = [0u8; 2048];
     let n = s.read(&mut buf).unwrap_or(0);
     let req = String::from_utf8_lossy(&buf[..n]);
@@ -1026,6 +1045,14 @@ fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<Atomi
     if path.starts_with("/stats") {
         // Per-node performance counters (JSON) — where the frame budget goes.
         let body = prof_json(&prof);
+        let hdr = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\n\r\n", body.len());
+        let _ = s.write_all(hdr.as_bytes());
+        let _ = s.write_all(body.as_bytes());
+    } else if path.starts_with("/chops") {
+        // The live CHOP/MIDI store: chop_name -> { channel -> value }. Wiggle a
+        // knob and GET /chops to see the exact key a controller produces (e.g.
+        // `{"midiin1":{"ch1ctrl21":100.0,"cc21":100.0,"21":100.0}}`).
+        let body = serde_json::to_string(&*store.lock().unwrap()).unwrap_or_else(|_| "{}".into());
         let hdr = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\n\r\n", body.len());
         let _ = s.write_all(hdr.as_bytes());
         let _ = s.write_all(body.as_bytes());
@@ -1095,7 +1122,8 @@ fn stream(dir: &str, port: u16, fps: f64, target: &str) {
         let latest = latest.clone();
         let clients = clients.clone();
         let prof = prof.clone();
-        thread::spawn(move || serve_http(port, latest, clients, prof));
+        let store = r.store.clone();
+        thread::spawn(move || serve_http(port, latest, clients, prof, store));
     }
     let start = Instant::now();
     let period = Duration::from_secs_f64(1.0 / fps.max(1.0));

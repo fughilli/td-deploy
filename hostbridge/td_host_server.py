@@ -42,13 +42,33 @@ GET  /deploy?id=<id>[&from=<n>]
     Poll a job: { running, rc, elapsed, lines: [...from offset n], next, nlines }.
     No id -> list jobs. Tail with `from` = the previous response's `next`.
 
+POST /build    (requires --token) — build the SD image (--no-write) + size it, async
+    JSON { board?: "pi3"|"pi5", top_n?: 30, builder_disk?: "/abs/path.qcow2" }
+      -> runs exactly: bash <workspace>/deploy/build_and_measure.sh <board> <top_n>
+      builder_disk sets $SBC_BUILDER_DISK (the macOS aarch64 builder VM's disk).
+    No flash, no device: builds the image on the host's nix builder and prints the
+    closure size breakdown (raw img, top-N store paths, why-depends for the whales)
+    for the image-trim loop. `board` is an enum, so no injection surface. Also:
+    {"action":"kill","id":"build-1"}. Returns { id, cmd, cwd, board }.
+GET  /build?id=<id>[&from=<n>]
+    Poll a build job (same shape as /deploy). No id -> list build jobs.
+
+POST /inspect  (requires --token) — read-only diagnostics on a BOOTED board, async
+    JSON { host?: "tdplayer.local" }
+      -> runs exactly: bash <workspace>/deploy/inspect_device.sh <host>
+    Drives the .ssh target with a FIXED read-only bundle (VC4-GL check, service
+    status, lsmod, module-tree size, usb) — for verifying the image runs and
+    collecting loaded kernel modules before the kernel trim. Also {"action":"kill"}.
+GET  /inspect?id=<id>[&from=<n>]
+    Poll an inspect job (same shape as /deploy). No id -> list inspect jobs.
+
 Config (env or flags; flags win)
     TOEEXPAND / --toeexpand   path to the toeexpand binary
     TOECOLLAPSE / --toecollapse
     TD_APP / --td-app         path to the TouchDesigner executable
     TOXC_HOST_TOKEN / --token shared secret; clients send header X-Auth-Token.
-                              REQUIRED to enable POST /deploy.
-    TOXC_WORKSPACE / --workspace     repo checkout /deploy runs bazel in
+                              REQUIRED to enable POST /deploy and POST /build.
+    TOXC_WORKSPACE / --workspace     repo checkout /deploy + /build run bazel in
     TOXC_BAZEL / --bazel             path to bazel (default: PATH lookup)
 """
 
@@ -156,6 +176,18 @@ _DEPLOY_TARGET = "//deploy:tdplayer_pi3.deploy_live"
 _DEFAULT_HOST = "tdplayer.local"
 _HOST_RE = re.compile(r"^[A-Za-z0-9._-]+$")  # hostname / IPv4 — no shell metachars
 
+# The ONE fixed program /build runs: build the SD image (--no-write, no flash)
+# and print its size breakdown, for the image-size trim loop. It takes only a
+# board enum (pi3|pi5), so there is no injection surface — same no-arbitrary-exec
+# posture as _DEPLOY_TARGET. Path is resolved against the workspace at call time.
+_BUILD_SCRIPT = "deploy/build_and_measure.sh"
+_BUILD_BOARDS = ("pi3", "pi5")
+
+# The ONE fixed program /inspect runs: read-only diagnostics on a BOOTED board
+# (verify VC4 GL + collect loaded kernel modules for the trim step). Takes only a
+# hostname (validated by _HOST_RE), so no injection surface.
+_INSPECT_SCRIPT = "deploy/inspect_device.sh"
+
 
 def _start_job(label, cmd, cwd, env=None):
     with _JOBS_LOCK:
@@ -258,6 +290,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.readfile(parse_qs(u.query))
         if u.path == "/deploy":
             return self.deploy_poll(parse_qs(u.query))
+        if u.path == "/build":
+            return self.build_poll(parse_qs(u.query))
+        if u.path == "/inspect":
+            return self.inspect_poll(parse_qs(u.query))
         return self._send_json({"error": "not found", "path": u.path}, 404)
 
     def do_POST(self):
@@ -276,6 +312,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.render()
             if u.path == "/deploy":
                 return self.deploy_start()
+            if u.path == "/build":
+                return self.build_start()
+            if u.path == "/inspect":
+                return self.inspect_start()
         except subprocess.TimeoutExpired:
             return self._send_json({"error": "timeout"}, 504)
         except Exception as e:  # noqa: BLE001 - surface failures to the client
@@ -296,8 +336,11 @@ class Handler(BaseHTTPRequestHandler):
             "td_app": c.get("td_app"),
             "td_found": bool(c.get("td_app")),
             "candidates": _candidate_td_dirs(),
-            "deploy_enabled": bool(c.get("token")),  # /deploy requires a token
+            "deploy_enabled": bool(c.get("token")),  # /deploy + /build require a token
             "deploy_target": _DEPLOY_TARGET,
+            "build_script": _BUILD_SCRIPT,
+            "build_boards": list(_BUILD_BOARDS),
+            "inspect_script": _INSPECT_SCRIPT,
             "workspace": c.get("workspace"),
             "bazel": (c.get("bazel") or shutil.which("bazel")),
         }
@@ -543,6 +586,175 @@ class Handler(BaseHTTPRequestHandler):
             proc.terminate()
         return self._send_json({"id": jid, "killed": True})
 
+    # -- build (image size-measurement, on the host) --------------------------
+    def build_start(self):
+        """POST /build {board?, top_n?} — build the SD image (--no-write) + size it.
+
+        Runs exactly `bash <workspace>/deploy/build_and_measure.sh <board> <top_n>`
+        in the configured --workspace (nothing else). No flash, no device: it
+        builds the image on the host's nix builder and prints the closure size
+        breakdown, for the image-trim loop. board is an enum (pi3|pi5), so there
+        is no injection surface. Async: returns {id}; poll GET /build?id=<id>.
+        `{"action":"kill"}` stops it. Requires the auth token (it builds on host).
+        """
+        gate = self._deploy_gate()  # same posture: builds on the host, token-gated
+        if gate:
+            return self._send_json(*gate)
+        req = json.loads(self._read_body() or b"{}")
+        if req.get("action") == "kill":
+            return self._deploy_kill(req.get("id"))
+        board = req.get("board") or "pi3"
+        if board not in _BUILD_BOARDS:
+            return self._send_json(
+                {"error": "board must be one of %s, got %r" % (list(_BUILD_BOARDS), board)}, 400
+            )
+        top_n = req.get("top_n", 30)
+        try:
+            top_n = max(1, min(200, int(top_n)))
+        except (TypeError, ValueError):
+            return self._send_json({"error": "top_n must be an int"}, 400)
+        bazel = self.cfg.get("bazel") or shutil.which("bazel")
+        if not bazel:
+            return self._send_json({"error": "bazel not found on PATH"}, 501)
+        cwd = self.cfg.get("workspace") or os.getcwd()
+        script = os.path.join(cwd, _BUILD_SCRIPT)
+        if not os.path.isfile(script):
+            return self._send_json({"error": "build script missing: %s" % script}, 500)
+        # Pass the resolved bazel to the script via env (no shell); inherit the
+        # bridge's env so nix/PATH (and an exported SBC_BUILDER_DISK) reach the build.
+        env = os.environ.copy()
+        env["TOXC_BAZEL"] = bazel
+        # Optional builder-disk override -> $SBC_BUILDER_DISK (the macOS aarch64
+        # builder VM's disk image), same as /deploy. Absolute path only.
+        builder_disk = req.get("builder_disk")
+        if builder_disk is not None:
+            if not (isinstance(builder_disk, str) and os.path.isabs(builder_disk)):
+                return self._send_json({"error": "builder_disk must be an absolute path"}, 400)
+            env["SBC_BUILDER_DISK"] = builder_disk
+        cmd = ["bash", script, board, str(top_n)]
+        job = _start_job("build", cmd, cwd, env=env)
+        return self._send_json(
+            {
+                "id": job["id"],
+                "cmd": job["cmd"],
+                "cwd": cwd,
+                "board": board,
+                "builder_disk": builder_disk,
+            }
+        )
+
+    def build_poll(self, q):
+        """GET /build?id=<id>[&from=<n>] — poll build output. No id lists builds."""
+        gate = self._deploy_gate()
+        if gate:
+            return self._send_json(*gate)
+        jid = q.get("id", [None])[0]
+        if not jid:
+            with _JOBS_LOCK:
+                jobs = [
+                    {
+                        "id": j["id"],
+                        "running": not j["done"],
+                        "rc": j["rc"],
+                        "nlines": len(j["lines"]),
+                        "started": j["started"],
+                    }
+                    for j in _JOBS.values()
+                    if j["label"] == "build"
+                ]
+            return self._send_json({"jobs": jobs})
+        frm = int((q.get("from", ["0"])[0]) or 0)
+        with _JOBS_LOCK:
+            job = _JOBS.get(jid)
+            if not job:
+                return self._send_json({"error": "no such job: %s" % jid}, 404)
+            lines = job["lines"][frm:]
+            end = job["ended"] or time.time()
+            resp = {
+                "id": jid,
+                "cmd": job["cmd"],
+                "running": not job["done"],
+                "rc": job["rc"],
+                "from": frm,
+                "next": frm + len(lines),
+                "nlines": len(job["lines"]),
+                "elapsed": round(end - job["started"], 1),
+                "lines": lines,
+            }
+        return self._send_json(resp)
+
+    # -- inspect (read-only diagnostics on a booted board) --------------------
+    def inspect_start(self):
+        """POST /inspect {host?} — read-only diagnostics on a booted board.
+
+        Runs exactly `bash <workspace>/deploy/inspect_device.sh <host>` (which
+        drives the sbc-deploy .ssh target with a FIXED read-only bundle: VC4 GL
+        check, service status, lsmod, module tree size, usb). host is a hostname
+        (validated), so no injection surface. Token-gated. Async: poll GET
+        /inspect?id=<id>. `{"action":"kill"}` stops it.
+        """
+        gate = self._deploy_gate()
+        if gate:
+            return self._send_json(*gate)
+        req = json.loads(self._read_body() or b"{}")
+        if req.get("action") == "kill":
+            return self._deploy_kill(req.get("id"))
+        host = req.get("host") or _DEFAULT_HOST
+        if not isinstance(host, str) or not _HOST_RE.match(host):
+            return self._send_json({"error": "invalid host %r" % (host,)}, 400)
+        bazel = self.cfg.get("bazel") or shutil.which("bazel")
+        if not bazel:
+            return self._send_json({"error": "bazel not found on PATH"}, 501)
+        cwd = self.cfg.get("workspace") or os.getcwd()
+        script = os.path.join(cwd, _INSPECT_SCRIPT)
+        if not os.path.isfile(script):
+            return self._send_json({"error": "inspect script missing: %s" % script}, 500)
+        env = os.environ.copy()
+        env["TOXC_BAZEL"] = bazel
+        cmd = ["bash", script, host]
+        job = _start_job("inspect", cmd, cwd, env=env)
+        return self._send_json({"id": job["id"], "cmd": job["cmd"], "cwd": cwd, "host": host})
+
+    def inspect_poll(self, q):
+        """GET /inspect?id=<id>[&from=<n>] — poll. No id lists inspect jobs."""
+        gate = self._deploy_gate()
+        if gate:
+            return self._send_json(*gate)
+        jid = q.get("id", [None])[0]
+        if not jid:
+            with _JOBS_LOCK:
+                jobs = [
+                    {
+                        "id": j["id"],
+                        "running": not j["done"],
+                        "rc": j["rc"],
+                        "nlines": len(j["lines"]),
+                        "started": j["started"],
+                    }
+                    for j in _JOBS.values()
+                    if j["label"] == "inspect"
+                ]
+            return self._send_json({"jobs": jobs})
+        frm = int((q.get("from", ["0"])[0]) or 0)
+        with _JOBS_LOCK:
+            job = _JOBS.get(jid)
+            if not job:
+                return self._send_json({"error": "no such job: %s" % jid}, 404)
+            lines = job["lines"][frm:]
+            end = job["ended"] or time.time()
+            resp = {
+                "id": jid,
+                "cmd": job["cmd"],
+                "running": not job["done"],
+                "rc": job["rc"],
+                "from": frm,
+                "next": frm + len(lines),
+                "nlines": len(job["lines"]),
+                "elapsed": round(end - job["started"], 1),
+                "lines": lines,
+            }
+        return self._send_json(resp)
+
 
 _HEADLESS_RENDER_NOTES = (
     "Drive TD via a generated startup script that op(<op>).save('out.png') then project.quit(). "
@@ -554,7 +766,12 @@ _HEADLESS_RENDER_NOTES = (
 
 def main():
     ap = argparse.ArgumentParser(description="TouchDesigner host bridge for toxc")
-    ap.add_argument("--host", default="0.0.0.0")
+    # Bind LOOPBACK only by default: the bridge runs privileged fixed commands
+    # (host builds/deploys) so it must NOT be reachable from LAN devices. Reach it
+    # from a container/VM via an explicit forward (e.g. `ssh -L 8770:localhost:8770`
+    # or a Lima/Docker port-forward), NOT by binding a routable interface. Override
+    # with --host only if you understand the exposure.
+    ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8770)
     ap.add_argument("--toeexpand", default=None)
     ap.add_argument("--toecollapse", default=None)
@@ -592,6 +809,8 @@ def main():
     if cfg.get("token"):
         print("[toxc-host] auth token REQUIRED (X-Auth-Token)")
         print(f"[toxc-host] /deploy ENABLED: {_DEPLOY_TARGET} in {cfg.get('workspace')}")
+        print(f"[toxc-host] /build  ENABLED: {_BUILD_SCRIPT} {list(_BUILD_BOARDS)} (image size)")
+        print(f"[toxc-host] /inspect ENABLED: {_INSPECT_SCRIPT} (read-only board diagnostics)")
         print(f"[toxc-host]   bazel: {cfg.get('bazel') or shutil.which('bazel') or 'NOT FOUND'}")
     else:
         print("[toxc-host] /deploy DISABLED (set --token to enable the Pi live-deploy)")

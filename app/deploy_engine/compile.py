@@ -17,9 +17,31 @@ from .progress import Progress
 _paths.ensure_on_path()
 
 
-def _fetch_host_assets(g, bridge: str | None, assetdir: str, progress: Progress) -> None:
-    """Ensure each image_in has a locally-readable file + native size. Local files
-    (production) are used as-is; missing ones are pulled from the dev bridge."""
+def _resolve_local_asset(p: str, toe_path: str) -> str | None:
+    """Find an image_in file on disk. TouchDesigner stores movie paths RELATIVE to
+    the project dir — usually the .toe's own dir or its parent — NOT the app's CWD,
+    so a param like `toxc/Banana.tif` won't resolve against CWD. Try those bases
+    (and the bare basename in each); return the first that exists, else None."""
+    if os.path.isfile(p):
+        return os.path.abspath(p)
+    toedir = os.path.dirname(os.path.abspath(toe_path)) if toe_path else os.getcwd()
+    bases = [os.getcwd(), toedir, os.path.dirname(toedir)]
+    seen = set()
+    for b in bases:
+        for cand in (os.path.join(b, p), os.path.join(b, os.path.basename(p))):
+            cand = os.path.abspath(cand)
+            if cand not in seen and os.path.isfile(cand):
+                return cand
+            seen.add(cand)
+    return None
+
+
+def _fetch_host_assets(
+    g, bridge: str | None, assetdir: str, toe_path: str, progress: Progress
+) -> None:
+    """Ensure each image_in has a locally-readable file + native size. Resolve the
+    path locally first (relative to the .toe dir, not CWD); only pull from the dev
+    bridge if it can't be found on this machine."""
     os.makedirs(assetdir, exist_ok=True)
     from PIL import Image
 
@@ -27,8 +49,10 @@ def _fetch_host_assets(g, bridge: str | None, assetdir: str, progress: Progress)
         p = n.params.get("path") if n.op == "image_in" else None
         if not p:
             continue
-        local = p
-        if not os.path.isfile(p) and bridge:
+        local = _resolve_local_asset(p, toe_path)
+        if local:
+            n.params["path"] = local  # normalize so emit reads the resolved file
+        elif bridge:
             try:
                 url = f"http://{bridge}/readfile?path={urllib.parse.quote(p)}"
                 data = http_get_bytes(url)
@@ -40,6 +64,12 @@ def _fetch_host_assets(g, bridge: str | None, assetdir: str, progress: Progress)
             except Exception as e:  # noqa: BLE001
                 progress.log(f"asset {p} unavailable ({e}); testcard substitute")
                 continue
+        else:
+            progress.log(
+                f"asset {p} not found (tried CWD + .toe dir + parent) and no bridge;"
+                " testcard substitute"
+            )
+            continue
         try:
             from runtime import video
 
@@ -89,7 +119,7 @@ def compile_toe(
             g.nodes[nid].params["path"] = fpath
             progress.log(f"set-file {nid} <- {fpath}")
 
-    _fetch_host_assets(g, bridge, os.path.join(workdir, "assets"), progress)
+    _fetch_host_assets(g, bridge, os.path.join(workdir, "assets"), toe_path, progress)
 
     progress.phase("optimize", 0.0, f"{len(g.nodes)} nodes")
     for line in optimize(g, out_res=res):

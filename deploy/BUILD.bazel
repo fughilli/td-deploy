@@ -29,9 +29,12 @@ package(default_visibility = ["//visibility:public"])
 # so the deployed runtime picks up the MIDI In CHOP):
 #   toxc_artifact(name = "toxc_artifact", prebuilt = glob(["prebuilt/ascii/**"]))
 # target MUST match apps.nix's softwareGL: desktop_gl ↔ softwareGL=true (Mesa
-# llvmpipe, the functional default on any board); gles2 ↔ softwareGL=false (Pi
-# VC4 hardware) — and gles2 additionally needs shaders_gles/ (build_shaders_gles)
-# baked in + /dev/dri access. We run llvmpipe, so desktop_gl.
+# llvmpipe); gles2 ↔ softwareGL=false (Pi VC4/V3D hardware) — gles2 additionally
+# needs shaders_gles/ (build_shaders_gles) baked in + /dev/dri access. We run the
+# Pi GPU in HARDWARE: apps.nix softwareGL=false, and this prebuilt carries
+# shaders_gles/ (emitted --target gles2). NB llvmpipe is no longer even in the
+# image — mesa-lean.nix drops it (VC4/V3D only) — so desktop_gl/softwareGL=true
+# would have NO software renderer to fall back to.
 toxc_artifact(
     name = "toxc_artifact",
     prebuilt = glob(["prebuilt/ascii/**"]),
@@ -46,12 +49,16 @@ _BUILD_DATA = [
     "//runtime_rs/cross:toxc_runtime_linux",
 ]
 
-# Pi 5 (default board).
+# Pi 5 (default board). `lean` = super-lean base image: drop the RPi sd-image
+# rescue toolkit (vim/testdisk/ddrescue/…), all documentation (nixos-manual/man/
+# texinfo), and NixOS's default extra packages (perl/rsync/strace) — none are
+# wanted on a headless appliance. Flows to the flake via $SBC_LEAN.
 sbc_application(
     name = "tdplayer",
     build_data = _BUILD_DATA,
     flake = "deploy/nix",
     hostname = "tdplayer",
+    lean = True,
 )
 
 # Pi 3B/3B+ variant of the SAME flake + config (board overridden via $SBC_BOARD).
@@ -61,4 +68,5 @@ sbc_application(
     build_data = _BUILD_DATA,
     flake = "deploy/nix",
     hostname = "tdplayer",
+    lean = True,
 )

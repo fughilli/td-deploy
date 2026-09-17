@@ -22,8 +22,15 @@
       # $SBC_BOARD (so //deploy:tdplayer_pi3 targets a Pi 3 off the same flake).
       board = "raspberry-pi-5";
       appModules = [ ./apps.nix ];
-      # Baked into BOTH images (full + base): skip zstd compression for a much
-      # faster image build (see image.nix). Uncompressed .img, flashed as-is.
-      systemModules = [ ./image.nix ];
+      # Baked into BOTH images (full + base):
+      #   image.nix    — skip zstd compression + shrink the oversized firmware
+      #                   partition (the raw-image "zero padding").
+      #   mesa-lean.nix — build Mesa without the LLVM software renderers (VC4/V3D
+      #                   hardware only), dropping the ~507 MB llvm-*-lib closure.
+      #   lean-extra.nix — drop the on-device flake registry/nixPath (186 MB
+      #                   nixpkgs source) + gtk3 (stoken CLI-only, 45 MB).
+      #   tailscale.nix — join the tailnet (reachable across LANs); authkey seeded
+      #                   out of band via deploy/seed_tailscale.sh (adds ~30 MB).
+      systemModules = [ ./image.nix ./mesa-lean.nix ./lean-extra.nix ./tailscale.nix ];
     };
 }

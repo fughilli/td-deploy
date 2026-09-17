@@ -42,3 +42,8 @@ app/electron/node_modules/
 app/electron/dist/
 __pycache__/
 *.pyc
+
+credentials/
+
+# claude-container session-local settings
+.claude/

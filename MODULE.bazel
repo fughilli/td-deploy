@@ -183,8 +183,9 @@ bazel_dep(name = "sbc_deploy", version = "0.0.0")
 git_override(
     module_name = "sbc_deploy",
     # build-data branch (matches deploy/nix/flake.lock — keep the two in sync).
-    # Adds the `.seed_wifi` target; includes build_data + the deploy brick-guard
-    # and the hermetic flake-source staging + macOS builder fix.
-    commit = "4d88be7dbc04a99acbb6578c7c72bd33cb35ce23",
+    # Adds the `.seed_wifi` target; includes build_data + the deploy brick-guard,
+    # the hermetic flake-source staging + macOS builder fix, the lean git drop
+    # (PR #20), and moving .sbc-build out of the workspace into the cache dir.
+    commit = "13e2927c67becddca531c633ac7dee47a6cdd6de",
     remote = "https://github.com/fughilli/sbc-deploy.git",
 )
