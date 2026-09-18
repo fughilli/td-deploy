@@ -11,6 +11,7 @@ Commands (stdin):
   {"cmd":"deploy"}                                     # deploy the current .toe now
   {"cmd":"watch","enable":true}                        # auto-deploy on save
   {"cmd":"list_disks"}                                 # enumerate removable disks
+  {"cmd":"list_releases"}                               # enumerate base-image releases
   {"cmd":"flash","disk_id":"...","tag":"latest"}       # download base img + flash SD
   {"cmd":"ping"}
 
@@ -22,6 +23,7 @@ Events (stdout):
   {"type":"warning","message":...,"fixPrompt":...}   # deployed with substitutions
   {"type":"assets","missing":[{"path":...,"node":...,"searched":[...]}]} {"type":"pong"}
   {"type":"disks","disks":[{"id":..,"name":..,"size_gb":..,"bus":..}]}
+  {"type":"releases","releases":[{"tag_name":..,"name":..,"published_at":..,"prerelease":bool}]}
   {"type":"flash_start","disk":..,"tag":..}
   {"type":"flash_progress","stage":"download|write","frac":..,"message":..}
   {"type":"flash_done","disk":..} {"type":"flash_error","message":..}
@@ -310,6 +312,18 @@ class Sidecar:
         except Exception as e:  # noqa: BLE001
             emit({"type": "error", "message": f"list_disks: {e}"})
 
+    def list_releases(self) -> None:
+        """Enumerate the base-image releases for the flash picker. On any network
+        failure emit an empty list (with a message) so the UI stays usable with the
+        CI-stamped default tag rather than getting no event at all."""
+        from deploy_engine import releases
+
+        try:
+            rels = releases.list_releases()
+            emit({"type": "releases", "releases": rels})
+        except Exception as e:  # noqa: BLE001 - surface to UI but keep it non-fatal
+            emit({"type": "releases", "releases": [], "message": f"list_releases: {e}"})
+
     # --- command dispatch ---
     def handle(self, msg: dict) -> None:
         cmd = msg.get("cmd")
@@ -329,6 +343,8 @@ class Sidecar:
             self._set_watch(bool(msg.get("enable")))
         elif cmd == "list_disks":
             self.list_disks()
+        elif cmd == "list_releases":
+            self.list_releases()
         elif cmd == "flash":
             self.start_flash(msg["disk_id"], msg.get("tag", "latest"), msg.get("image"))
         elif cmd == "ping":
