@@ -11,7 +11,10 @@ refinement; for realtime preview a bounded in-RAM ring is simplest and smooth.
 
 from __future__ import annotations
 
-import numpy as np
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
 
 VIDEO_EXTS = (".mov", ".mp4", ".m4v", ".avi", ".mkv", ".webm", ".mpg", ".mpeg")
 
@@ -31,6 +34,7 @@ def probe_size(path: str) -> tuple[int, int]:
 class VideoSource:
     def __init__(self, path: str, max_frames: int = 300, max_dim: int = 512):
         import av
+        import numpy as np
         from PIL import Image
 
         self.frames: list[np.ndarray] = []

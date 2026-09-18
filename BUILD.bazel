@@ -158,6 +158,18 @@ py_test(
     ],
 )
 
+# Regression: the frozen deploy-engine sidecar must declare every third-party
+# module the compile/emit path imports. emit_artifact decodes a video source's
+# first frame via runtime.video.VideoSource, which needs numpy — so numpy must be
+# in the sidecar's packaging requirements or the frozen binary dies at deploy time
+# with "No module named 'numpy'".
+py_test(
+    name = "sidecar_requirements_test",
+    srcs = ["tests/sidecar_requirements_test.py"],
+    data = ["//app:packaging/requirements.txt"],
+    imports = ["."],
+)
+
 py_test(
     name = "fixit_test",
     srcs = ["tests/fixit_test.py"],

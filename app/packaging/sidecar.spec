@@ -5,7 +5,7 @@
 #   * the sidecar + deploy_engine
 #   * the REUSED compiler pipeline (ir/ passes/ lowering/ importer/ runtime/ +
 #     compiler/emit_artifact + compiler/translate_gles) — same code the dev CLI runs
-#   * Pillow + PyAV (host-asset decoding)
+#   * Pillow + PyAV + numpy (host-asset decoding; emit extracts a video's first frame)
 #   * the per-OS cross toolchain under app/toolchain/ (clang/lld/mlir/glslang/
 #     spirv-cross), if CI has populated it — added as data so it
 #     lands under sys._MEIPASS/toolchain (see toolchain.default_toolchain()).
