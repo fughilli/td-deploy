@@ -43,7 +43,10 @@
     script = ''
       ts=${config.services.tailscale.package}/bin/tailscale
       for _ in $(seq 1 30); do "$ts" status >/dev/null 2>&1 && break; sleep 2; done
-      "$ts" set --hostname=${config.networking.hostName} || true
+      # Use the LIVE hostname, not the eval-time config value: flash-config.nix may
+      # have overridden it per-card from /boot/firmware/td-hostname, and the tailnet
+      # name should track that.
+      "$ts" set --hostname="$(cat /proc/sys/kernel/hostname)" || true
     '';
   };
 }

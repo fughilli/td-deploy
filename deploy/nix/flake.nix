@@ -31,6 +31,8 @@
       #                   nixpkgs source) + gtk3 (stoken CLI-only, 45 MB).
       #   tailscale.nix — join the tailnet (reachable across LANs); authkey seeded
       #                   out of band via deploy/seed_tailscale.sh (adds ~30 MB).
-      systemModules = [ ./image.nix ./mesa-lean.nix ./lean-extra.nix ./tailscale.nix ];
+      #   flash-config.nix — apply a per-card hostname + WiFi that the desktop
+      #                   app's flasher dropped on /boot/firmware at flash time.
+      systemModules = [ ./image.nix ./mesa-lean.nix ./lean-extra.nix ./tailscale.nix ./flash-config.nix ];
     };
 }
