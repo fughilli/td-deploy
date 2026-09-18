@@ -24,6 +24,7 @@ permissions:
 jobs:
   image:
     runs-on: ubuntu-24.04-arm # native aarch64 -> no cross/QEMU
+    environment: CI # provides CACHIX_AUTH_TOKEN
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
@@ -35,7 +36,14 @@ jobs:
             experimental-features = nix-command flakes
             system-features = kvm big-parallel nixos-test
 
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      # Cachix (fugstudio): the Pi image's NixOS closure (mesa/LLVM/glibc) dwarfs
+      # GitHub's 10 GB actions cache that magic-nix-cache is backed by, so use
+      # Cachix like build-toolchain — it substitutes prior builds and pushes new
+      # ones, and shares the store paths already cached by the toolchain jobs.
+      - uses: cachix/cachix-action@v15
+        with:
+          name: fugstudio
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@0.9.0
