@@ -1,0 +1,73 @@
+# Apply per-card configuration chosen at flash time (hostname + WiFi).
+#
+# The image is a fixed NixOS build, so the hostname and WiFi creds can't be baked
+# per-card. Instead the desktop app's flasher, right after the raw image write,
+# drops ready-to-use artifacts onto the FAT `/boot/firmware` partition:
+#
+#   /boot/firmware/td-hostname                      one line: the chosen hostname
+#   /boot/firmware/system-connections/*.nmconnection  NetworkManager keyfiles,
+#                                                   one per WiFi network (rendered
+#                                                   host-side from SSID/PSK)
+#
+# This oneshot installs them on boot: it sets the live hostname and copies the
+# keyfiles into NetworkManager's store with the perms NM requires (0600 root).
+# It runs on EVERY boot (idempotent) so the choice survives reboots without any
+# on-device state, and it runs BEFORE NetworkManager/Tailscale so they come up
+# with the right name and networks. Absent files → no-op, so a default flash (no
+# customization) behaves exactly as before. Every step is guarded so a malformed
+# drop-in can never fail the boot.
+{ config, lib, pkgs, ... }:
+{
+  systemd.services.td-flash-config = {
+    description = "Apply flash-time hostname + WiFi from /boot/firmware";
+    wantedBy = [ "multi-user.target" ];
+    # The boot FAT partition must be mounted; come up before the network stack so
+    # the hostname/networks are in place when NetworkManager and Tailscale start.
+    unitConfig.RequiresMountsFor = [ "/boot/firmware" ];
+    before = [ "NetworkManager.service" "tailscaled-autoconnect.service" "tailscale-hostname.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    path = [ pkgs.coreutils pkgs.inetutils ]; # `hostname`
+    script = ''
+      set -u
+      firmware=/boot/firmware
+
+      # --- hostname ---------------------------------------------------------
+      hn="$firmware/td-hostname"
+      if [ -r "$hn" ]; then
+        name="$(tr -d '[:space:]' < "$hn" | tr '[:upper:]' '[:lower:]')"
+        # RFC1123 label: 1..63 chars, [a-z0-9-], no leading/trailing hyphen.
+        if printf '%s' "$name" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'; then
+          cur="$(cat /proc/sys/kernel/hostname 2>/dev/null || true)"
+          if [ "$name" != "$cur" ]; then
+            echo "td-flash-config: hostname '$cur' -> '$name'"
+            hostname "$name" || true
+          fi
+        elif [ -n "$name" ]; then
+          echo "td-flash-config: ignoring invalid hostname '$name'"
+        fi
+      fi
+
+      # --- WiFi (NetworkManager keyfiles) -----------------------------------
+      src="$firmware/system-connections"
+      dst=/etc/NetworkManager/system-connections
+      if [ -d "$src" ]; then
+        mkdir -p "$dst"
+        for f in "$src"/*.nmconnection; do
+          [ -e "$f" ] || continue
+          base="$(basename "$f")"
+          # Don't clobber a profile already customized on-device (e.g. seed_wifi).
+          if [ -e "$dst/$base" ]; then
+            echo "td-flash-config: keeping existing $base"
+            continue
+          fi
+          echo "td-flash-config: installing WiFi profile $base"
+          install -m 0600 -o root -g root "$f" "$dst/$base" || true
+        done
+      fi
+      exit 0
+    '';
+  };
+}
