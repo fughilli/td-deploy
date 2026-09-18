@@ -22,6 +22,7 @@ sh_binary(
 exports_files([
     "deploy_engine/fixit.py",
     "deploy_engine/assets.py",
+    "deploy_engine/releases.py",
     # The frozen sidecar's dependency manifest, checked by //:sidecar_requirements_test.
     "packaging/requirements.txt",
 ])

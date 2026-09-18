@@ -205,3 +205,13 @@ py_test(
     data = ["//app:deploy_engine/assets.py"],
     imports = ["."],
 )
+
+# Base-image version picker: the release-list normalization (JSON -> newest-first
+# {tag_name,...} dicts) that feeds the flash modal's dropdown. Sample JSON only;
+# no network (the module's fetch path is not exercised here).
+py_test(
+    name = "releases_test",
+    srcs = ["tests/releases_test.py"],
+    data = ["//app:deploy_engine/releases.py"],
+    imports = ["."],
+)

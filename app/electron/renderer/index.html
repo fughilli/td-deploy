@@ -91,10 +91,12 @@
       <h2>Flash SD card</h2>
       <p class="warn">This <b>erases</b> the selected disk. Only removable disks are shown.</p>
       <div class="row">
-        <label class="grow">Base image tag
-          <input id="flash-tag" type="text" value="latest" />
+        <label class="grow">Base image version
+          <select id="flash-tag">
+            <option value="latest">latest</option>
+          </select>
         </label>
-        <button id="flash-refresh">Refresh disks</button>
+        <button id="flash-refresh">Refresh</button>
       </div>
       <ul id="disk-list" class="disks"><li class="muted">Scanning…</li></ul>
       <div id="flash-progress" class="hidden">

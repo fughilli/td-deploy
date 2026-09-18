@@ -35,7 +35,8 @@ input[type=text], select {
   background: #0f1116; color: var(--fg); border: 1px solid var(--edge);
   border-radius: 6px; padding: 5px 8px; font-size: 13px;
 }
-label.grow input { flex: 1; width: 100%; }
+label.grow input, label.grow select { flex: 1; width: 100%; }
+#flash-tag { max-width: 100%; }
 .toggle { color: var(--fg); }
 
 .path { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;

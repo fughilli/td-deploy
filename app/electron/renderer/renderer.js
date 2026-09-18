@@ -155,7 +155,7 @@ window.td.onEvent((evt) => {
       if (state.toe) window.td.send({ cmd: 'pick_toe', toe: state.toe });
       if (els.watch.checked) window.td.send({ cmd: 'watch', enable: true, toe: state.toe });
       if (evt.settings && evt.settings.base_image_tag)
-        fm.tag.value = evt.settings.base_image_tag;   // CI-stamped default
+        setDefaultTag(evt.settings.base_image_tag);   // CI-stamped default
       log('sidecar ready');
       break;
     case 'start':
@@ -199,6 +199,10 @@ window.td.onEvent((evt) => {
     case 'disks':
       renderDisks(evt.disks || []);
       break;
+    case 'releases':
+      renderReleases(evt.releases || []);
+      if (evt.message) log(evt.message, 'err');
+      break;
     case 'flash_start':
       log('flash ' + evt.disk.name + ' <- ' + evt.tag);
       break;
@@ -232,6 +236,49 @@ const fm = {
 };
 let selectedDisk = null;
 let flashing = false;
+// The CI-stamped default (or 'latest') to select once the releases list arrives.
+// Set from the sidecar 'ready' settings; kept in sync into the <select>.
+let defaultTag = 'latest';
+
+// Populate the version <select> from the sidecar's releases list, marking
+// prereleases and (re)selecting the stamped default. Always keep at least the
+// default option so the picker works even if the network request failed.
+function renderReleases(releases) {
+  const prev = fm.tag.value;
+  fm.tag.innerHTML = '';
+  const seen = new Set();
+  const add = (tag, label) => {
+    if (!tag || seen.has(tag)) return;
+    seen.add(tag);
+    const o = document.createElement('option');
+    o.value = tag;
+    o.textContent = label || tag;
+    fm.tag.appendChild(o);
+  };
+  for (const r of releases) {
+    const name = r.name && r.name !== r.tag_name ? ` — ${r.name}` : '';
+    add(r.tag_name, `${r.tag_name}${name}${r.prerelease ? ' (prerelease)' : ''}`);
+  }
+  // Ensure the default and the prior selection remain selectable even if absent
+  // from the list (e.g. a stamped tag not yet published, or an empty/failed list).
+  add(defaultTag, defaultTag);
+  if (prev) add(prev, prev);
+  fm.tag.value = defaultTag || prev || 'latest';
+}
+
+// Remember the CI-stamped default and reflect it in the picker.
+function setDefaultTag(tag) {
+  if (!tag) return;
+  defaultTag = tag;
+  const opts = Array.from(fm.tag.options).map((o) => o.value);
+  if (!opts.includes(tag)) {
+    const o = document.createElement('option');
+    o.value = tag;
+    o.textContent = tag;
+    fm.tag.appendChild(o);
+  }
+  fm.tag.value = tag;
+}
 
 function openFlash() {
   selectedDisk = null;
@@ -241,6 +288,7 @@ function openFlash() {
   fm.list.innerHTML = '<li class="muted">Scanning…</li>';
   fm.modal.classList.remove('hidden');
   window.td.send({ cmd: 'list_disks' });
+  window.td.send({ cmd: 'list_releases' });
 }
 function closeFlash() { if (!flashing) fm.modal.classList.add('hidden'); }
 
@@ -265,7 +313,11 @@ function renderDisks(disks) {
 
 els.flash.onclick = openFlash;
 fm.cancel.onclick = closeFlash;
-fm.refresh.onclick = () => { fm.list.innerHTML = '<li class="muted">Scanning…</li>'; window.td.send({ cmd: 'list_disks' }); };
+fm.refresh.onclick = () => {
+  fm.list.innerHTML = '<li class="muted">Scanning…</li>';
+  window.td.send({ cmd: 'list_disks' });
+  window.td.send({ cmd: 'list_releases' });
+};
 fm.go.onclick = () => {
   if (!selectedDisk) return;
   flashing = true;
