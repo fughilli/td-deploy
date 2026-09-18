@@ -1,8 +1,9 @@
 # Python deps for freezing the td-deploy Studio sidecar (host side).
-# The engine itself is stdlib-only; these are the compiler's asset decoders + the
-# freezer. Pin conservatively — the cryptography wheel is intentionally NOT here.
+# These are the compiler's asset decoders + the freezer. Pin conservatively — the
+# cryptography wheel is intentionally NOT here.
 pyinstaller==6.10.0
 pillow>=10.0
 av>=12.0
+numpy>=1.24  # emit_artifact decodes a video source's first frame via runtime.video.VideoSource
 zstandard>=0.22  # decompress the .img.zst base image before flashing
 certifi>=2024.2.2  # CA trust roots for the frozen app's HTTPS image download
