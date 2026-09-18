@@ -44,7 +44,7 @@ label.grow input { flex: 1; width: 100%; }
 
 .phase { font-size: 13px; margin-bottom: 8px; color: var(--fg); }
 .bar { height: 8px; background: #0f1116; border-radius: 5px; overflow: hidden; }
-#bar-fill { height: 100%; width: 0%; background: var(--accent); transition: width .18s ease; }
+#bar-fill, #flash-fill { height: 100%; width: 0%; background: var(--accent); transition: width .18s ease; }
 
 .log-card { flex: 1; }
 .log-head { color: var(--muted); font-size: 11px; text-transform: uppercase;
