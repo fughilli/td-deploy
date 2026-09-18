@@ -70,6 +70,37 @@ class BuildFixPromptTest(unittest.TestCase):
         self.assertIn("TOP:feedback", p)
         self.assertIn("CHOP:lfo", p)
 
+    def test_prefers_existing_clone(self):
+        # If the agent is already sitting in a clone of the repo, the prompt should tell
+        # it to detect that, branch off latest main, and push to that clone's own remote —
+        # not unconditionally fork+clone.
+        p = fixit.build_fix_prompt("boom", "trace")
+        low = p.lower()
+        self.assertIn("--show-toplevel", p)  # detect it is inside a clone
+        self.assertIn("origin/main", p)  # branch off latest main
+        self.assertIn("git fetch origin", p)  # fetch first
+        self.assertTrue(
+            "already a clone" in low or "already a git clone" in low,
+            "prompt should call out the already-in-a-clone case",
+        )
+        self.assertIn("this clone's own remote", low)  # push to that clone's remote
+
+    def test_permission_failure_fallback(self):
+        # When pushing to the existing clone's remote fails on permissions, the prompt
+        # should offer BOTH: supply a push credential, OR fork and push to the fork.
+        p = fixit.build_fix_prompt("boom", "trace")
+        low = p.lower()
+        self.assertIn("permissions issue", low)  # the failure mode
+        self.assertIn("push credential", low)  # option 1
+        self.assertIn("fork and push to the fork", low)  # option 2
+
+    def test_still_has_fork_clone_fallback(self):
+        # The original fork+clone flow must survive as the fallback for when the CWD is
+        # NOT already a clone.
+        p = fixit.build_fix_prompt("boom", "trace")
+        self.assertIn("gh repo fork fughilli/td-deploy --clone", p)
+        self.assertIn("NOT already a clone", p)
+
 
 if __name__ == "__main__":
     unittest.main()
