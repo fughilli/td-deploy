@@ -93,10 +93,16 @@ def emit(plan, graph, outdir: str) -> dict:
                 expr, mul = spec["expr"], spec.get("mul", 1.0)
                 fn, info = add_expr(str(expr))
                 if fn:
-                    tus[n] = {"fn": fn, "inputs": info, "mul": mul}
+                    entry = {"fn": fn, "inputs": info, "mul": mul}
                 else:
-                    tus[n] = {"interpreted": str(expr), "mul": mul}
+                    entry = {"interpreted": str(expr), "mul": mul}
                     coverage["interpreted_exprs"].append(str(expr))
+                # Optional periodic wrap (radians, for rotation) applied in f64 by the
+                # runtime before the f32 uniform upload — see lowering/lower.py.
+                mod = spec.get("mod")
+                if mod is not None:
+                    entry["mod"] = mod
+                tus[n] = entry
             j["time_uniforms"] = tus
 
         steps_json.append(j)

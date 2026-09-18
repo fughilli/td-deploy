@@ -158,6 +158,18 @@ py_test(
     ],
 )
 
+# Regression: the Transform TOP primitive wraps its rotation angle (mod=2pi) so an
+# unbounded angle doesn't cog once it exceeds f32 precision at the uniform upload.
+py_test(
+    name = "transform_rotate_wrap_test",
+    srcs = ["tests/transform_rotate_wrap_test.py"],
+    imports = ["."],
+    deps = [
+        ":ir",
+        ":lowering",
+    ],
+)
+
 # Regression: the frozen deploy-engine sidecar must declare every third-party
 # module the compile/emit path imports. emit_artifact decodes a video source's
 # first frame via runtime.video.VideoSource, which needs numpy — so numpy must be

@@ -140,6 +140,12 @@ struct TimeUniform {
     interpreted: Option<String>,
     #[serde(default = "one")]
     mul: f64,
+    // Optional periodic wrap (fmod), applied in f64 after `mul` and before the
+    // 32-bit uniform upload. Rotation is emitted with mod=2pi (lowering/lower.py):
+    // an unbounded angle would lose its per-frame step to the f32 ULP once it
+    // grows large (days of uptime) and the rotation cogs. None = no wrap.
+    #[serde(rename = "mod", default)]
+    modulo: Option<f64>,
 }
 fn one() -> f64 {
     1.0
@@ -917,6 +923,12 @@ impl<'a> Renderer<'a> {
                                 prog.eval(t, frame, &|n, ch| chop_get(&store, n, ch)) * tu.mul
                             } else {
                                 0.0
+                            };
+                            // Wrap periodic uniforms (rotation: mod=2pi) in f64 before
+                            // the f32 cast, so a large angle keeps full float precision.
+                            let v = match tu.modulo {
+                                Some(m) if m != 0.0 => v % m,
+                                _ => v,
                             };
                             gl.uniform_1_f32(Some(&l), v as f32);
                         }

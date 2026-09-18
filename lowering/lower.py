@@ -148,7 +148,13 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
             vertex=shaders.vertex(target),
             fragment=shaders.transform_top(target),
             time_uniforms={
-                "uRotate": {"expr": rot, "mul": math.pi / 180.0},
+                # Rotation is periodic, so wrap it to [-2pi, 2pi) (fmod) before it
+                # reaches the shader. GLES uniforms are 32-bit floats; an unbounded
+                # angle (e.g. a Speed CHOP / absTime feeding `rotate`) loses its
+                # per-frame increment to the f32 ULP after the value grows large
+                # (days of uptime), and the rotation visibly cogs. Modelled into the
+                # primitive so every Transform TOP is bounded by construction.
+                "uRotate": {"expr": rot, "mul": math.pi / 180.0, "mod": 2.0 * math.pi},
                 "uTranslateX": {"expr": _p(["tx", "translatex"], 0.0), "mul": 1.0},
                 "uTranslateY": {"expr": _p(["ty", "translatey"], 0.0), "mul": 1.0},
                 "uScaleX": {"expr": _p(["sx", "scalex"], 1.0), "mul": usc},
