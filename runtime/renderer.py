@@ -10,6 +10,7 @@ move. Output frames are read back as numpy RGBA. Used by the MJPEG stream server
 
 from __future__ import annotations
 
+import math
 import os
 
 import numpy as np
@@ -170,6 +171,11 @@ class Renderer:
                     _set_uniform(prog, name, kind, val)
                 for name, spec in st.time_uniforms.items():
                     v = eval_expr(spec["expr"], t, frame, chops=self.chops) * spec.get("mul", 1.0)
+                    # Bound periodic uniforms (rotation: mod=2pi) before upload, so a
+                    # large angle keeps float precision — matches the Rust runtime.
+                    mod = spec.get("mod")
+                    if mod:
+                        v = math.fmod(v, mod)
                     _set_uniform(prog, name, "float", v)
                 GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)
 
