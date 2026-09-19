@@ -12,4 +12,5 @@ contextBridge.exposeInMainWorld('td', {
   pickDir: () => ipcRenderer.invoke('pick-dir'),
   configDir: () => ipcRenderer.invoke('config-dir'),
   revealPath: (p) => ipcRenderer.invoke('reveal-path', p),
+  fetchStats: (host, port) => ipcRenderer.invoke('fetch-stats', { host, port }),
 });

@@ -1027,11 +1027,44 @@ const PAGE: &[u8] = b"<!doctype html><html><body style='margin:0;background:#111
 align-items:center;justify-content:center;height:100vh'>\
 <img src='/stream' style='max-width:100vw;max-height:100vh;image-rendering:pixelated'></body></html>";
 
+// Self-contained frame-timing page served at /perf: polls /stats (same origin) and
+// plots the per-frame loop breakdown (stacked), so performance is viewable from any
+// browser with no app installed — same visualization as the app's Performance pane.
+const PERF_HTML: &str = r#"<!doctype html><html><head><meta charset="utf-8">
+<title>td-deploy — performance</title><style>
+body{margin:0;background:#14161a;color:#e7e9ee;font:13px -apple-system,system-ui,sans-serif;padding:14px}
+h1{font-size:15px;margin:0 0 8px}#summary{font-size:12px;color:#8b909c;margin-bottom:8px}
+canvas{width:100%;height:240px;display:block;background:#0f1116;border:1px solid #2b2f39;border-radius:6px}
+#legend{display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:10px;font:11px ui-monospace,Menlo,monospace;color:#8b909c}
+.leg{display:inline-flex;align-items:center;gap:5px}.sw{width:10px;height:10px;border-radius:2px}
+</style></head><body><h1>td-deploy — frame timing</h1>
+<div id="summary">connecting…</div><canvas id="c"></canvas><div id="legend"></div><script>
+const MAXN=180,MS=500;let prev=null,samples=[];
+function excl(k){return k==='frame'||k==='present';}
+function color(l){let h=0;for(let i=0;i<l.length;i++)h=(h*31+l.charCodeAt(i))>>>0;return`hsl(${h%360} 65% 55%)`;}
+async function poll(){let s;try{s=await(await fetch('/stats',{cache:'no-store'})).json();}catch(e){document.getElementById('summary').textContent='no /stats';prev=null;return;}
+const now={};for(const k in s)now[k]={total:s[k].total_ms||0,count:s[k].count||0};
+if(prev&&prev.frame&&now.frame&&now.frame.count>prev.frame.count){const df=now.frame.count-prev.frame.count,parts={};
+for(const k in now){if(excl(k))continue;const p=prev[k];if(!p)continue;const dt=now[k].total-p.total;if(dt>0)parts[k]=dt/df;}
+const fr=(now.frame.total-prev.frame.total)/df;samples.push({parts,frame:fr,fps:fr>0?1000/fr:0});if(samples.length>MAXN)samples.shift();draw();
+const last=samples[samples.length-1];document.getElementById('summary').textContent=`frame ${last.frame.toFixed(1)} ms · ${last.fps.toFixed(1)} fps`;}
+prev=now;}
+function draw(){const cv=document.getElementById('c'),w=cv.clientWidth||800,h=240;if(cv.width!==w)cv.width=w;cv.height=h;
+const ctx=cv.getContext('2d');ctx.clearRect(0,0,w,h);if(!samples.length)return;let ymax=20;
+for(const smp of samples){let su=0;for(const k in smp.parts)su+=smp.parts[k];ymax=Math.max(ymax,su,smp.frame);}ymax*=1.1;
+const labels=Array.from(new Set(samples.flatMap(s=>Object.keys(s.parts)))).sort(),n=samples.length,bw=w/MAXN;
+for(let i=0;i<n;i++){const smp=samples[i],x=w-(n-i)*bw;let y=h;for(const l of labels){const v=smp.parts[l]||0;if(v<=0)continue;const ph=(v/ymax)*h;ctx.fillStyle=color(l);ctx.fillRect(x,y-ph,Math.ceil(bw),ph);y-=ph;}}
+ctx.strokeStyle='rgba(255,255,255,0.25)';ctx.lineWidth=1;for(const ms of [1000/30,1000/60]){const y=h-(ms/ymax)*h;if(y>0&&y<h){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}}
+const last=samples[samples.length-1],lg=document.getElementById('legend');lg.innerHTML='';
+for(const l of labels){const v=last.parts[l]||0,it=document.createElement('span');it.className='leg';const sw=document.createElement('span');sw.className='sw';sw.style.background=color(l);it.appendChild(sw);it.appendChild(document.createTextNode(`${l} ${v.toFixed(1)}`));lg.appendChild(it);}}
+poll();setInterval(poll,MS);
+</script></body></html>"#;
+
 // Count of clients currently pulling frames. The render loop only renders +
 // encodes while this is > 0, so an idle box (no viewer) spends no CPU/GPU.
 fn serve_http(port: u16, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<AtomicUsize>, prof: Prof, store: Chops) {
     let l = TcpListener::bind(("0.0.0.0", port)).expect("bind http");
-    println!("[stream] native MJPEG on http://0.0.0.0:{port}/  (perf counters at /stats, CHOP/MIDI store at /chops)");
+    println!("[stream] native MJPEG on http://0.0.0.0:{port}/  (perf graph at /perf, counters at /stats, CHOP/MIDI store at /chops)");
     for c in l.incoming().flatten() {
         let latest = latest.clone();
         let clients = clients.clone();
@@ -1068,6 +1101,11 @@ fn handle_conn(mut s: TcpStream, latest: Arc<Mutex<Vec<u8>>>, clients: Arc<Atomi
         let hdr = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\n\r\n", body.len());
         let _ = s.write_all(hdr.as_bytes());
         let _ = s.write_all(body.as_bytes());
+    } else if path.starts_with("/perf") {
+        // Standalone frame-timing page (polls /stats) — browser diagnostics, no app.
+        let hdr = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\r\n", PERF_HTML.len());
+        let _ = s.write_all(hdr.as_bytes());
+        let _ = s.write_all(PERF_HTML.as_bytes());
     } else if path.starts_with("/stream") {
         clients.fetch_add(1, Ordering::Relaxed);
         let _guard = ClientGuard(clients.clone()); // wakes the render loop; drop pauses it

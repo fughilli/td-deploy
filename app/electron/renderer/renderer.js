@@ -22,6 +22,8 @@ const els = {
   addwifiModal: $('addwifi-modal'), addwifiSsid: $('addwifi-ssid'),
   addwifiPsk: $('addwifi-psk'), addwifiAdd: $('addwifi-add'), addwifiCancel: $('addwifi-cancel'),
   logCard: $('log-card'), logToggle: $('log-toggle'), logCaret: $('log-caret'),
+  perfCard: $('perf-card'), perfToggle: $('perf-toggle'), perfCaret: $('perf-caret'),
+  perfSummary: $('perf-summary'), perfCanvas: $('perf-canvas'), perfLegend: $('perf-legend'),
 };
 
 const STORE = 'td-deploy-settings';
@@ -258,6 +260,122 @@ els.logToggle.onclick = () => {
   const collapsed = els.logCard.classList.toggle('collapsed');
   els.logToggle.setAttribute('aria-expanded', String(!collapsed));
   els.logCaret.textContent = collapsed ? '▸' : '▾';
+};
+
+// --- Performance pane: poll the player's /stats and plot the per-frame breakdown ---
+// /stats counters are cumulative; we sample every PERF_MS and plot the delta
+// (ms-per-frame per label) as stacked bars. `frame` and `present` are aggregates
+// (parents of the leaves), so they're excluded from the stack and shown as lines.
+const PERF_MS = 500;
+const PERF_MAX = 120; // rolling window (~1 min at 500 ms)
+let perfPrev = null;
+let perfSamples = [];
+let perfTimer = null;
+
+function perfExcluded(k) { return k === 'frame' || k === 'present'; }
+function perfColor(label) {
+  let h = 0;
+  for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360} 65% 55%)`;
+}
+async function perfPoll() {
+  const host = (els.pi.value || '').trim();
+  const s = await window.td.fetchStats(host, 8788);
+  if (!s || typeof s !== 'object') {
+    els.perfSummary.textContent = `no /stats from ${host || '(no host)'}:8788 — is the player deployed & reachable?`;
+    perfPrev = null;
+    return;
+  }
+  const now = {};
+  for (const k in s) now[k] = { total: s[k].total_ms || 0, count: s[k].count || 0 };
+  const pf = perfPrev && perfPrev.frame;
+  if (pf && now.frame && now.frame.count > perfPrev.frame.count) {
+    const dframes = now.frame.count - perfPrev.frame.count;
+    const parts = {};
+    for (const k in now) {
+      if (perfExcluded(k)) continue;
+      const p = perfPrev[k];
+      if (!p) continue;
+      const dt = now[k].total - p.total;
+      if (dt > 0) parts[k] = dt / dframes;
+    }
+    const frameMs = (now.frame.total - perfPrev.frame.total) / dframes;
+    perfSamples.push({ parts, frame: frameMs, fps: frameMs > 0 ? 1000 / frameMs : 0 });
+    if (perfSamples.length > PERF_MAX) perfSamples.shift();
+    perfDraw();
+    const last = perfSamples[perfSamples.length - 1];
+    els.perfSummary.textContent =
+      `frame ${last.frame.toFixed(1)} ms · ${last.fps.toFixed(1)} fps  (${host})`;
+  }
+  perfPrev = now;
+}
+function perfDraw() {
+  const cv = els.perfCanvas;
+  if (!cv) return;
+  const w = cv.clientWidth || 600;
+  const h = 150;
+  if (cv.width !== w) cv.width = w;
+  cv.height = h;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+  if (!perfSamples.length) return;
+  let ymax = 20;
+  for (const smp of perfSamples) {
+    let sum = 0;
+    for (const k in smp.parts) sum += smp.parts[k];
+    ymax = Math.max(ymax, sum, smp.frame);
+  }
+  ymax *= 1.1;
+  const labels = Array.from(new Set(perfSamples.flatMap((s) => Object.keys(s.parts)))).sort();
+  const n = perfSamples.length;
+  const bw = w / PERF_MAX;
+  for (let i = 0; i < n; i++) {
+    const smp = perfSamples[i];
+    const x = w - (n - i) * bw;
+    let yacc = h;
+    for (const label of labels) {
+      const v = smp.parts[label] || 0;
+      if (v <= 0) continue;
+      const ph = (v / ymax) * h;
+      ctx.fillStyle = perfColor(label);
+      ctx.fillRect(x, yacc - ph, Math.ceil(bw), ph);
+      yacc -= ph;
+    }
+  }
+  // Reference lines at 30 and 60 fps budgets.
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = 1;
+  for (const ms of [1000 / 30, 1000 / 60]) {
+    const y = h - (ms / ymax) * h;
+    if (y > 0 && y < h) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+  }
+  const last = perfSamples[perfSamples.length - 1];
+  els.perfLegend.innerHTML = '';
+  for (const label of labels) {
+    const v = last.parts[label] || 0;
+    const item = document.createElement('span');
+    item.className = 'perf-leg';
+    const sw = document.createElement('span');
+    sw.className = 'perf-sw';
+    sw.style.background = perfColor(label);
+    item.appendChild(sw);
+    item.appendChild(document.createTextNode(`${label} ${v.toFixed(1)}`));
+    els.perfLegend.appendChild(item);
+  }
+}
+els.perfToggle.onclick = () => {
+  const collapsed = els.perfCard.classList.toggle('collapsed');
+  els.perfToggle.setAttribute('aria-expanded', String(!collapsed));
+  els.perfCaret.textContent = collapsed ? '▸' : '▾';
+  if (!collapsed) {
+    perfPrev = null;
+    perfSamples = [];
+    perfPoll();
+    perfTimer = setInterval(perfPoll, PERF_MS);
+  } else if (perfTimer) {
+    clearInterval(perfTimer);
+    perfTimer = null;
+  }
 };
 
 // --- add-deploy-key modal (generate a new key, or load one from a file) ---
