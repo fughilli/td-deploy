@@ -13,7 +13,7 @@ the MLIR dialect); only the repo/project is `td-deploy`.
 
 module(
     name = "toxc",
-    version = "0.2.2",
+    version = "0.2.3",
 )
 
 # ---------------------------------------------------------------------------
