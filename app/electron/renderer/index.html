@@ -77,7 +77,8 @@
           <option value="">(none — using SSH key above)</option>
         </select>
       </label>
-      <button id="deploy-key-gen" title="Generate a new ed25519 deploy keypair. The flashed Pi trusts it automatically; deploy uses it to log in.">Generate…</button>
+      <input id="deploy-key-name" placeholder="deploy" title="Name for the new key (letters, digits, . _ -). Blank picks a unique default." />
+      <button id="deploy-key-gen" title="Generate a new ed25519 deploy keypair. The flashed Pi trusts it automatically; deploy uses it to log in.">Generate</button>
     </div>
     <div class="row">
       <span id="deploy-key-fp" class="path muted"></span>

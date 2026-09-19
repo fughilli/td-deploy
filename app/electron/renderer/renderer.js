@@ -14,7 +14,7 @@ const els = {
   assets: $('assets'), assetsList: $('assets-list'),
   assetsAddRoot: $('assets-addroot'), assetsRedeploy: $('assets-redeploy'),
   deployKeySelect: $('deploy-key-select'), deployKeyGen: $('deploy-key-gen'),
-  deployKeyFp: $('deploy-key-fp'),
+  deployKeyName: $('deploy-key-name'), deployKeyFp: $('deploy-key-fp'),
 };
 
 const STORE = 'td-deploy-settings';
@@ -147,9 +147,21 @@ function renderDeployKeys(keys, active) {
 }
 
 els.deployKeyGen.onclick = () => {
-  const name = (prompt('Name for the new deploy key:', 'deploy') || '').trim();
-  if (!name) return;
+  // Electron's renderer has no window.prompt(), so take the name from an inline
+  // field; blank -> a unique default (deploy, deploy-2, …). Chars must match the
+  // sidecar's key-name rule.
+  const existing = new Set(deployKeys.map((k) => k.name));
+  let name = (els.deployKeyName.value || '').trim();
+  if (!name) {
+    name = 'deploy';
+    for (let i = 2; existing.has(name); i++) name = 'deploy-' + i;
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+    log('invalid deploy-key name (use letters, digits, . _ -)', 'err');
+    return;
+  }
   window.td.send({ cmd: 'gen_deploy_key', name });
+  els.deployKeyName.value = '';
 };
 els.deployKeySelect.onchange = () => {
   const name = els.deployKeySelect.value;
