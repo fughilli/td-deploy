@@ -1199,10 +1199,18 @@ fn stream(dir: &str, port: u16, fps: f64, target: &str) {
             let tp = Instant::now();
             r.present_scanout(s.dw as i32, s.dh as i32);
             s.swap();
-            let tc = Instant::now();
-            prof_add(&prof, "present:blit", tp.elapsed().as_secs_f64());
-            s.flip(); // page-flip the freshly rendered bo + vblank wait
-            prof_add(&prof, "present:flip", tc.elapsed().as_secs_f64());
+            let tb = Instant::now();
+            prof_add(&prof, "present:blit", (tb - tp).as_secs_f64());
+            // Drain the GPU (glFinish) BEFORE the page-flip so we can attribute the
+            // frame to GPU render vs vblank wait separately — without this the flip
+            // lumps both together (a large "present:flip" then can't tell GPU-bound
+            // from vsync-bound). No net cost: the flip fences on render completion
+            // anyway; this just moves the wait somewhere we can time it.
+            unsafe { r.gl.finish() };
+            let tg = Instant::now();
+            prof_add(&prof, "gpu", (tg - tb).as_secs_f64());
+            s.flip(); // page-flip: now a pure vblank wait (GPU already drained)
+            prof_add(&prof, "present:flip", tg.elapsed().as_secs_f64());
             prof_add(&prof, "present", tp.elapsed().as_secs_f64());
         }
 
@@ -1238,9 +1246,15 @@ fn stream(dir: &str, port: u16, fps: f64, target: &str) {
             println!("{}", prof_summary(&prof));
             last_log = Instant::now();
         }
-        let ft = start.elapsed().as_secs_f64() - t;
-        if let Some(s) = period.checked_sub(Duration::from_secs_f64(ft.max(0.0))) {
-            thread::sleep(s);
+        // Software fps cap ONLY when nothing else paces us. On HDMI the page-flip
+        // already blocks to vblank, so an extra sleep just fights vsync and adds
+        // beat (two unsynchronized throttles) — skip it there. Headless/MJPEG has no
+        // vsync, so the cap governs there.
+        if !hdmi {
+            let ft = start.elapsed().as_secs_f64() - t;
+            if let Some(s) = period.checked_sub(Duration::from_secs_f64(ft.max(0.0))) {
+                thread::sleep(s);
+            }
         }
     }
 }
