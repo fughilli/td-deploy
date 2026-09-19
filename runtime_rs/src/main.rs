@@ -9,7 +9,7 @@
 use glow::HasContext;
 use khronos_egl as egl;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::cell::{Cell, RefCell};
@@ -110,6 +110,9 @@ struct Step {
     uniforms: HashMap<String, Uniform>,
     #[serde(default)]
     time_uniforms: HashMap<String, TimeUniform>,
+    /// kind == "feedback": the step whose PREVIOUS frame this buffer holds.
+    #[serde(default)]
+    feedback_from: Option<String>,
 }
 #[derive(Deserialize)]
 struct Source {
@@ -521,6 +524,31 @@ fn compile(gl: &glow::Context, ty: u32, src: &str) -> glow::Shader {
     }
 }
 
+/// Copy `src_tex` into `dst_tex` through a scratch FBO.
+///
+/// glCopyTexSubImage2D is core in both GL 2.0 and GLES 2.0, so the Feedback TOP
+/// needs no target-specific blit shader. Both textures live in the same bottom-up
+/// GL space, so this is a straight 1:1 copy with no filtering.
+fn capture_tex(
+    gl: &glow::Context,
+    scratch: glow::Framebuffer,
+    src_tex: glow::Texture,
+    dst_tex: glow::Texture,
+    w: i32,
+    h: i32,
+) {
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    unsafe {
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(scratch));
+        gl.framebuffer_texture_2d(
+            glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(src_tex), 0);
+        gl.bind_texture(glow::TEXTURE_2D, Some(dst_tex));
+        gl.copy_tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, 0, 0, w, h);
+    }
+}
+
 fn make_tex(gl: &glow::Context, w: i32, h: i32, data: Option<&[u8]>, gles2: bool) -> glow::Texture {
     // ES2 uses the unsized internalformat GL_RGBA; desktop/ES3 use sized GL_RGBA8.
     let internal = if gles2 { glow::RGBA as i32 } else { glow::RGBA8 as i32 };
@@ -568,6 +596,10 @@ struct Renderer<'a> {
     gles2: bool,
     quad: Option<glow::Buffer>,
     blit_prog: Option<glow::Program>,   // GBM scanout: final-texture -> display surface
+    // Feedback TOPs: a scratch FBO used to copy a target's frame into the
+    // feedback buffer, and the set of buffers already seeded from their input.
+    capture_fbo: Option<glow::Framebuffer>,
+    fb_seeded: HashSet<String>,
     // Control-rate (CHOP) evaluation: the pre-compiled DAG + integrator state.
     chop_progs: Vec<ChopProg>,
     // The compiled CHOP kernel (chops_v), if the DAG was fully lowered. Preferred
@@ -709,6 +741,7 @@ impl<'a> Renderer<'a> {
             gl, dir: dir.to_string(), sched, exprs, store,
             tex: HashMap::new(), fbo: HashMap::new(), prog: HashMap::new(), size: HashMap::new(),
             gles2, quad: None, blit_prog: None,
+            capture_fbo: None, fb_seeded: HashSet::new(),
             chop_progs, chops_lib, chops_abi, chop_state, chop_state_idx, uniform_progs,
             speed_state: RefCell::new(HashMap::new()), last_t: Cell::new(0.0),
             prof: Arc::new(Mutex::new(Default::default())),
@@ -853,7 +886,26 @@ impl<'a> Renderer<'a> {
                     self.fbo.insert(st.id.clone(), f);
                     self.size.insert(st.id.clone(), (st.w, st.h));
                 }
+            } else if st.kind == "feedback" {
+                // A Feedback TOP owns a texture that PERSISTS between frames; it
+                // has no shader. Start it cleared so frame 0 has no garbage.
+                unsafe {
+                    let ot = make_tex(gl, st.w, st.h, None, gles2);
+                    let f = gl.create_framebuffer().unwrap();
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f));
+                    gl.framebuffer_texture_2d(
+                        glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(ot), 0);
+                    gl.viewport(0, 0, st.w, st.h);
+                    gl.clear_color(0.0, 0.0, 0.0, 0.0);
+                    gl.clear(glow::COLOR_BUFFER_BIT);
+                    self.tex.insert(st.id.clone(), ot);
+                    self.fbo.insert(st.id.clone(), f);
+                    self.size.insert(st.id.clone(), (st.w, st.h));
+                }
             }
+        }
+        if self.sched.steps.iter().any(|s| s.kind == "feedback") && self.capture_fbo.is_none() {
+            unsafe { self.capture_fbo = gl.create_framebuffer().ok(); }
         }
     }
 
@@ -864,8 +916,24 @@ impl<'a> Renderer<'a> {
         let tc = Instant::now();
         self.eval_chops(t); // control-rate pass -> store, before the shader uniforms read it
         prof_add(&self.prof, "chop:eval", tc.elapsed().as_secs_f64());
+        let scratch = self.capture_fbo;
         for (si, st) in self.sched.steps.iter().enumerate() {
-            if st.kind == "passthrough" {
+            if st.kind == "feedback" {
+                // The buffer already holds the previous frame's target — exactly
+                // what downstream should sample, so there is nothing to draw.
+                // Seed it once from input 0 (TD's reset image); that edge is
+                // delay-0, so it has already cooked by the time we get here.
+                if !self.fb_seeded.contains(&st.id) {
+                    if let (Some(scratch), Some(src)) = (scratch, st.inputs.first()) {
+                        if let (Some(&sx), Some(&dx)) = (self.tex.get(src), self.tex.get(&st.id)) {
+                            let (dw, dh) = self.size[&st.id];
+                            let (sw, sh) = self.size[src];
+                            capture_tex(gl, scratch, sx, dx, dw.min(sw), dh.min(sh));
+                        }
+                    }
+                    self.fb_seeded.insert(st.id.clone());
+                }
+            } else if st.kind == "passthrough" {
                 if let Some(src) = st.inputs.first() {
                     let (a, b) = (self.tex[src], self.size[src]);
                     self.tex.insert(st.id.clone(), a);
@@ -951,6 +1019,27 @@ impl<'a> Renderer<'a> {
                 }
                 prof_add(&self.prof, &format!("top:{}", st.id), ts.elapsed().as_secs_f64());
             }
+        }
+
+        // End of frame: copy each Feedback TOP's target into its persistent
+        // buffer, so the NEXT frame reads what this frame produced. Done after
+        // the whole cook because a target is normally DOWNSTREAM of the feedback
+        // that echoes it — that loop is what makes it a feedback in the first place.
+        if let Some(scratch) = scratch {
+            let tf = Instant::now();
+            for st in self.sched.steps.iter() {
+                if st.kind != "feedback" {
+                    continue;
+                }
+                if let Some(src) = &st.feedback_from {
+                    if let (Some(&sx), Some(&dx)) = (self.tex.get(src), self.tex.get(&st.id)) {
+                        let (dw, dh) = self.size[&st.id];
+                        let (sw, sh) = self.size[src];
+                        capture_tex(gl, scratch, sx, dx, dw.min(sw), dh.min(sh));
+                    }
+                }
+            }
+            prof_add(&self.prof, "feedback:capture", tf.elapsed().as_secs_f64());
         }
     }
 

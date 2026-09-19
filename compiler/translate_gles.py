@@ -23,9 +23,34 @@ import sys
 import tempfile
 
 
+def struct_locations(src: str) -> dict[str, int]:
+    """Locations one instance of each declared struct consumes: one per member,
+    and one per row for a matrix. Used so an ARRAY of structs advances the
+    location counter by the right amount."""
+    sizes: dict[str, int] = {}
+    for m in re.finditer(r"struct\s+(\w+)\s*\{([^}]*)\}", src):
+        n = 0
+        for decl in m.group(2).split(";"):
+            decl = decl.strip()
+            if not decl:
+                continue
+            ty = decl.split()[0]
+            mm = re.match(r"^mat(\d)(?:x\d)?$", ty)
+            n += int(mm.group(1)) if mm else 1
+        sizes[m.group(1)] = max(n, 1)
+    return sizes
+
+
 def inject_locations(src: str) -> str:
     """version->450 and add layout(location=N)/binding=M to user in/out + default
-    uniforms so glslang can emit OpenGL SPIR-V."""
+    uniforms so glslang can emit OpenGL SPIR-V.
+
+    An array declaration consumes one slot PER ELEMENT (and a struct array one per
+    member per element), so the counters advance by the declared size. Advancing by
+    one would make the next uniform collide — glslang rejects that with
+    "overlapping use of location N", which is how a TD GLSL TOP declaring
+    `uniform TDInfo uTD2DInfos[2]` followed by any other uniform used to fail."""
+    structs = struct_locations(src)
     out, loc, binding = [], 0, 0
     for line in src.splitlines():
         s = line.strip()
@@ -36,15 +61,16 @@ def inject_locations(src: str) -> str:
         if m:
             out.append(f"layout(location=0) {s}")
             continue
-        m = re.match(r"^uniform\s+sampler\w+\s+(\w+)(\[\d+\])?;", s)
+        m = re.match(r"^uniform\s+sampler\w+\s+(\w+)(?:\[(\d+)\])?;", s)
         if m:
             out.append(f"layout(binding={binding}) {s}")
-            binding += 1
+            binding += int(m.group(2)) if m.group(2) else 1
             continue
-        m = re.match(r"^uniform\s+\w+\s+(\w+)(\[\d+\])?;", s)
+        m = re.match(r"^uniform\s+(\w+)\s+(\w+)(?:\[(\d+)\])?;", s)
         if m:
             out.append(f"layout(location={loc}) {s}")
-            loc += 1
+            count = int(m.group(3)) if m.group(3) else 1
+            loc += count * structs.get(m.group(1), 1)
             continue
         out.append(line)
     return "\n".join(out) + "\n"

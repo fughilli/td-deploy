@@ -42,10 +42,10 @@ def _tok(v, default):
 
 
 def infer_format(g: Graph, report: list[str], out_res: int = 256) -> None:
-    """Assign node.out_type = {w,h,fmt}. image_in keeps its native size; crop sets
-    the resolution — from its own `outputresolution`/`resolutionw`/`resolutionh`
-    params when set (so bumping crop res in TD takes effect), else `out_res`; other
-    ops inherit input 0."""
+    """Assign node.out_type = {w,h,fmt}. image_in keeps its native size; crop and
+    noise set the resolution — from their own `outputresolution`/`resolutionw`/
+    `resolutionh` params when set (so bumping res in TD takes effect), else
+    `out_res`; other ops inherit their first SAME-FRAME input."""
     for nid in g.topo_order():
         n = g.nodes[nid]
         if n.op == "image_in":
@@ -66,13 +66,30 @@ def infer_format(g: Graph, report: list[str], out_res: int = 256) -> None:
             else:
                 w = h = out_res
             n.out_type = {"w": w, "h": h, "fmt": fmt}
-        elif n.inputs:
-            src = g.nodes[n.inputs[0].node]
-            if src.out_type is None:
-                raise ValueError(f"{nid}: input {src.id} has no inferred type")
-            n.out_type = dict(src.out_type)
+        elif n.op == "noise":
+            # A generator — nothing to inherit from. Honor its own TD output
+            # resolution when set, else the project default.
+            if "resolutionw" in n.params or "resolutionh" in n.params:
+                w = _tok(n.params.get("resolutionw"), out_res)
+                h = _tok(n.params.get("resolutionh"), out_res)
+            else:
+                w = h = out_res
+            n.out_type = {"w": w, "h": h, "fmt": "rgba8"}
         else:
-            raise ValueError(f"{nid}: op {n.op!r} has no inputs and declares no format")
+            # Only same-frame edges can be inherited from: a delay>0 (feedback)
+            # edge points at a node that cooks LATER this frame, so its type is
+            # not known yet.
+            same_frame = [p for p in n.inputs if p.delay == 0]
+            if same_frame:
+                src = g.nodes[same_frame[0].node]
+                if src.out_type is None:
+                    raise ValueError(f"{nid}: input {src.id} has no inferred type")
+                n.out_type = dict(src.out_type)
+            elif n.op == "feedback":
+                # An unwired Feedback TOP still needs a buffer to live in.
+                n.out_type = {"w": out_res, "h": out_res, "fmt": "rgba8"}
+            else:
+                raise ValueError(f"{nid}: op {n.op!r} has no inputs and declares no format")
     report.append(
         "infer_format: "
         + ", ".join(

@@ -6,12 +6,31 @@
 // at build time — the cross toolchain needs no aarch64 libgbm, and the image's
 // Mesa provides it at run time.
 
+// Non-Linux stub. GBM/KMS scanout only exists on the Pi, but the shared render
+// loop in main.rs calls this surface unconditionally, so the stub has to mirror
+// it or a macOS/Windows host build fails to type-check. `open` always returns
+// None there, so nothing below is ever reached.
 #[cfg(not(target_os = "linux"))]
-pub struct Scanout;
+pub struct Scanout {
+    pub dw: u32,
+    pub dh: u32,
+}
 #[cfg(not(target_os = "linux"))]
 impl Scanout {
     pub fn open() -> Option<Scanout> {
         None
+    }
+    pub fn init_gl(&mut self) -> glow::Context {
+        unreachable!("GBM scanout is Linux-only")
+    }
+    pub fn poll_hotplug(&mut self) {
+        unreachable!("GBM scanout is Linux-only")
+    }
+    pub fn swap(&self) {
+        unreachable!("GBM scanout is Linux-only")
+    }
+    pub fn flip(&mut self) {
+        unreachable!("GBM scanout is Linux-only")
     }
 }
 

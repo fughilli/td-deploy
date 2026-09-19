@@ -31,6 +31,45 @@ def _sepblur(img: np.ndarray, w1d: list[float], R: int) -> np.ndarray:
     return out
 
 
+# Mirrors lowering.shaders._MATH_COMBINE so GL and CPU fold inputs identically.
+_MATH_FOLD = {
+    "add": lambda a, b: a + b,
+    "sub": lambda a, b: a - b,
+    "subtract": lambda a, b: a - b,
+    "mult": lambda a, b: a * b,
+    "multiply": lambda a, b: a * b,
+    "div": lambda a, b: a / np.maximum(b, 1e-6),
+    "divide": lambda a, b: a / np.maximum(b, 1e-6),
+    "max": np.maximum,
+    "maximum": np.maximum,
+    "min": np.minimum,
+    "minimum": np.minimum,
+    "diff": lambda a, b: np.abs(a - b),
+    "difference": lambda a, b: np.abs(a - b),
+    "average": lambda a, b: a + b,
+}
+
+
+def _combine_of(st) -> str:
+    c = str(st.params.get("op", "add")).split()
+    c = c[0].strip('"').lower() if c else "add"
+    if c in ("no_op", "off", ""):
+        c = "add"
+    return c if c in _MATH_FOLD else "add"
+
+
+def _tu(st, name: str, default: float) -> float:
+    """A math-TOP scalar from the step's time_uniforms. The CPU oracle renders a
+    single frame at t=0, so only literal (non-expression) values are honored."""
+    spec = st.time_uniforms.get(name)
+    if spec is None:
+        return default
+    try:
+        return float(spec["expr"]) * spec.get("mul", 1.0)
+    except (TypeError, ValueError):
+        return default
+
+
 def run(plan: RuntimePlan) -> np.ndarray:
     img_of: dict[str, np.ndarray] = {}
     for st in plan.steps:
@@ -48,6 +87,21 @@ def run(plan: RuntimePlan) -> np.ndarray:
                 img_of[st.node_id] = _sepblur(
                     img_of[st.inputs[0]], st.params["_weights"], st.params["_radius"]
                 )
+            elif st.op == "add":
+                acc = img_of[st.inputs[0]].copy()
+                for src in st.inputs[1:]:
+                    acc = acc + img_of[src]
+                img_of[st.node_id] = acc
+            elif st.op == "math":
+                acc = img_of[st.inputs[0]].copy()
+                for src in st.inputs[1:]:
+                    acc = _MATH_FOLD[_combine_of(st)](acc, img_of[src])
+                if _combine_of(st) == "average" and len(st.inputs) > 1:
+                    acc = acc / float(len(st.inputs))
+                pre = _tu(st, "uPreOff", 0.0)
+                gain = _tu(st, "uGain", 1.0)
+                post = _tu(st, "uPostOff", 0.0)
+                img_of[st.node_id] = (acc + pre) * gain + post
             else:
                 raise NotImplementedError(f"no CPU kernel for {st.op!r} (GL-only)")
     out = np.clip(img_of[plan.output_id], 0.0, 1.0)

@@ -61,6 +61,16 @@ py_test(
     deps = [":chop_to_tox"],
 )
 
+# Regression: explicit uniform locations must skip past array elements, or a TD
+# GLSL TOP (always wrapped with `uniform TDInfo uTD2DInfos[n]`) fails to translate.
+py_test(
+    name = "test_gles_locations",
+    srcs = ["test_gles_locations.py"],
+    imports = ["."],
+    main = "test_gles_locations.py",
+    deps = [":emit"],
+)
+
 py_test(
     name = "test_chop_ref",
     srcs = ["test_chop_ref.py"],

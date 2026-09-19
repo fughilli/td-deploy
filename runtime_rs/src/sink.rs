@@ -10,6 +10,9 @@
 // Double-buffered + page-flipped on vblank: we draw into the buffer that ISN'T
 // on screen, then flip on the next vblank, so a frame is never torn.
 
+// Non-Linux stub. KMS output is Linux-only, but the shared render loop calls this
+// surface unconditionally, so the stub must mirror it or a macOS/Windows host
+// build fails to type-check. `open` always returns None there.
 #[cfg(not(target_os = "linux"))]
 pub struct DrmSink;
 #[cfg(not(target_os = "linux"))]
@@ -18,6 +21,8 @@ impl DrmSink {
         None
     }
     pub fn present(&mut self, _rgba: &[u8], _w: usize, _h: usize) {}
+    pub fn compose(&mut self, _rgba: &[u8], _w: usize, _h: usize) {}
+    pub fn flip(&mut self) {}
 }
 
 #[cfg(target_os = "linux")]

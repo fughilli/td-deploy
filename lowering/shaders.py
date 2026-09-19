@@ -202,3 +202,177 @@ uniform sampler2D tex0;
 void main() { fragColor = texture(tex0, vUV); }
 """
     )
+
+
+def add_top(target: str, n_inputs: int) -> str:
+    """Add TOP: sum the bound inputs. TD's Add TOP composites its inputs by
+    addition (per-input transform params are identity in the common case and are
+    not modelled here)."""
+    n = max(1, n_inputs)
+    decls = "\n".join(f"uniform sampler2D tex{i};" for i in range(n))
+    acc = " + ".join(f"texture(tex{i}, vUV)" for i in range(n))
+    return (
+        _header(target, "fragment")
+        + f"""
+in vec2 vUV;
+out vec4 fragColor;
+{decls}
+void main() {{
+    fragColor = {acc};
+}}
+"""
+    )
+
+
+# Math TOP multi-input combine -> the GLSL expression that folds input i into acc.
+_MATH_COMBINE = {
+    "add": "acc += s;",
+    "sub": "acc -= s;",
+    "subtract": "acc -= s;",
+    "mult": "acc *= s;",
+    "multiply": "acc *= s;",
+    "div": "acc /= max(s, vec4(1e-6));",
+    "divide": "acc /= max(s, vec4(1e-6));",
+    "max": "acc = max(acc, s);",
+    "maximum": "acc = max(acc, s);",
+    "min": "acc = min(acc, s);",
+    "minimum": "acc = min(acc, s);",
+    "diff": "acc = abs(acc - s);",
+    "difference": "acc = abs(acc - s);",
+    "average": "acc += s;",  # divided by the input count below
+}
+
+
+def math_top(target: str, n_inputs: int, combine: str = "add") -> str:
+    """Math TOP: combine the inputs, then `(v + preOff) * gain + postOff`.
+
+    That is TD's Pre-Offset -> Gain -> Post-Offset order on the Value page. The
+    combine operator folds inputs 1..n into input 0; with a single input it is a
+    no-op, which is the `no_op` case."""
+    n = max(1, n_inputs)
+    decls = "\n".join(f"uniform sampler2D tex{i};" for i in range(n))
+    key = (combine or "add").strip().lower()
+    fold_stmt = _MATH_COMBINE.get(key, "acc += s;")
+    body = ""
+    for i in range(1, n):
+        body += f"    {{ vec4 s = texture(tex{i}, vUV); {fold_stmt} }}\n"
+    if key == "average" and n > 1:
+        body += f"    acc /= {float(n)};\n"
+    return (
+        _header(target, "fragment")
+        + f"""
+in vec2 vUV;
+out vec4 fragColor;
+{decls}
+uniform float uPreOff;
+uniform float uGain;
+uniform float uPostOff;
+void main() {{
+    vec4 acc = texture(tex0, vUV);
+{body}    fragColor = (acc + uPreOff) * uGain + uPostOff;
+}}
+"""
+    )
+
+
+def noise_top(target: str) -> str:
+    """Noise TOP: 3D gradient (Perlin-style) noise, `offset + amp * fBm(p)`.
+
+    NOT bit-exact with TouchDesigner's own simplex/sparse generators — those are
+    proprietary — so this is a visually equivalent stand-in that responds to the
+    same parameters (period, amplitude, offset, transform, harmonics, seed, and
+    the 4D time offset for animation).
+
+    The hash is a float permutation polynomial rather than integer/bit mixing so
+    the shader survives translation down to GLSL ES 1.00 for the `gles2` target,
+    which has no integer operations."""
+    return (
+        _header(target, "fragment")
+        + """
+in vec2 vUV;
+out vec4 fragColor;
+uniform float uPeriod;      // TD "Period": larger = bigger features
+uniform float uAmp;
+uniform float uOffset;
+uniform float uSeed;
+uniform float uT;           // TD "Translate 4D" — animates the field
+uniform vec4  uTranslate;   // xyz used (runtime has no vec3)
+uniform vec4  uScale;       // xyz used
+uniform float uExp;
+uniform float uHarmonics;   // extra octaves beyond the base
+uniform float uSpread;      // frequency multiplier per octave
+uniform float uRough;       // amplitude multiplier per octave
+uniform float uMono;        // 1 = same value on r,g,b
+uniform float uAspect;      // output w/h, so features stay round
+
+// Permutation polynomial on a 289 ring: float-only so it survives the ES 1.00
+// translation, and exactly reproducible for a given lattice cell.
+float perm289(float x) { return mod(((x * 34.0) + 1.0) * x, 289.0); }
+
+float cellHash(vec3 cell, float salt) {
+    float h = perm289(mod(cell.x, 289.0) + salt);
+    h = perm289(h + mod(cell.y, 289.0));
+    h = perm289(h + mod(cell.z, 289.0));
+    return h;
+}
+
+// Pseudo-random unit-ish gradient for a lattice cell.
+vec3 cellGradient(vec3 cell, float salt) {
+    float h = cellHash(cell, salt);
+    float a = h * (6.2831853 / 289.0);
+    float b = perm289(h + 7.0) * (6.2831853 / 289.0);
+    return vec3(cos(a) * sin(b), sin(a) * sin(b), cos(b));
+}
+
+float gradNoise(vec3 p, float salt) {
+    vec3 i = floor(p);
+    vec3 f = p - i;
+    vec3 w = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);   // quintic smoothstep
+    float n = 0.0;
+    for (int cz = 0; cz <= 1; ++cz) {
+        for (int cy = 0; cy <= 1; ++cy) {
+            for (int cx = 0; cx <= 1; ++cx) {
+                vec3 c = vec3(float(cx), float(cy), float(cz));
+                vec3 d = f - c;
+                float g = dot(cellGradient(i + c, salt), d);
+                vec3 bl = mix(1.0 - w, w, c);
+                n += g * bl.x * bl.y * bl.z;
+            }
+        }
+    }
+    return n;
+}
+
+float fbm(vec3 p, float salt) {
+    float sum = 0.0, amp = 1.0, norm = 0.0, freq = 1.0;
+    // +1 for the base octave; clamped so a large Harmonics can't unroll forever.
+    int oct = int(clamp(uHarmonics, 0.0, 6.0)) + 1;
+    for (int o = 0; o < 7; ++o) {
+        if (o >= oct) break;
+        sum += amp * gradNoise(p * freq, salt);
+        norm += amp;
+        freq *= max(uSpread, 1.0);
+        amp *= clamp(uRough, 0.0, 1.0);
+    }
+    return norm > 0.0 ? sum / norm : 0.0;
+}
+
+float channel(float salt) {
+    vec2 uv = vUV - 0.5;
+    uv.x *= uAspect;                       // keep features round on a wide frame
+    vec3 p = vec3(uv, 0.0) / max(uPeriod, 1e-4);
+    p = p * uScale.xyz + uTranslate.xyz;
+    p.z += uT;
+    float n = fbm(p, salt);                // roughly [-1, 1]
+    if (uExp != 1.0) n = sign(n) * pow(abs(n), max(uExp, 1e-4));
+    return uOffset + uAmp * n;
+}
+
+void main() {
+    float r = channel(uSeed);
+    vec3 rgb = (uMono > 0.5) ? vec3(r)
+                             : vec3(r, channel(uSeed + 31.0), channel(uSeed + 67.0));
+    fragColor = vec4(rgb, 1.0);
+}
+"""
+    )
