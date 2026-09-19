@@ -15,6 +15,9 @@ bazel-*
 deploy/secrets/
 *deploy_key*
 secrets/
+# ...but the deploy-key GENERATOR source + its test are code, not secrets.
+!app/deploy_engine/deploy_keys.py
+!tests/deploy_keys_test.py
 
 # sbc-deploy build scratch (builder VM logs, gc roots)
 .sbc-build/

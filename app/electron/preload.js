@@ -10,4 +10,5 @@ contextBridge.exposeInMainWorld('td', {
   copyText: (text) => ipcRenderer.invoke('copy-text', text),
   pickFile: () => ipcRenderer.invoke('pick-file'),
   pickDir: () => ipcRenderer.invoke('pick-dir'),
+  configDir: () => ipcRenderer.invoke('config-dir'),
 });

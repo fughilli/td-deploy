@@ -24,6 +24,7 @@ exports_files([
     "deploy_engine/assets.py",
     "deploy_engine/releases.py",
     "deploy_engine/flash_config.py",
+    "deploy_engine/deploy_keys.py",
     # The frozen sidecar's dependency manifest, checked by //:sidecar_requirements_test.
     "packaging/requirements.txt",
 ])

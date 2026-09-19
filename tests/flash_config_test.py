@@ -142,6 +142,29 @@ class WriteBootConfigTest(unittest.TestCase):
             conn = os.path.join(d, "system-connections")
             self.assertEqual(len(os.listdir(conn)), 2)
 
+    def test_authorized_keys_written(self):
+        with tempfile.TemporaryDirectory() as d:
+            line = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI deploy@td"
+            written = fc.write_boot_config(d, authorized_keys=[line])
+            ak = os.path.join(d, "authorized_keys")
+            self.assertIn(ak, written)
+            with open(ak) as f:
+                self.assertEqual(f.read(), line + "\n")
+            self.assertEqual(os.stat(ak).st_mode & 0o777, 0o600)
+
+    def test_multiple_authorized_keys_and_blanks_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            fc.write_boot_config(
+                d, authorized_keys=["ssh-ed25519 AAAA k1", "", "  ", "ssh-ed25519 BBBB k2"]
+            )
+            with open(os.path.join(d, "authorized_keys")) as f:
+                self.assertEqual(f.read(), "ssh-ed25519 AAAA k1\nssh-ed25519 BBBB k2\n")
+
+    def test_no_authorized_keys_no_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            fc.write_boot_config(d, hostname="tdplayer", authorized_keys=[])
+            self.assertFalse(os.path.exists(os.path.join(d, "authorized_keys")))
+
 
 # The password-cache gate, modeled exactly as the renderer persists it: hostname
 # and SSID are always saved; the Wi-Fi PASSWORD is saved only when the "remember"

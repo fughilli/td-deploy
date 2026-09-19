@@ -8,6 +8,9 @@ an on-boot oneshot (`deploy/nix/flash-config.nix`, already merged) installs them
   /boot/firmware/td-hostname                        one line: the chosen hostname
   /boot/firmware/system-connections/*.nmconnection  NetworkManager keyfiles, one
                                                     per WiFi network
+  /boot/firmware/authorized_keys                    SSH deploy pubkey line(s); the
+                                                    image installs them into root's
+                                                    ~/.ssh/authorized_keys on boot
 
 This module is the host-side other half: it validates/normalizes the hostname,
 renders the minimal WPA-PSK (or open) NetworkManager keyfiles, and writes both
@@ -80,18 +83,22 @@ def write_boot_config(
     mount_dir: str,
     hostname: Optional[str] = None,
     networks: Optional[Iterable[dict]] = None,
+    authorized_keys: Optional[Iterable[str]] = None,
 ) -> List[str]:
     """Write the flash-time artifacts under an already-mounted boot dir.
 
     `mount_dir` is the FAT boot partition's mount point (its `/boot/firmware`).
-    Writes `td-hostname` (only when `hostname` is a valid label) and one
+    Writes `td-hostname` (only when `hostname` is a valid label), one
     `system-connections/<slug>.nmconnection` per network in `networks` (each a
-    dict {ssid, psk?}). Networks without an SSID are skipped. Returns the list of
-    absolute paths written.
+    dict {ssid, psk?}), and `authorized_keys` (one SSH pubkey line per entry in
+    `authorized_keys`). Networks without an SSID and blank key lines are skipped.
+    Returns the list of absolute paths written.
 
-    Pure filesystem — no mounting, no elevation. The image reinstalls the WiFi
-    keyfiles with 0600 root perms on boot; we still write them 0600 here so the
-    plaintext PSK isn't world-readable on the card in the meantime.
+    The `authorized_keys` file is what the (already-merged) image first-boot
+    oneshot installs into root's ~/.ssh/authorized_keys — so the flashed Pi trusts
+    the app's deploy key. Pure filesystem — no mounting, no elevation. The image
+    reinstalls the WiFi keyfiles with 0600 root perms on boot; we still write them
+    0600 here so the plaintext PSK isn't world-readable on the card meanwhile.
     """
     written: List[str] = []
 
@@ -124,6 +131,17 @@ def write_boot_config(
             f.write(content)
         try:
             os.chmod(path, 0o600)  # plaintext PSK: not world-readable
+        except OSError:
+            pass
+        written.append(path)
+
+    keys = [k.strip() for k in (authorized_keys or []) if k and k.strip()]
+    if keys:
+        path = os.path.join(mount_dir, "authorized_keys")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(keys) + "\n")
+        try:
+            os.chmod(path, 0o600)  # match the perms the image installs
         except OSError:
             pass
         written.append(path)
