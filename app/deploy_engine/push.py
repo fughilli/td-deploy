@@ -9,6 +9,7 @@ old staging dirs. The deploy key logs in as root, so no on-Pi sudo is needed.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -32,8 +33,17 @@ def _ssh_base(key: str) -> list[str]:
         key,
         "-o",
         "IdentitiesOnly=yes",
+        # This is a reflashable appliance: each fresh image has a new host key, and
+        # the board is reachable by a stable name (tdplayer.local). Verifying/pinning
+        # host keys just makes every reflash fail with "REMOTE HOST IDENTIFICATION
+        # HAS CHANGED". Don't persist or check them — accept whatever the box
+        # presents and never write it to the operator's ~/.ssh/known_hosts.
         "-o",
         "StrictHostKeyChecking=accept-new",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "LogLevel=ERROR",
         "-o",
         "ConnectTimeout=10",
     ]
@@ -59,7 +69,9 @@ def push(
     subprocess.run(ssh + [target, f"mkdir -p {REMOTE_BASE}"], check=True, stdout=sys.stderr)
 
     src = art_dir.rstrip("/") + "/"
-    ssh_cmd = " ".join(_ssh_base(key))
+    # rsync -e is a shell string, so quote each arg — the key path contains spaces
+    # in the packaged app ("…/Application Support/td-deploy Studio/…").
+    ssh_cmd = " ".join(shlex.quote(a) for a in _ssh_base(key))
     if shutil.which("rsync"):
         subprocess.run(
             ["rsync", "-a", "--delete", "-e", ssh_cmd, src, f"{target}:{staging}/"],
@@ -78,6 +90,10 @@ def push(
             "IdentitiesOnly=yes",
             "-o",
             "StrictHostKeyChecking=accept-new",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
         ]
         for entry in os.listdir(art_dir):
             subprocess.run(
