@@ -100,4 +100,10 @@ label.grow input, label.grow select { flex: 1; width: 100%; }
 .disks li.muted { cursor: default; color: var(--muted); font-family: inherit; }
 .disks li.muted:hover { background: none; }
 .modal-actions { justify-content: flex-end; margin-top: 12px; }
+/* per-card flash config (hostname + Wi-Fi) */
+.flash-config { margin: 6px 0 2px; padding: 10px; border: 1px solid var(--edge);
+  border-radius: 8px; background: #1c2028; }
+.flash-config .row { margin: 6px 0; }
+.flash-config .row:first-child { margin-top: 0; }
+.flash-config .row:last-child { margin-bottom: 0; }
 #flash-progress { margin-top: 6px; }
