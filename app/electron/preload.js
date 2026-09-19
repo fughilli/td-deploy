@@ -11,4 +11,5 @@ contextBridge.exposeInMainWorld('td', {
   pickFile: () => ipcRenderer.invoke('pick-file'),
   pickDir: () => ipcRenderer.invoke('pick-dir'),
   configDir: () => ipcRenderer.invoke('config-dir'),
+  revealPath: (p) => ipcRenderer.invoke('reveal-path', p),
 });

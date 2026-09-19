@@ -3,7 +3,7 @@
 // renderer, and provides the native .toe file dialog.
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, clipboard, shell } = require('electron');
 const { spawn } = require('child_process');
 const readline = require('readline');
 const path = require('path');
@@ -26,7 +26,14 @@ function sidecarCommand() {
 
 function startSidecar() {
   const { cmd, args } = sidecarCommand();
-  sidecar = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'inherit'] });
+  // PYTHONDONTWRITEBYTECODE: in dev the sidecar runs from source and lazily imports
+  // modules during a flash/deploy; without this it writes __pycache__/*.pyc into the
+  // dirs watchSidecarDev() watches, which would restart it mid-operation (killing an
+  // in-flight flash before flash_done). No effect on the packaged/frozen sidecar.
+  sidecar = spawn(cmd, args, {
+    stdio: ['pipe', 'pipe', 'inherit'],
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+  });
   const rl = readline.createInterface({ input: sidecar.stdout });
   rl.on('line', (line) => {
     line = line.trim();
@@ -81,7 +88,11 @@ function watchSidecarDev() {
     ),
   ];
   let timer = null;
-  const bounce = () => {
+  const bounce = (_event, filename) => {
+    // Ignore Python bytecode churn: the sidecar writes __pycache__/*.pyc into these
+    // watched dirs when it imports during a flash/deploy — restarting on that would
+    // kill the in-flight operation. Only real source edits should reload.
+    if (filename && (filename.includes('__pycache__') || filename.endsWith('.pyc'))) return;
     clearTimeout(timer);
     timer = setTimeout(restartSidecar, 200); // debounce editor save bursts
   };
@@ -142,6 +153,11 @@ ipcMain.on('command', (_e, obj) => toSidecar(obj));
 // The app's per-user config dir (deploy keys are stored under it by the sidecar).
 // The renderer includes this in set_settings so keys live in the OS-standard spot.
 ipcMain.handle('config-dir', () => app.getPath('userData'));
+
+// Reveal a deploy key's directory in the OS file manager (📁 button).
+ipcMain.handle('reveal-path', (_e, p) => {
+  if (p) shell.openPath(p);
+});
 
 // Copy the fix-it prompt to the clipboard (renderer file:// isn't a secure context, so
 // navigator.clipboard is unavailable — go through the main-process clipboard).

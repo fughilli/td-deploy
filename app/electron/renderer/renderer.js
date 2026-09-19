@@ -5,7 +5,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   pick: $('pick'), toePath: $('toe-path'), watch: $('watch'), deploy: $('deploy'),
   phase: $('phase'), bar: $('bar-fill'), pi: $('pi'), target: $('target'),
-  key: $('key'), pickKey: $('pick-key'), flash: $('flash'), log: $('log'),
+  flash: $('flash'), log: $('log'),
   dot: $('status-dot'),
   fixit: $('fixit'), fixitTitle: $('fixit-title'), fixitMsg: $('fixit-msg'),
   fixitCopy: $('fixit-copy'), fixitCopied: $('fixit-copied'),
@@ -13,8 +13,15 @@ const els = {
   rememberWifiPw: $('remember-wifi-pw'),
   assets: $('assets'), assetsList: $('assets-list'),
   assetsAddRoot: $('assets-addroot'), assetsRedeploy: $('assets-redeploy'),
-  deployKeySelect: $('deploy-key-select'), deployKeyGen: $('deploy-key-gen'),
-  deployKeyFp: $('deploy-key-fp'),
+  deployKeyList: $('deploy-key-list'), deployKeyAdd: $('deploy-key-add'),
+  wifiSaved: $('wifi-saved'), wifiAdd: $('wifi-add'),
+  settingsOpen: $('settings-open'), settingsModal: $('settings-modal'),
+  settingsClose: $('settings-close'),
+  addkeyModal: $('addkey-modal'), addkeyName: $('addkey-name'),
+  addkeyGen: $('addkey-gen'), addkeyFile: $('addkey-file'), addkeyCancel: $('addkey-cancel'),
+  addwifiModal: $('addwifi-modal'), addwifiSsid: $('addwifi-ssid'),
+  addwifiPsk: $('addwifi-psk'), addwifiAdd: $('addwifi-add'), addwifiCancel: $('addwifi-cancel'),
+  logCard: $('log-card'), logToggle: $('log-toggle'), logCaret: $('log-caret'),
 };
 
 const STORE = 'td-deploy-settings';
@@ -22,32 +29,34 @@ let state = { toe: null, busy: false };
 let assetRoots = [];      // extra folders to search for assets
 let assetMap = {};        // original asset path/basename -> chosen replacement file
 let configDir = null;     // app.getPath('userData'); where deploy keys are stored
-let deployKeys = [];      // [{name, fingerprint, active}] from the sidecar
+let deployKeys = [];      // [{name, kind, path, dir, active, login, fingerprint}] from the sidecar
+let wifiNetworks = [];    // [{ssid, psk}] saved Wi-Fi (psk kept only if rememberWifiPw)
 
 function loadSettings() {
   try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch (e) { return {}; }
 }
 function saveSettings() {
+  // Saved Wi-Fi: keep passwords only while "remember" is on (plaintext at rest).
+  const nets = els.rememberWifiPw.checked
+    ? wifiNetworks.map((n) => ({ ssid: n.ssid, psk: n.psk || '' }))
+    : [];
   const s = {
-    pi: els.pi.value, target: els.target.value, key: els.key.value, toe: state.toe,
+    pi: els.pi.value, target: els.target.value, toe: state.toe,
     skipUnsupported: els.skipUnsupported.checked, magicChop: els.magicChop.checked,
     rememberWifiPw: els.rememberWifiPw.checked,
-    assetRoots, assetMap,
-    // Flash-time per-card config, cached to prefill the modal next open. The
-    // hostname and SSID are always remembered; the Wi-Fi PASSWORD is persisted
-    // ONLY when the "Remember Wi-Fi password" toggle is on (plaintext at rest) —
-    // otherwise it's dropped so it never touches disk.
+    assetRoots, assetMap, wifiNetworks: nets,
+    // Per-card hostname prefill for the flash modal (not durable config).
     flashHostname: (fm.hostname && fm.hostname.value) || '',
-    flashSsid: (fm.ssid && fm.ssid.value) || '',
-    flashPsk: (els.rememberWifiPw.checked && fm.psk && fm.psk.value) || '',
   };
   localStorage.setItem(STORE, JSON.stringify(s));
   return s;
 }
 function pushSettings() {
   const s = saveSettings();
+  // Note: `key` (deploy login key) is managed by the sidecar from the login key —
+  // the renderer never sets it, so it isn't sent here.
   window.td.send({ cmd: 'set_settings', settings: {
-    pi: s.pi, target: s.target, key: s.key || null,
+    pi: s.pi, target: s.target,
     skip_unsupported: !!s.skipUnsupported, magic_chop: !!s.magicChop,
     asset_roots: assetRoots, asset_map: assetMap,
     // config_dir tells the sidecar where to store/read deploy keys (userData).
@@ -121,39 +130,186 @@ function renderAssets(missing) {
   els.assets.classList.remove('hidden');
 }
 
-// --- deploy keys: generate + select the active ed25519 key ---
-// The ACTIVE key's public half is written to the SD card (so the flashed Pi trusts
-// it) and its private half is used to deploy. The sidecar owns the store; the
-// renderer just lists/selects and asks it to generate.
-function renderDeployKeys(keys, active) {
+// --- deploy keys: a list of keys. Checked (active) keys are trusted on flashed
+// cards (authorized_keys); the radio marks the one that logs in for deploy. The
+// sidecar owns the store; the renderer lists and issues add/activate/login/delete.
+function renderDeployKeys(keys) {
   deployKeys = keys || [];
-  const sel = els.deployKeySelect;
-  sel.innerHTML = '';
-  const none = document.createElement('option');
-  none.value = '';
-  none.textContent = '(none — using SSH key above)';
-  sel.appendChild(none);
-  for (const k of deployKeys) {
-    const o = document.createElement('option');
-    o.value = k.name;
-    const fp = (k.fingerprint || '').replace(/^SHA256:/, '').slice(0, 12);
-    o.textContent = `${k.name}${fp ? ' — ' + fp + '…' : ''}`;
-    sel.appendChild(o);
-  }
-  const activeName = active || (deployKeys.find((k) => k.active) || {}).name || '';
-  sel.value = activeName;
-  const cur = deployKeys.find((k) => k.name === activeName);
-  els.deployKeyFp.textContent = cur ? cur.fingerprint : '';
+  renderDeployKeyList();
 }
 
-els.deployKeyGen.onclick = () => {
-  const name = (prompt('Name for the new deploy key:', 'deploy') || '').trim();
-  if (!name) return;
-  window.td.send({ cmd: 'gen_deploy_key', name });
+function renderDeployKeyList() {
+  const list = els.deployKeyList;
+  if (!list) return;
+  list.innerHTML = '';
+  if (!deployKeys.length) {
+    const li = document.createElement('li');
+    li.className = 'muted';
+    li.textContent = 'No deploy keys yet — add one below.';
+    list.appendChild(li);
+    return;
+  }
+  for (const k of deployKeys) {
+    const li = document.createElement('li');
+
+    const active = document.createElement('input');
+    active.type = 'checkbox';
+    active.checked = !!k.active;
+    active.title = 'Trust this key on flashed cards (authorized_keys)';
+    active.onchange = () =>
+      window.td.send({ cmd: 'set_deploy_key_active', name: k.name, active: active.checked });
+
+    const login = document.createElement('input');
+    login.type = 'radio';
+    login.name = 'deploy-login';
+    login.checked = !!k.login;
+    login.title = 'Use this key to log in for deploy';
+    login.onchange = () => {
+      if (login.checked) window.td.send({ cmd: 'set_deploy_login', name: k.name });
+    };
+
+    const label = document.createElement('span');
+    const fp = (k.fingerprint || '').replace(/^SHA256:/, '').slice(0, 14);
+    label.textContent = `${k.name} · ${k.kind}${fp ? ' · ' + fp + '…' : ''}`;
+    label.title = k.path || '';
+
+    const folder = document.createElement('button');
+    folder.textContent = '📁';
+    folder.title = 'Reveal in file manager';
+    folder.onclick = () => window.td.revealPath(k.dir);
+
+    const del = document.createElement('button');
+    del.textContent = '🗑';
+    del.className = 'danger';
+    del.title = 'Delete key';
+    del.onclick = () => {
+      const extra = k.kind === 'sourced' ? ' (the original file is kept)' : '';
+      if (confirm(`Delete deploy key "${k.name}"?${extra}`)) {
+        window.td.send({ cmd: 'delete_deploy_key', name: k.name });
+      }
+    };
+
+    li.appendChild(active);
+    li.appendChild(login);
+    li.appendChild(label);
+    li.appendChild(folder);
+    li.appendChild(del);
+    list.appendChild(li);
+  }
+}
+
+// --- saved Wi-Fi networks (only shown while "remember" is on) ---
+function renderWifiSaved() {
+  const list = els.wifiSaved;
+  if (!list) return;
+  list.innerHTML = '';
+  const on = els.rememberWifiPw.checked;
+  els.wifiAdd.classList.toggle('hidden', !on);  // the list "drops out" when off
+  list.classList.toggle('hidden', !on);
+  if (!on) return;
+  if (!wifiNetworks.length) {
+    const li = document.createElement('li');
+    li.className = 'muted';
+    li.textContent = 'No saved networks — add one below.';
+    list.appendChild(li);
+    return;
+  }
+  wifiNetworks.forEach((n, i) => {
+    const li = document.createElement('li');
+    const label = document.createElement('span');
+    label.textContent = n.ssid;
+
+    const pw = document.createElement('input');
+    pw.type = 'password';
+    pw.value = n.psk || '';
+    pw.readOnly = true;
+    pw.className = 'wifi-pw';
+
+    const eye = document.createElement('button');
+    eye.textContent = '👁';
+    eye.title = 'Show/hide password';
+    eye.onclick = () => { pw.type = pw.type === 'password' ? 'text' : 'password'; };
+
+    const del = document.createElement('button');
+    del.textContent = '🗑';
+    del.className = 'danger';
+    del.title = 'Delete network';
+    del.onclick = () => { wifiNetworks.splice(i, 1); pushSettings(); renderWifiSaved(); };
+
+    li.appendChild(label);
+    li.appendChild(pw);
+    li.appendChild(eye);
+    li.appendChild(del);
+    list.appendChild(li);
+  });
+}
+
+// --- settings modal + collapsible log ---
+els.settingsOpen.onclick = () => {
+  renderWifiSaved();
+  window.td.send({ cmd: 'list_deploy_keys' });  // refresh the management list
+  els.settingsModal.classList.remove('hidden');
 };
-els.deployKeySelect.onchange = () => {
-  const name = els.deployKeySelect.value;
-  if (name) window.td.send({ cmd: 'select_deploy_key', name });
+els.settingsClose.onclick = () => els.settingsModal.classList.add('hidden');
+els.settingsModal.onclick = (e) => {
+  if (e.target === els.settingsModal) els.settingsModal.classList.add('hidden');
+};
+els.logToggle.onclick = () => {
+  const collapsed = els.logCard.classList.toggle('collapsed');
+  els.logToggle.setAttribute('aria-expanded', String(!collapsed));
+  els.logCaret.textContent = collapsed ? '▸' : '▾';
+};
+
+// --- add-deploy-key modal (generate a new key, or load one from a file) ---
+function uniqueKeyName(base) {
+  const b = base || 'deploy';
+  const existing = new Set(deployKeys.map((k) => k.name));
+  let name = b;
+  for (let i = 2; existing.has(name); i++) name = b + '-' + i;
+  return name;
+}
+els.deployKeyAdd.onclick = () => {
+  els.addkeyName.value = '';
+  els.addkeyModal.classList.remove('hidden');
+};
+els.addkeyCancel.onclick = () => els.addkeyModal.classList.add('hidden');
+els.addkeyGen.onclick = () => {
+  const name = (els.addkeyName.value || '').trim() || uniqueKeyName('deploy');
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+    log('invalid key name (use letters, digits, . _ -)', 'err');
+    return;
+  }
+  window.td.send({ cmd: 'add_deploy_key', name });  // path omitted -> generate
+  els.addkeyModal.classList.add('hidden');
+};
+els.addkeyFile.onclick = async () => {
+  const path = await window.td.pickFile();
+  if (!path) return;
+  const base = (path.split(/[\\/]/).pop() || 'key').replace(/[^A-Za-z0-9._-]/g, '-');
+  const name = (els.addkeyName.value || '').trim() || uniqueKeyName(base);
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+    log('invalid key name (use letters, digits, . _ -)', 'err');
+    return;
+  }
+  window.td.send({ cmd: 'add_deploy_key', name, path });  // path -> sourced
+  els.addkeyModal.classList.add('hidden');
+};
+
+// --- add-Wi-Fi modal ---
+els.wifiAdd.onclick = () => {
+  els.addwifiSsid.value = '';
+  els.addwifiPsk.value = '';
+  els.addwifiModal.classList.remove('hidden');
+};
+els.addwifiCancel.onclick = () => els.addwifiModal.classList.add('hidden');
+els.addwifiAdd.onclick = () => {
+  const ssid = (els.addwifiSsid.value || '').trim();
+  if (!ssid) { log('enter an SSID', 'err'); return; }
+  wifiNetworks = wifiNetworks.filter((n) => n.ssid !== ssid);  // replace a duplicate SSID
+  wifiNetworks.push({ ssid, psk: els.addwifiPsk.value || '' });
+  pushSettings();
+  renderWifiSaved();
+  els.addwifiModal.classList.add('hidden');
 };
 
 els.assetsAddRoot.onclick = async () => {
@@ -180,19 +336,27 @@ els.pick.onclick = async () => {
   const toe = await window.td.pickToe();
   if (toe) { setToe(toe); window.td.send({ cmd: 'pick_toe', toe }); }
 };
-els.pickKey.onclick = async () => {
-  const k = await window.td.pickKey();
-  if (k) { els.key.value = k; pushSettings(); }
-};
 els.deploy.onclick = () => {
   if (state.toe) window.td.send({ cmd: 'deploy', toe: state.toe });
 };
 els.watch.onchange = () => {
   window.td.send({ cmd: 'watch', enable: els.watch.checked, toe: state.toe });
 };
-for (const el of [els.pi, els.target, els.key, els.skipUnsupported, els.magicChop,
-  els.rememberWifiPw])
+for (const el of [els.pi, els.target, els.skipUnsupported, els.magicChop])
   el.onchange = pushSettings;
+// Turning OFF "remember Wi-Fi networks" deletes any saved entries — warn first,
+// and revert the toggle if the user cancels.
+els.rememberWifiPw.onchange = () => {
+  if (!els.rememberWifiPw.checked && wifiNetworks.length) {
+    if (!confirm('Forget all saved Wi-Fi networks? Their stored passwords will be deleted.')) {
+      els.rememberWifiPw.checked = true;
+      return;
+    }
+    wifiNetworks = [];
+  }
+  pushSettings();
+  renderWifiSaved();
+};
 
 // --- sidecar events -> UI ---
 window.td.onEvent((evt) => {
@@ -245,7 +409,7 @@ window.td.onEvent((evt) => {
       renderAssets(evt.missing || []);
       break;
     case 'deploy_keys':
-      renderDeployKeys(evt.keys || [], evt.active);
+      renderDeployKeys(evt.keys || []);
       break;
     case 'deploy_key_generated':
       log('deploy key generated: ' + evt.name + ' (' + evt.fingerprint + ')', 'ok');
@@ -271,14 +435,20 @@ window.td.onEvent((evt) => {
       break;
     case 'flash_done':
       flashing = false;
-      fm.cancel.disabled = false;
       fm.phase.textContent = 'Done ✓ — you can remove the card';
       fm.fill.style.width = '100%';
+      // Turn the primary "Erase & Flash" button into a "Done" button that closes
+      // the modal; the flash is finished, so Cancel is redundant — hide it.
+      fm.go.textContent = 'Done';
+      fm.go.dataset.mode = 'done';
+      fm.go.disabled = false;
+      fm.cancel.classList.add('hidden');
       log('flashed ' + evt.disk.name, 'ok');
       break;
     case 'flash_error':
       flashing = false;
       fm.cancel.disabled = false;
+      fm.go.disabled = false;  // re-enable so the user can retry (not just Cancel)
       fm.phase.textContent = 'Error';
       log('FLASH ERROR: ' + evt.message, 'err');
       showFixit(evt, 'error');
@@ -292,6 +462,7 @@ const fm = {
   list: $('disk-list'), go: $('flash-go'), cancel: $('flash-cancel'),
   progress: $('flash-progress'), phase: $('flash-phase'), fill: $('flash-fill'),
   hostname: $('flash-hostname'), ssid: $('flash-ssid'), psk: $('flash-psk'),
+  wifiInline: $('flash-wifi-inline'), wifiNote: $('flash-wifi-note'),
 };
 
 // RFC1123 label — mirrors flash_config.valid_hostname / the image's boot guard.
@@ -348,7 +519,20 @@ function openFlash() {
   selectedDisk = null;
   flashing = false;
   fm.go.disabled = true;
+  fm.go.textContent = 'Erase & Flash';  // reset from a prior "Done" state
+  fm.go.dataset.mode = '';
+  fm.cancel.classList.remove('hidden');
+  fm.cancel.disabled = false;
   fm.progress.classList.add('hidden');
+  // If Wi-Fi is configured in Settings, use those networks and hide the inline
+  // fields; otherwise let the user enter one network inline for this flash.
+  const haveSaved = wifiNetworks.length > 0;
+  fm.wifiInline.classList.toggle('hidden', haveSaved);
+  fm.wifiNote.classList.toggle('hidden', !haveSaved);
+  if (haveSaved) {
+    fm.wifiNote.textContent =
+      `Using ${wifiNetworks.length} saved Wi-Fi network${wifiNetworks.length > 1 ? 's' : ''} (Settings ⚙).`;
+  }
   fm.list.innerHTML = '<li class="muted">Scanning…</li>';
   fm.modal.classList.remove('hidden');
   window.td.send({ cmd: 'list_disks' });
@@ -376,17 +560,27 @@ function renderDisks(disks) {
 }
 
 els.flash.onclick = openFlash;
-fm.cancel.onclick = closeFlash;
+// Cancel is always available — even mid-flash. If a flash is running, ask the
+// sidecar to abort it (best-effort; it stops before the raw write) and drop the
+// UI back to a usable state so the user can retry instead of being trapped.
+fm.cancel.onclick = () => {
+  if (flashing) {
+    window.td.send({ cmd: 'cancel_flash' });
+    log('flash cancelled', 'err');
+  }
+  flashing = false;
+  fm.modal.classList.add('hidden');
+};
 fm.refresh.onclick = () => {
   fm.list.innerHTML = '<li class="muted">Scanning…</li>';
   window.td.send({ cmd: 'list_disks' });
   window.td.send({ cmd: 'list_releases' });
 };
-// Persist the flash-time fields as they're edited so they prefill next open (the
-// password only when the toggle is on — see saveSettings).
-for (const el of [fm.hostname, fm.ssid, fm.psk]) el.onchange = pushSettings;
+// Persist the flash-time hostname prefill as it's edited.
+fm.hostname.onchange = pushSettings;
 
 fm.go.onclick = () => {
+  if (fm.go.dataset.mode === 'done') { closeFlash(); return; }  // finished -> close
   if (!selectedDisk) return;
   const hostname = (fm.hostname.value || '').trim().toLowerCase();
   if (hostname && !validHostname(hostname)) {
@@ -395,11 +589,16 @@ fm.go.onclick = () => {
     fm.phase.textContent = 'Invalid hostname — use letters, digits and hyphens (RFC1123).';
     return;
   }
-  const ssid = (fm.ssid.value || '').trim();
-  const networks = ssid ? [{ ssid, psk: fm.psk.value || null }] : [];
-  pushSettings();  // cache the entered values (password gated by the toggle)
+  // Prefer the saved networks (Settings); fall back to the inline field when none.
+  let networks = wifiNetworks.map((n) => ({ ssid: n.ssid, psk: n.psk || null }));
+  if (!networks.length) {
+    const ssid = (fm.ssid.value || '').trim();
+    networks = ssid ? [{ ssid, psk: fm.psk.value || null }] : [];
+  }
+  pushSettings();
   flashing = true;
-  fm.go.disabled = true; fm.cancel.disabled = true;
+  fm.go.disabled = true;
+  fm.cancel.disabled = false;  // keep Cancel usable so a stuck flash isn't a trap
   fm.progress.classList.remove('hidden');
   fm.fill.style.width = '0%';
   fm.phase.textContent = 'Starting…';
@@ -417,17 +616,15 @@ fm.go.onclick = () => {
   const s = loadSettings();
   if (s.pi) els.pi.value = s.pi;
   if (s.target) els.target.value = s.target;
-  if (s.key) els.key.value = s.key;
   if (s.skipUnsupported) els.skipUnsupported.checked = true;
   if (s.magicChop) els.magicChop.checked = true;
   if (s.rememberWifiPw) els.rememberWifiPw.checked = true;
   if (Array.isArray(s.assetRoots)) assetRoots = s.assetRoots;
   if (s.assetMap && typeof s.assetMap === 'object') assetMap = s.assetMap;
-  // Prefill the flash modal's per-card fields. Hostname/SSID always; the password
-  // only if it was remembered (i.e. the toggle was on when last saved).
+  if (Array.isArray(s.wifiNetworks)) wifiNetworks = s.wifiNetworks;
+  renderWifiSaved();
+  // Prefill the flash modal's hostname (per-card, not durable config).
   if (s.flashHostname) fm.hostname.value = s.flashHostname;
-  if (s.flashSsid) fm.ssid.value = s.flashSsid;
-  if (s.flashPsk && s.rememberWifiPw) fm.psk.value = s.flashPsk;
   if (s.toe) setToe(s.toe);
   // configDir is now known: push it and (re)load the key list from that dir. Safe
   // if 'ready' already fired with the default dir — this re-syncs to userData.

@@ -52,6 +52,15 @@ copy "$STAGE/llvm/ld.lld"   ld.lld
 copy "$STAGE/glslang/glslangValidator" glslangValidator
 copy "$STAGE/spirv-cross/spirv-cross"  spirv-cross
 
+# ssh-keygen for deploy-key generation, bundled so the app never depends on the
+# user having OpenSSH installed (deploy_keys.py resolves it here first, then PATH).
+# macOS/Linux ship it at a system path; copy that. Windows uses assemble_*.ps1.
+if command -v ssh-keygen >/dev/null 2>&1; then
+  copy "$(command -v ssh-keygen)" ssh-keygen
+else
+  echo "WARN: ssh-keygen not found on PATH; not bundling (runtime falls back to PATH)" >&2
+fi
+
 # --- bundle the /nix/store dylib closure so the tools run standalone ----------
 
 bundle_macos() {
