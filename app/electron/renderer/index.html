@@ -10,18 +10,26 @@
   <header>
     <h1>td-deploy&nbsp;Studio</h1>
     <span id="status-dot" class="dot idle" title="idle"></span>
+    <button id="settings-open" class="gear" title="Settings" aria-label="Settings">⚙</button>
   </header>
 
+  <!-- Main workflow — kept deliberately simple. Durable config lives in Settings (⚙). -->
   <section class="card">
     <div class="row">
       <button id="pick">Choose .toe…</button>
       <span id="toe-path" class="path muted">No project selected</span>
     </div>
     <div class="row">
+      <label class="grow">Pi host <input id="pi" type="text" value="tdplayer.local" /></label>
+    </div>
+    <div class="row">
       <label class="toggle">
         <input type="checkbox" id="watch" /> Watch — auto-deploy on save
       </label>
       <button id="deploy" class="primary" disabled>Deploy now</button>
+    </div>
+    <div class="row">
+      <button id="flash">Flash SD card…</button>
     </div>
   </section>
 
@@ -56,51 +64,97 @@
     </div>
   </section>
 
-  <section class="card settings">
-    <div class="row">
-      <label>Pi host <input id="pi" type="text" value="tdplayer.local" /></label>
-      <label>Target
-        <select id="target">
-          <option value="gles2" selected>gles2 (Pi VC4)</option>
-          <option value="gles">gles (Pi4/5)</option>
-          <option value="desktop_gl">desktop_gl</option>
-        </select>
-      </label>
-    </div>
-    <div class="row">
-      <label class="grow">SSH key <input id="key" type="text" placeholder="deploy/secrets/deploy_key (default)" /></label>
-      <button id="pick-key">…</button>
-    </div>
-    <div class="row deploy-keys">
-      <label class="grow">Deploy key
-        <select id="deploy-key-select" title="The active key is written to the SD card (public half) and used to deploy (private half).">
-          <option value="">(none — using SSH key above)</option>
-        </select>
-      </label>
-      <button id="deploy-key-gen" title="Generate a new ed25519 deploy keypair. The flashed Pi trusts it automatically; deploy uses it to log in.">Generate…</button>
-    </div>
-    <div class="row">
-      <span id="deploy-key-fp" class="path muted"></span>
-    </div>
-    <div class="row">
-      <label class="toggle" title="Deploy even if the project uses operators td-deploy doesn't support yet — they're replaced with placeholders and you get a warning.">
-        <input type="checkbox" id="skip-unsupported" /> Skip unsupported operators (deploy anyway)
-      </label>
-    </div>
-    <div class="row">
-      <label class="toggle" title="Drive unsupported CHOPs (LFO, noise, audio-reactive, …) with random sinusoids so the piece still animates.">
-        <input type="checkbox" id="magic-chop" /> Magic chop (fake unsupported CHOPs with sinusoids)
-      </label>
-    </div>
-    <div class="row">
-      <label class="toggle" title="Remember the Wi-Fi password between flashes. Stored in plaintext in this app's settings — leave off unless you flash the same network repeatedly.">
-        <input type="checkbox" id="remember-wifi-pw" /> Remember Wi-Fi password (plaintext, off by default)
-      </label>
-    </div>
-    <div class="row">
-      <button id="flash">Flash SD card…</button>
-    </div>
+  <!-- Log: collapsible (starts collapsed) and grows to fill the remaining height. -->
+  <section id="log-card" class="card log-card collapsed">
+    <button id="log-toggle" class="log-head" aria-expanded="false">
+      <span id="log-caret">▸</span> Log
+    </button>
+    <pre id="log"></pre>
   </section>
+
+  <!-- Settings (⚙): all durable, cross-app configuration. -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-box">
+      <h2>Settings</h2>
+
+      <div class="settings-section">
+        <div class="settings-title">Compiler &amp; runtime</div>
+        <div class="row">
+          <label>Target
+            <select id="target">
+              <option value="gles2" selected>gles2 (Pi VC4)</option>
+              <option value="gles">gles (Pi4/5)</option>
+              <option value="desktop_gl">desktop_gl</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <label class="toggle" title="Deploy even if the project uses operators td-deploy doesn't support yet — they're replaced with placeholders and you get a warning.">
+            <input type="checkbox" id="skip-unsupported" /> Skip unsupported operators (deploy anyway)
+          </label>
+        </div>
+        <div class="row">
+          <label class="toggle" title="Drive unsupported CHOPs (LFO, noise, audio-reactive, …) with random sinusoids so the piece still animates.">
+            <input type="checkbox" id="magic-chop" /> Magic chop (fake unsupported CHOPs with sinusoids)
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-title">Deploy keys</div>
+        <p class="settings-help">Checked keys are trusted on every card you flash (written to
+          authorized_keys). The ○ marks the key used to log in for deploy.</p>
+        <ul id="deploy-key-list" class="mgmt-list"></ul>
+        <div class="row"><button id="deploy-key-add">+ Add key…</button></div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-title">Wi-Fi</div>
+        <div class="row">
+          <label class="toggle" title="Save Wi-Fi networks (incl. passwords, in plaintext) in this app so flashing prefills them. Off deletes any saved networks.">
+            <input type="checkbox" id="remember-wifi-pw" /> Remember Wi-Fi networks (plaintext, off by default)
+          </label>
+        </div>
+        <ul id="wifi-saved" class="mgmt-list"></ul>
+        <div class="row"><button id="wifi-add">+ Add network…</button></div>
+      </div>
+
+      <div class="row modal-actions">
+        <button id="settings-close" class="primary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add deploy key: generate a new one or load an existing private key from a file. -->
+  <div id="addkey-modal" class="modal hidden">
+    <div class="modal-box">
+      <h2>Add deploy key</h2>
+      <div class="row">
+        <label class="grow">Name <input id="addkey-name" placeholder="deploy" /></label>
+      </div>
+      <p class="settings-help">Generate a fresh ed25519 key, or load an existing private key
+        from a file (it stays where it is; only its path is remembered).</p>
+      <div class="row modal-actions">
+        <button id="addkey-cancel">Cancel</button>
+        <button id="addkey-file">Load from file…</button>
+        <button id="addkey-gen" class="primary">Generate</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Wi-Fi network. -->
+  <div id="addwifi-modal" class="modal hidden">
+    <div class="modal-box">
+      <h2>Add Wi-Fi network</h2>
+      <div class="row"><label class="grow">SSID <input id="addwifi-ssid" type="text" /></label></div>
+      <div class="row"><label class="grow">Password
+        <input id="addwifi-psk" type="password" placeholder="leave blank for an open network" /></label></div>
+      <div class="row modal-actions">
+        <button id="addwifi-cancel">Cancel</button>
+        <button id="addwifi-add" class="primary">Add</button>
+      </div>
+    </div>
+  </div>
 
   <div id="flash-modal" class="modal hidden">
     <div class="modal-box">
@@ -120,16 +174,19 @@
             <input id="flash-hostname" type="text" value="tdplayer" placeholder="tdplayer" />
           </label>
         </div>
-        <div class="row">
-          <label class="grow">Wi-Fi network (SSID)
-            <input id="flash-ssid" type="text" placeholder="optional — leave blank to skip" />
-          </label>
+        <div id="flash-wifi-inline">
+          <div class="row">
+            <label class="grow">Wi-Fi network (SSID)
+              <input id="flash-ssid" type="text" placeholder="optional — leave blank to skip" />
+            </label>
+          </div>
+          <div class="row">
+            <label class="grow">Wi-Fi password
+              <input id="flash-psk" type="password" placeholder="leave blank for an open network" />
+            </label>
+          </div>
         </div>
-        <div class="row">
-          <label class="grow">Wi-Fi password
-            <input id="flash-psk" type="password" placeholder="leave blank for an open network" />
-          </label>
-        </div>
+        <div id="flash-wifi-note" class="settings-help hidden"></div>
       </div>
       <ul id="disk-list" class="disks"><li class="muted">Scanning…</li></ul>
       <div id="flash-progress" class="hidden">
@@ -142,11 +199,6 @@
       </div>
     </div>
   </div>
-
-  <section class="card log-card">
-    <div class="log-head">Log</div>
-    <pre id="log"></pre>
-  </section>
 
   <script src="renderer.js"></script>
 </body>

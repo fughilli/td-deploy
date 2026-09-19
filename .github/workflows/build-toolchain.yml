@@ -227,6 +227,11 @@ jobs:
           Copy-Item llvm-full\bin\clang.exe   app\toolchain\bin\
           Copy-Item llvm-full\bin\clang++.exe app\toolchain\bin\
           Copy-Item llvm-full\bin\ld.lld.exe  app\toolchain\bin\
+          # ssh-keygen for deploy-key generation (bundled so the app doesn't depend
+          # on the user having OpenSSH). Ships with Windows 10/11 under System32\OpenSSH.
+          $sk = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh-keygen.exe'
+          if (Test-Path $sk) { Copy-Item $sk app\toolchain\bin\ }
+          else { Write-Host "WARN: ssh-keygen.exe not found; runtime falls back to PATH" }
           Get-ChildItem app\toolchain\bin | Select-Object Name
 
       - uses: actions/upload-artifact@v4

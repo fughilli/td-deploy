@@ -14,16 +14,19 @@ Commands (stdin):
   {"cmd":"list_releases"}                               # enumerate base-image releases
   {"cmd":"flash","disk_id":"...","tag":"latest",       # download base img + flash SD
       "hostname":"tdplayer","networks":[{"ssid":..,"psk":..}]}  # optional per-card config
-      # the ACTIVE deploy key's public line is added automatically -> the card's
-      # /boot/firmware/authorized_keys, so the flashed Pi trusts it at first boot.
-  {"cmd":"gen_deploy_key","name":"...","comment":null}  # new ed25519 keypair, made active
-  {"cmd":"list_deploy_keys"}                            # names + fingerprints + active
-  {"cmd":"select_deploy_key","name":"..."}             # set the active key
+      # every ACTIVE deploy key's public line is added automatically -> the card's
+      # /boot/firmware/authorized_keys, so the flashed Pi trusts them at first boot.
+  {"cmd":"cancel_flash"}                                # abort an in-flight flash (before write)
+  {"cmd":"add_deploy_key","name":"...","path":null}    # generate (path null) or source a key
+  {"cmd":"list_deploy_keys"}                            # [{name,kind,path,dir,active,login,fp}]
+  {"cmd":"set_deploy_key_active","name":"...","active":true}  # (de)trust on the card
+  {"cmd":"set_deploy_login","name":"..."}              # which key logs in for deploy
+  {"cmd":"delete_deploy_key","name":"..."}             # remove a stored key
   {"cmd":"ping"}
 
 Events (stdout):
   {"type":"ready"} {"type":"settings",...} {"type":"start","toe":...}
-  {"type":"deploy_keys","keys":[{"name":..,"fingerprint":..,"active":bool}],"active":..}
+  {"type":"deploy_keys","keys":[{name,kind,path,dir,active,login,fingerprint}],"active":[..],"login":..}
   {"type":"deploy_key_generated","name":..,"fingerprint":..,"pub":..}
   {"type":"progress","phase":...,"frac":..,"overall":..,"message":...}
   {"type":"log","line":...} {"type":"done","ok":true,"staging":...}
@@ -183,6 +186,7 @@ class Sidecar:
         self._deploy_req = threading.Event()
         self._watch = False
         self._watch_stop = threading.Event()
+        self._flash_cancel = threading.Event()  # set by cancel_flash; honored by _flash_worker
         threading.Thread(target=self._worker, daemon=True).start()
 
     # --- progress -> stdout events ---
@@ -320,12 +324,26 @@ class Sidecar:
             emit({"type": "flash_start", "disk": disk.to_dict(), "tag": tag})
             if not image:
                 emit({"type": "log", "line": f"fetching base image {tag}"})
+                # Move the UI off "Starting…" immediately — resolving the release +
+                # opening the connection has no byte-progress of its own, so without
+                # this the phase looks frozen for the whole lookup/first chunk.
+                emit(
+                    {
+                        "type": "flash_progress",
+                        "stage": "download",
+                        "frac": 0.0,
+                        "message": f"resolving base image {tag}…",
+                    }
+                )
                 image = download.fetch_base_image(
                     tag,
                     on_progress=lambda f, m: emit(
                         {"type": "flash_progress", "stage": "download", "frac": f, "message": m}
                     ),
                 )
+            if self._flash_cancel.is_set():
+                emit({"type": "log", "line": "flash cancelled before write"})
+                return
             emit({"type": "log", "line": f"writing {image} -> {disk.name}"})
             flasher.flash(
                 image,
@@ -352,15 +370,16 @@ class Sidecar:
         hostname: str | None = None,
         networks: list | None = None,
     ) -> None:
-        # Include the ACTIVE deploy key's public line so the flashed card's
-        # /boot/firmware/authorized_keys trusts it at first boot (image half).
+        # Include EVERY active deploy key's public line so the flashed card's
+        # /boot/firmware/authorized_keys trusts them all at first boot (image half).
         authorized_keys = None
         try:
-            active_pub = self._keystore_for().active_public_line()
-            if active_pub:
-                authorized_keys = [active_pub]
-        except Exception:  # noqa: BLE001 - no active key just means none written
+            lines = self._keystore_for().active_public_lines()
+            if lines:
+                authorized_keys = lines
+        except Exception:  # noqa: BLE001 - no active keys just means none written
             authorized_keys = None
+        self._flash_cancel.clear()  # fresh run; a prior cancel must not carry over
         threading.Thread(
             target=self._flash_worker,
             args=(disk_id, tag, image, hostname, networks, authorized_keys),
@@ -400,20 +419,35 @@ class Sidecar:
             self._keystore = ks
         return self._keystore
 
-    def _sync_active_key(self) -> None:
-        """Point the deploy-time `key` setting at the active key's private half, so a
-        deploy uses the same key the flasher writes to the card."""
+    def _sync_login_key(self) -> None:
+        """Point the deploy-time `key` setting at the LOGIN key's private half, so a
+        deploy logs in with a key the flasher wrote to the card. If there's no login
+        key, stop pointing `key` at a store-managed path — but never touch a
+        user-supplied SSH key (one outside the key store)."""
+        priv = None
+        store_dir = None
         try:
-            priv = self._keystore_for().active_private_path()
+            ks = self._keystore_for()
+            priv = ks.login_private_path()
+            store_dir = ks.dir
         except Exception:  # noqa: BLE001 - never let key store errors break deploy
             priv = None
         if priv:
             self.settings["key"] = priv
+        elif store_dir and (self.settings.get("key") or "").startswith(store_dir):
+            self.settings["key"] = None
 
     def emit_deploy_keys(self) -> None:
         try:
             ks = self._keystore_for()
-            emit({"type": "deploy_keys", "keys": ks.list(), "active": ks.active()})
+            emit(
+                {
+                    "type": "deploy_keys",
+                    "keys": ks.list(),
+                    "active": ks.active(),
+                    "login": ks.login(),
+                }
+            )
         except Exception as e:  # noqa: BLE001
             emit({"type": "error", "message": f"list_deploy_keys: {e}"})
 
@@ -421,7 +455,7 @@ class Sidecar:
         try:
             ks = self._keystore_for()
             info = ks.generate(name, comment=comment)
-            self._sync_active_key()  # newly generated key is active -> use it for deploy
+            self._sync_login_key()
             emit(
                 {
                     "type": "deploy_key_generated",
@@ -435,23 +469,50 @@ class Sidecar:
         except Exception as e:  # noqa: BLE001
             emit({"type": "error", "message": f"gen_deploy_key: {e}"})
 
-    def select_deploy_key(self, name: str) -> None:
+    def add_sourced_deploy_key(self, name: str, path: str) -> None:
         try:
-            self._keystore_for().select(name)
-            self._sync_active_key()
+            self._keystore_for().add_sourced(name, path)
+            self._sync_login_key()
             self.emit_deploy_keys()
             emit({"type": "settings", "settings": self.settings})
         except Exception as e:  # noqa: BLE001
-            emit({"type": "error", "message": f"select_deploy_key: {e}"})
+            emit({"type": "error", "message": f"add_deploy_key: {e}"})
+
+    def set_deploy_key_active(self, name: str, active: bool) -> None:
+        try:
+            self._keystore_for().set_active(name, active)
+            self._sync_login_key()  # deactivating the login key may clear it
+            self.emit_deploy_keys()
+            emit({"type": "settings", "settings": self.settings})
+        except Exception as e:  # noqa: BLE001
+            emit({"type": "error", "message": f"set_deploy_key_active: {e}"})
+
+    def set_deploy_login(self, name: str) -> None:
+        try:
+            self._keystore_for().set_login(name)
+            self._sync_login_key()
+            self.emit_deploy_keys()
+            emit({"type": "settings", "settings": self.settings})
+        except Exception as e:  # noqa: BLE001
+            emit({"type": "error", "message": f"set_deploy_login: {e}"})
+
+    def delete_deploy_key(self, name: str) -> None:
+        try:
+            self._keystore_for().delete(name)
+            self._sync_login_key()  # if the login key was deleted, drop `key`
+            self.emit_deploy_keys()
+            emit({"type": "settings", "settings": self.settings})
+        except Exception as e:  # noqa: BLE001
+            emit({"type": "error", "message": f"delete_deploy_key: {e}"})
 
     # --- command dispatch ---
     def handle(self, msg: dict) -> None:
         cmd = msg.get("cmd")
         if cmd == "set_settings":
             self.settings.update(msg.get("settings", {}))
-            # config_dir may have just arrived (Electron's userData) — if there's an
-            # active key, point the deploy `key` at its private half.
-            self._sync_active_key()
+            # config_dir may have just arrived (Electron's userData) — if there's a
+            # login key, point the deploy `key` at its private half.
+            self._sync_login_key()
             emit({"type": "settings", "settings": self.settings})
         elif cmd == "pick_toe":
             self.toe = msg.get("toe")
@@ -476,12 +537,27 @@ class Sidecar:
                 msg.get("hostname"),
                 msg.get("networks"),
             )
+        elif cmd == "cancel_flash":
+            # Best-effort: the worker checks this before the raw write, so a flash
+            # stuck resolving/downloading won't go on to write after the user bails.
+            self._flash_cancel.set()
+            emit({"type": "log", "line": "flash cancel requested"})
         elif cmd == "gen_deploy_key":
             self.gen_deploy_key(msg.get("name"), msg.get("comment"))
         elif cmd == "list_deploy_keys":
             self.emit_deploy_keys()
-        elif cmd == "select_deploy_key":
-            self.select_deploy_key(msg.get("name"))
+        elif cmd == "add_deploy_key":
+            # generate a new key, or source an existing one from a path
+            if msg.get("path"):
+                self.add_sourced_deploy_key(msg.get("name"), msg.get("path"))
+            else:
+                self.gen_deploy_key(msg.get("name"), msg.get("comment"))
+        elif cmd == "set_deploy_key_active":
+            self.set_deploy_key_active(msg.get("name"), bool(msg.get("active")))
+        elif cmd == "set_deploy_login":
+            self.set_deploy_login(msg.get("name"))
+        elif cmd == "delete_deploy_key":
+            self.delete_deploy_key(msg.get("name"))
         elif cmd == "ping":
             emit({"type": "pong"})
         else:

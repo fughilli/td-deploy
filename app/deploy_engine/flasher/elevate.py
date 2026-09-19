@@ -38,6 +38,24 @@ def elevated_macos(argv: list[str], unmount_disk: str | None) -> list[str]:
     return ["osascript", "-e", script]
 
 
+def elevated_macos_dev(argv: list[str], unmount_disk: str | None) -> list[str]:
+    """Dev-only macOS elevation: `sudo` in the launching terminal, not osascript.
+
+    The osascript "with administrator privileges" route runs the raw write through
+    a privileged helper that TCC attributes to the (unsigned) dev Electron app, so
+    the write is blocked by Full Disk Access / Removable Volumes — and the dev app
+    can't be granted it because it has no stable bundle identity to appear in the
+    Privacy list. Running under `sudo` instead inherits the TCC grant of the
+    terminal that launched `bazel run //app:dev` (grant that terminal Full Disk
+    Access once); sudo prompts for the password on the terminal's tty. The shipped,
+    signed .app keeps using osascript — correct for a GUI app with no terminal."""
+    inner = ""
+    if unmount_disk:
+        inner += f"diskutil unmountDisk force {shlex.quote(unmount_disk)}; "
+    inner += " ".join(shlex.quote(a) for a in argv)
+    return ["sudo", "sh", "-c", inner]
+
+
 def elevated_windows(argv: list[str], disk_number: str | None) -> list[str]:
     """UAC-elevated PowerShell: offline+clear the disk, then run the worker."""
     exe = argv[0]
@@ -67,7 +85,12 @@ def elevated_linux(argv: list[str], _disk: str | None) -> list[str]:
 
 def elevated_command(argv: list[str], device_hint: str | None) -> list[str]:
     if sys.platform == "darwin":
-        return elevated_macos(argv, device_hint)
+        # The shipped app is frozen and signed -> osascript admin prompt. In dev
+        # (running from source) osascript's TCC attribution blocks the raw write on
+        # the unsigned Electron, so elevate via sudo in the launching terminal.
+        if getattr(sys, "frozen", False):
+            return elevated_macos(argv, device_hint)
+        return elevated_macos_dev(argv, device_hint)
     if sys.platform.startswith("win"):
         return elevated_windows(argv, device_hint)
     return elevated_linux(argv, device_hint)

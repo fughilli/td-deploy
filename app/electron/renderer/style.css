@@ -3,11 +3,18 @@
   --muted: #8b909c; --accent: #4f8cff; --ok: #37c06a; --err: #ff5f6b;
 }
 * { box-sizing: border-box; }
+html, body { height: 100%; }
 body {
   margin: 0; font: 13px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
   background: var(--bg); color: var(--fg); padding: 14px; user-select: none;
+  /* Full-height flex column so the log card can grow to fill the window. */
+  display: flex; flex-direction: column; overflow: hidden;
 }
-header { display: flex; align-items: center; gap: 10px; margin: 2px 4px 12px; }
+header { display: flex; align-items: center; gap: 10px; margin: 2px 4px 12px; flex: none; }
+/* Gear opens Settings; sits at the far right of the header. */
+.gear { margin-left: auto; background: none; border: none; font-size: 18px; line-height: 1;
+  padding: 2px 6px; color: var(--muted); }
+.gear:hover { color: var(--fg); border: none; }
 h1 { font-size: 16px; font-weight: 650; margin: 0; }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
 .dot.idle { background: var(--muted); }
@@ -50,11 +57,21 @@ label.grow input, label.grow select { flex: 1; width: 100%; }
 .bar { height: 8px; background: #0f1116; border-radius: 5px; overflow: hidden; }
 #bar-fill, #flash-fill { height: 100%; width: 0%; background: var(--accent); transition: width .18s ease; }
 
-.log-card { flex: 1; }
-.log-head { color: var(--muted); font-size: 11px; text-transform: uppercase;
-  letter-spacing: .06em; margin-bottom: 6px; }
-#log { margin: 0; max-height: 180px; overflow: auto; font-family: ui-monospace, Menlo,
-  Consolas, monospace; font-size: 11.5px; color: #c4c8d2; white-space: pre-wrap; user-select: text; }
+/* Log: a clickable header that collapses it; expanded, it flexes to fill the
+   window (min-height:0 lets #log's own scroll take over instead of growing the
+   page). Collapsed, only the header shows. */
+.log-card { display: flex; flex-direction: column; min-height: 0; }
+.log-card:not(.collapsed) { flex: 1 1 auto; }
+.log-card.collapsed { flex: none; }
+.log-head { display: block; width: 100%; text-align: left; background: none; border: none;
+  padding: 0; color: var(--muted); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .06em; margin-bottom: 6px; cursor: pointer; }
+.log-head:hover { color: var(--fg); border: none; }
+#log-caret { display: inline-block; width: 1em; }
+.log-card.collapsed #log { display: none; }
+#log { margin: 0; flex: 1 1 auto; min-height: 0; overflow: auto; font-family: ui-monospace,
+  Menlo, Consolas, monospace; font-size: 11.5px; color: #c4c8d2; white-space: pre-wrap;
+  user-select: text; }
 #log .ok { color: var(--ok); }
 #log .err { color: var(--err); }
 
@@ -83,6 +100,31 @@ label.grow input, label.grow select { flex: 1; width: 100%; }
 .asset-searched { font-size: 11px; color: var(--muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .assets-list li.resolved code { color: var(--ok); }
+
+/* settings modal: sections + management lists (deploy keys, saved Wi-Fi) */
+.settings-section { margin: 4px 0 12px; padding: 10px; border: 1px solid var(--edge);
+  border-radius: 8px; background: #1c2028; }
+.settings-section:last-of-type { margin-bottom: 4px; }
+.settings-title { font-size: 12px; font-weight: 650; color: var(--fg); margin-bottom: 8px; }
+.settings-help { margin: 0 0 8px; font-size: 11px; color: var(--muted); }
+.settings-section .row:first-child { margin-top: 0; }
+.settings-section .row:last-child { margin-bottom: 0; }
+.mgmt-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.mgmt-list li { display: flex; align-items: center; gap: 8px; padding: 6px 0;
+  border-top: 1px solid var(--edge); font-size: 12px; }
+.mgmt-list li span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mgmt-list li.muted { border-top: 0; color: var(--muted); }
+/* checkboxes/radios in a row keep their natural size (don't stretch) */
+.mgmt-list li input[type=checkbox], .mgmt-list li input[type=radio] { flex: none; margin: 0; }
+.mgmt-list input.wifi-pw { flex: none; width: 130px; padding: 3px 6px; }
+/* icon buttons (📁 👁 🗑) — compact, borderless */
+.mgmt-list button { flex: none; padding: 3px 7px; font-size: 13px; line-height: 1;
+  background: none; border-color: transparent; }
+.mgmt-list button:hover { border-color: var(--edge); }
+button.danger { color: var(--err); border-color: #5a3b3f; }
+button.danger:hover { border-color: var(--err); }
+/* settings modal is taller than the flash one; allow it to scroll on short windows */
+#settings-modal .modal-box { max-height: 90vh; overflow: auto; }
 
 /* flash modal */
 .hidden { display: none !important; }
