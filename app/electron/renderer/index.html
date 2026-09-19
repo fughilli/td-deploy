@@ -64,6 +64,19 @@
     </div>
   </section>
 
+  <!-- Performance: collapsible (starts collapsed). Polls the running player's /stats
+       and plots the per-frame loop breakdown (stacked). -->
+  <section id="perf-card" class="card perf-card collapsed">
+    <button id="perf-toggle" class="log-head" aria-expanded="false">
+      <span id="perf-caret">▸</span> Performance
+    </button>
+    <div id="perf-body">
+      <div id="perf-summary" class="muted">Deploy and expand to see live frame timing.</div>
+      <canvas id="perf-canvas" height="150"></canvas>
+      <div id="perf-legend" class="perf-legend"></div>
+    </div>
+  </section>
+
   <!-- Log: collapsible (starts collapsed) and grows to fill the remaining height. -->
   <section id="log-card" class="card log-card collapsed">
     <button id="log-toggle" class="log-head" aria-expanded="false">

@@ -8,6 +8,7 @@ const { spawn } = require('child_process');
 const readline = require('readline');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
 
 let win = null;
 let sidecar = null;
@@ -158,6 +159,21 @@ ipcMain.handle('config-dir', () => app.getPath('userData'));
 ipcMain.handle('reveal-path', (_e, p) => {
   if (p) shell.openPath(p);
 });
+
+// Fetch the running player's /stats JSON for the Performance pane. Goes through the
+// main process because the renderer's CSP (default-src 'self') forbids cross-origin
+// fetch. Returns the parsed object, or null on any error/timeout (pane shows idle).
+ipcMain.handle('fetch-stats', (_e, { host, port }) => new Promise((resolve) => {
+  const h = String(host || '').replace(/^.*@/, '').replace(/:.*$/, '').trim();
+  if (!h) return resolve(null);
+  const req = http.get({ host: h, port: port || 8788, path: '/stats', timeout: 2000 }, (res) => {
+    let d = '';
+    res.on('data', (c) => (d += c));
+    res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { resolve(null); } });
+  });
+  req.on('error', () => resolve(null));
+  req.on('timeout', () => { req.destroy(); resolve(null); });
+}));
 
 // Copy the fix-it prompt to the clipboard (renderer file:// isn't a secure context, so
 // navigator.clipboard is unavailable — go through the main-process clipboard).
