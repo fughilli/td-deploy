@@ -82,6 +82,11 @@
       </label>
     </div>
     <div class="row">
+      <label class="toggle" title="Remember the Wi-Fi password between flashes. Stored in plaintext in this app's settings — leave off unless you flash the same network repeatedly.">
+        <input type="checkbox" id="remember-wifi-pw" /> Remember Wi-Fi password (plaintext, off by default)
+      </label>
+    </div>
+    <div class="row">
       <button id="flash">Flash SD card…</button>
     </div>
   </section>
@@ -97,6 +102,23 @@
           </select>
         </label>
         <button id="flash-refresh">Refresh</button>
+      </div>
+      <div class="flash-config">
+        <div class="row">
+          <label class="grow">Hostname
+            <input id="flash-hostname" type="text" value="tdplayer" placeholder="tdplayer" />
+          </label>
+        </div>
+        <div class="row">
+          <label class="grow">Wi-Fi network (SSID)
+            <input id="flash-ssid" type="text" placeholder="optional — leave blank to skip" />
+          </label>
+        </div>
+        <div class="row">
+          <label class="grow">Wi-Fi password
+            <input id="flash-psk" type="password" placeholder="leave blank for an open network" />
+          </label>
+        </div>
       </div>
       <ul id="disk-list" class="disks"><li class="muted">Scanning…</li></ul>
       <div id="flash-progress" class="hidden">

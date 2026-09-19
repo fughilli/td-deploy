@@ -10,6 +10,7 @@ const els = {
   fixit: $('fixit'), fixitTitle: $('fixit-title'), fixitMsg: $('fixit-msg'),
   fixitCopy: $('fixit-copy'), fixitCopied: $('fixit-copied'),
   skipUnsupported: $('skip-unsupported'), magicChop: $('magic-chop'),
+  rememberWifiPw: $('remember-wifi-pw'),
   assets: $('assets'), assetsList: $('assets-list'),
   assetsAddRoot: $('assets-addroot'), assetsRedeploy: $('assets-redeploy'),
 };
@@ -26,7 +27,15 @@ function saveSettings() {
   const s = {
     pi: els.pi.value, target: els.target.value, key: els.key.value, toe: state.toe,
     skipUnsupported: els.skipUnsupported.checked, magicChop: els.magicChop.checked,
+    rememberWifiPw: els.rememberWifiPw.checked,
     assetRoots, assetMap,
+    // Flash-time per-card config, cached to prefill the modal next open. The
+    // hostname and SSID are always remembered; the Wi-Fi PASSWORD is persisted
+    // ONLY when the "Remember Wi-Fi password" toggle is on (plaintext at rest) —
+    // otherwise it's dropped so it never touches disk.
+    flashHostname: (fm.hostname && fm.hostname.value) || '',
+    flashSsid: (fm.ssid && fm.ssid.value) || '',
+    flashPsk: (els.rememberWifiPw.checked && fm.psk && fm.psk.value) || '',
   };
   localStorage.setItem(STORE, JSON.stringify(s));
   return s;
@@ -140,7 +149,8 @@ els.deploy.onclick = () => {
 els.watch.onchange = () => {
   window.td.send({ cmd: 'watch', enable: els.watch.checked, toe: state.toe });
 };
-for (const el of [els.pi, els.target, els.key, els.skipUnsupported, els.magicChop])
+for (const el of [els.pi, els.target, els.key, els.skipUnsupported, els.magicChop,
+  els.rememberWifiPw])
   el.onchange = pushSettings;
 
 // --- sidecar events -> UI ---
@@ -233,7 +243,13 @@ const fm = {
   modal: $('flash-modal'), tag: $('flash-tag'), refresh: $('flash-refresh'),
   list: $('disk-list'), go: $('flash-go'), cancel: $('flash-cancel'),
   progress: $('flash-progress'), phase: $('flash-phase'), fill: $('flash-fill'),
+  hostname: $('flash-hostname'), ssid: $('flash-ssid'), psk: $('flash-psk'),
 };
+
+// RFC1123 label — mirrors flash_config.valid_hostname / the image's boot guard.
+function validHostname(name) {
+  return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test((name || '').trim().toLowerCase());
+}
 let selectedDisk = null;
 let flashing = false;
 // The CI-stamped default (or 'latest') to select once the releases list arrives.
@@ -318,14 +334,31 @@ fm.refresh.onclick = () => {
   window.td.send({ cmd: 'list_disks' });
   window.td.send({ cmd: 'list_releases' });
 };
+// Persist the flash-time fields as they're edited so they prefill next open (the
+// password only when the toggle is on — see saveSettings).
+for (const el of [fm.hostname, fm.ssid, fm.psk]) el.onchange = pushSettings;
+
 fm.go.onclick = () => {
   if (!selectedDisk) return;
+  const hostname = (fm.hostname.value || '').trim().toLowerCase();
+  if (hostname && !validHostname(hostname)) {
+    fm.phase.classList.remove('hidden');
+    fm.progress.classList.remove('hidden');
+    fm.phase.textContent = 'Invalid hostname — use letters, digits and hyphens (RFC1123).';
+    return;
+  }
+  const ssid = (fm.ssid.value || '').trim();
+  const networks = ssid ? [{ ssid, psk: fm.psk.value || null }] : [];
+  pushSettings();  // cache the entered values (password gated by the toggle)
   flashing = true;
   fm.go.disabled = true; fm.cancel.disabled = true;
   fm.progress.classList.remove('hidden');
   fm.fill.style.width = '0%';
   fm.phase.textContent = 'Starting…';
-  window.td.send({ cmd: 'flash', disk_id: selectedDisk.id, tag: fm.tag.value || 'latest' });
+  window.td.send({
+    cmd: 'flash', disk_id: selectedDisk.id, tag: fm.tag.value || 'latest',
+    hostname: hostname || 'tdplayer', networks,
+  });
 };
 
 // --- init from stored settings ---
@@ -336,7 +369,13 @@ fm.go.onclick = () => {
   if (s.key) els.key.value = s.key;
   if (s.skipUnsupported) els.skipUnsupported.checked = true;
   if (s.magicChop) els.magicChop.checked = true;
+  if (s.rememberWifiPw) els.rememberWifiPw.checked = true;
   if (Array.isArray(s.assetRoots)) assetRoots = s.assetRoots;
   if (s.assetMap && typeof s.assetMap === 'object') assetMap = s.assetMap;
+  // Prefill the flash modal's per-card fields. Hostname/SSID always; the password
+  // only if it was remembered (i.e. the toggle was on when last saved).
+  if (s.flashHostname) fm.hostname.value = s.flashHostname;
+  if (s.flashSsid) fm.ssid.value = s.flashSsid;
+  if (s.flashPsk && s.rememberWifiPw) fm.psk.value = s.flashPsk;
   if (s.toe) setToe(s.toe);
 })();

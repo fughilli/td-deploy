@@ -215,3 +215,15 @@ py_test(
     data = ["//app:deploy_engine/releases.py"],
     imports = ["."],
 )
+
+# Flash-time per-card config: hostname validation, NetworkManager keyfile
+# rendering (WPA vs open), the filesystem drop into a tmpdir, and the
+# settings-gated Wi-Fi password cache. Stdlib-only module, loaded by path; no
+# mounting/hardware. This is the testable core of the flash-time hostname+WiFi
+# feature (the flasher mount/write and Electron UI are validated on-device).
+py_test(
+    name = "flash_config_test",
+    srcs = ["tests/flash_config_test.py"],
+    data = ["//app:deploy_engine/flash_config.py"],
+    imports = ["."],
+)

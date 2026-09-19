@@ -12,7 +12,8 @@ Commands (stdin):
   {"cmd":"watch","enable":true}                        # auto-deploy on save
   {"cmd":"list_disks"}                                 # enumerate removable disks
   {"cmd":"list_releases"}                               # enumerate base-image releases
-  {"cmd":"flash","disk_id":"...","tag":"latest"}       # download base img + flash SD
+  {"cmd":"flash","disk_id":"...","tag":"latest",       # download base img + flash SD
+      "hostname":"tdplayer","networks":[{"ssid":..,"psk":..}]}  # optional per-card config
   {"cmd":"ping"}
 
 Events (stdout):
@@ -275,7 +276,14 @@ class Sidecar:
             return 0.0
 
     # --- SD flashing (own thread; download base image then raw-write) ---
-    def _flash_worker(self, disk_id: str, tag: str, image: str | None) -> None:
+    def _flash_worker(
+        self,
+        disk_id: str,
+        tag: str,
+        image: str | None,
+        hostname: str | None = None,
+        networks: list | None = None,
+    ) -> None:
         from deploy_engine import download, flasher
 
         try:
@@ -296,13 +304,29 @@ class Sidecar:
                 on_progress=lambda f, m: emit(
                     {"type": "flash_progress", "stage": "write", "frac": f, "message": m}
                 ),
+                hostname=hostname or None,
+                networks=networks or None,
+                # Boot-config drop is best-effort: the raw write already succeeded,
+                # so a failure here is a warning, not a flash error.
+                on_warn=lambda m: emit({"type": "warning", "message": m}),
             )
             emit({"type": "flash_done", "disk": disk.to_dict()})
         except Exception as e:  # noqa: BLE001 - surface to UI
             emit(_error_event("flash_error", e, action="flashing an SD card"))
 
-    def start_flash(self, disk_id: str, tag: str, image: str | None) -> None:
-        threading.Thread(target=self._flash_worker, args=(disk_id, tag, image), daemon=True).start()
+    def start_flash(
+        self,
+        disk_id: str,
+        tag: str,
+        image: str | None,
+        hostname: str | None = None,
+        networks: list | None = None,
+    ) -> None:
+        threading.Thread(
+            target=self._flash_worker,
+            args=(disk_id, tag, image, hostname, networks),
+            daemon=True,
+        ).start()
 
     def list_disks(self) -> None:
         from deploy_engine import flasher
@@ -346,7 +370,13 @@ class Sidecar:
         elif cmd == "list_releases":
             self.list_releases()
         elif cmd == "flash":
-            self.start_flash(msg["disk_id"], msg.get("tag", "latest"), msg.get("image"))
+            self.start_flash(
+                msg["disk_id"],
+                msg.get("tag", "latest"),
+                msg.get("image"),
+                msg.get("hostname"),
+                msg.get("networks"),
+            )
         elif cmd == "ping":
             emit({"type": "pong"})
         else:
