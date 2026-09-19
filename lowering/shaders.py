@@ -139,12 +139,15 @@ uniform float uTranslateX;
 uniform float uTranslateY;
 uniform float uScaleX;
 uniform float uScaleY;
+uniform float uAspect;       // output w/h — rotate in square space so it doesn't stretch
 void main() {
     // transform: screen UV -> crop-output UV
     vec2 c = vec2(0.5);
     vec2 p = vUV - c - vec2(uTranslateX, uTranslateY);
     float s = sin(-uRotate), co = cos(-uRotate);
+    p.x *= uAspect;
     p = mat2(co, -s, s, co) * p;
+    p.x /= uAspect;
     p /= vec2(uScaleX, uScaleY);
     p = p + c;
     // crop: crop-output UV -> source UV
@@ -173,11 +176,14 @@ uniform float uTranslateX;
 uniform float uTranslateY;
 uniform float uScaleX;
 uniform float uScaleY;
+uniform float uAspect;       // output w/h — rotate in square space so it doesn't stretch
 void main() {
     vec2 c = vec2(0.5);
     vec2 p = vUV - c - vec2(uTranslateX, uTranslateY);
     float s = sin(-uRotate), co = cos(-uRotate);
+    p.x *= uAspect;
     p = mat2(co, -s, s, co) * p;
+    p.x /= uAspect;
     p /= vec2(uScaleX, uScaleY);
     fragColor = texture(tex0, p + c);
 }

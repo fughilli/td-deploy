@@ -160,6 +160,9 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
                 "uScaleX": {"expr": _p(["sx", "scalex"], 1.0), "mul": usc},
                 "uScaleY": {"expr": _p(["sy", "scaley"], 1.0), "mul": usc},
             },
+            # Output aspect (w/h): the shader rotates in aspect-corrected space so a
+            # non-square frame doesn't stretch under rotation.
+            uniforms={"uAspect": ("float", float(ot["w"]) / float(ot["h"]))},
             params=dict(n.params),
         )
 

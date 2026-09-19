@@ -16,8 +16,8 @@ from ir.graph import Graph
 from lowering.lower import lower
 
 
-def _transform(params):
-    ot = {"w": 256, "h": 256, "fmt": "rgba8"}
+def _transform(params, ot=None):
+    ot = ot or {"w": 256, "h": 256, "fmt": "rgba8"}
     return Graph.from_json(
         {
             "output": "t",
@@ -53,6 +53,21 @@ class TransformRotateWrapTest(unittest.TestCase):
         # Modelled into the primitive: the wrap is unconditional, not expr-dependent.
         tus = self._transform_step({"rotate": 30.0})
         self.assertAlmostEqual(tus["uRotate"]["mod"], 2.0 * math.pi)
+
+    def test_rotation_is_aspect_corrected(self):
+        # On a non-square frame, rotation must not stretch: the step carries the
+        # output aspect (w/h) and the shader rotates in aspect-corrected space.
+        plan = lower(
+            _transform({"rotate": "30"}, {"w": 1280, "h": 720, "fmt": "rgba8"}), "desktop_gl"
+        )
+        step = next(s for s in plan.steps if s.node_id == "t")
+        self.assertIn("uAspect", step.uniforms)
+        kind, val = step.uniforms["uAspect"]
+        self.assertEqual(kind, "float")
+        self.assertAlmostEqual(val, 1280.0 / 720.0)
+        self.assertIn("uAspect", step.fragment)
+        self.assertIn("p.x *= uAspect", step.fragment)
+        self.assertIn("p.x /= uAspect", step.fragment)
 
     def test_translate_and_scale_are_not_wrapped(self):
         tus = self._transform_step({"tx": "absTime.seconds", "sx": "2"})
