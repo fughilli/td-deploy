@@ -71,6 +71,17 @@
       <label class="grow">SSH key <input id="key" type="text" placeholder="deploy/secrets/deploy_key (default)" /></label>
       <button id="pick-key">…</button>
     </div>
+    <div class="row deploy-keys">
+      <label class="grow">Deploy key
+        <select id="deploy-key-select" title="The active key is written to the SD card (public half) and used to deploy (private half).">
+          <option value="">(none — using SSH key above)</option>
+        </select>
+      </label>
+      <button id="deploy-key-gen" title="Generate a new ed25519 deploy keypair. The flashed Pi trusts it automatically; deploy uses it to log in.">Generate…</button>
+    </div>
+    <div class="row">
+      <span id="deploy-key-fp" class="path muted"></span>
+    </div>
     <div class="row">
       <label class="toggle" title="Deploy even if the project uses operators td-deploy doesn't support yet — they're replaced with placeholders and you get a warning.">
         <input type="checkbox" id="skip-unsupported" /> Skip unsupported operators (deploy anyway)

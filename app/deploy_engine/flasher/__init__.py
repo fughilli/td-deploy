@@ -142,13 +142,14 @@ def _apply_boot_config(
     hostname: Optional[str],
     networks,
     on_warn: OnWarn,
+    authorized_keys=None,
 ) -> None:
     """Best-effort: mount the freshly-written card's FAT boot partition and drop the
     flash-time config onto it, then unmount. NEVER raises — the raw write already
     succeeded, so a mount/write failure must not fail the flash; it logs a warning."""
     from .. import flash_config
 
-    if not hostname and not networks:
+    if not hostname and not networks and not authorized_keys:
         return
 
     base = _boot_disk_id(disk)
@@ -167,7 +168,12 @@ def _apply_boot_config(
                 on_warn("could not locate the card's boot partition; skipped hostname/WiFi")
                 return
             try:
-                flash_config.write_boot_config(mount_dir, hostname=hostname, networks=networks)
+                flash_config.write_boot_config(
+                    mount_dir,
+                    hostname=hostname,
+                    networks=networks,
+                    authorized_keys=authorized_keys,
+                )
             finally:
                 subprocess.run(["diskutil", "eject", base], capture_output=True, timeout=60)
         elif sys.platform.startswith("win"):
@@ -176,9 +182,14 @@ def _apply_boot_config(
             if not mount_dir:
                 on_warn("could not locate the card's boot partition; skipped hostname/WiFi")
                 return
-            flash_config.write_boot_config(mount_dir, hostname=hostname, networks=networks)
+            flash_config.write_boot_config(
+                mount_dir,
+                hostname=hostname,
+                networks=networks,
+                authorized_keys=authorized_keys,
+            )
         else:
-            _apply_boot_config_linux(disk, hostname, networks, on_warn)
+            _apply_boot_config_linux(disk, hostname, networks, on_warn, authorized_keys)
     except Exception as e:  # noqa: BLE001 - best-effort, never fatal
         on_warn(f"flashed OK, but writing hostname/WiFi to the card failed: {e}")
 
@@ -207,7 +218,9 @@ def _find_fat_mount_windows(disk: Disk):
     return f"{out}:\\" if out else None
 
 
-def _apply_boot_config_linux(disk: Disk, hostname, networks, on_warn: OnWarn) -> None:
+def _apply_boot_config_linux(
+    disk: Disk, hostname, networks, on_warn: OnWarn, authorized_keys=None
+) -> None:
     """Linux best-effort mount. The first partition of the SD is the FAT boot part;
     mount it to a temp dir (may need udisks/pkexec-free auto-mount), write, unmount."""
     from .. import flash_config
@@ -227,7 +240,9 @@ def _apply_boot_config_linux(disk: Disk, hostname, networks, on_warn: OnWarn) ->
             # to a warning rather than guessing.
             on_warn("could not mount the card's boot partition; skipped hostname/WiFi")
             return
-        flash_config.write_boot_config(mnt, hostname=hostname, networks=networks)
+        flash_config.write_boot_config(
+            mnt, hostname=hostname, networks=networks, authorized_keys=authorized_keys
+        )
     finally:
         if mounted:
             subprocess.run(["umount", mnt], capture_output=True, timeout=60)
@@ -244,12 +259,14 @@ def flash(
     on_progress: OnProgress = _noop,
     hostname: Optional[str] = None,
     networks=None,
+    authorized_keys=None,
     on_warn: OnWarn = None,
 ) -> Disk:
     """Write `image` to removable `disk_id` (raw), elevating for the byte-copy.
 
     After a successful raw write, best-effort mounts the card's FAT boot partition
-    and drops the flash-time hostname + WiFi keyfiles onto it (see flash_config).
+    and drops the flash-time hostname + WiFi keyfiles + `authorized_keys` (the active
+    deploy key's public line) onto it (see flash_config).
     That step is NON-FATAL: if the mount/write fails it emits a warning via
     `on_warn` and still returns success — a good raw write is never bricked by a
     failed customization drop.
@@ -277,7 +294,7 @@ def flash(
             pass
 
     # Raw write succeeded — now apply per-card config (best-effort, non-fatal).
-    _apply_boot_config(disk, hostname, networks, on_warn or (lambda _m: None))
+    _apply_boot_config(disk, hostname, networks, on_warn or (lambda _m: None), authorized_keys)
     return disk
 
 

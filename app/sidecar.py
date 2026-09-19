@@ -14,10 +14,17 @@ Commands (stdin):
   {"cmd":"list_releases"}                               # enumerate base-image releases
   {"cmd":"flash","disk_id":"...","tag":"latest",       # download base img + flash SD
       "hostname":"tdplayer","networks":[{"ssid":..,"psk":..}]}  # optional per-card config
+      # the ACTIVE deploy key's public line is added automatically -> the card's
+      # /boot/firmware/authorized_keys, so the flashed Pi trusts it at first boot.
+  {"cmd":"gen_deploy_key","name":"...","comment":null}  # new ed25519 keypair, made active
+  {"cmd":"list_deploy_keys"}                            # names + fingerprints + active
+  {"cmd":"select_deploy_key","name":"..."}             # set the active key
   {"cmd":"ping"}
 
 Events (stdout):
   {"type":"ready"} {"type":"settings",...} {"type":"start","toe":...}
+  {"type":"deploy_keys","keys":[{"name":..,"fingerprint":..,"active":bool}],"active":..}
+  {"type":"deploy_key_generated","name":..,"fingerprint":..,"pub":..}
   {"type":"progress","phase":...,"frac":..,"overall":..,"message":...}
   {"type":"log","line":...} {"type":"done","ok":true,"staging":...}
   {"type":"error","message":...,"fixPrompt":...} {"type":"watch","enabled":bool}
@@ -136,6 +143,24 @@ def _base_image_tag() -> str:
     return os.environ.get("TDDEPLOY_BASE_IMAGE_TAG", "latest")
 
 
+def _default_config_dir() -> str:
+    """Where deploy keys live when Electron hasn't passed app.getPath('userData').
+
+    Electron sets `config_dir` in set_settings; this stdlib fallback keeps the
+    sidecar usable standalone (dev / CLI / tests). Mirrors the OS conventions
+    Electron's userData uses."""
+    env = os.environ.get("TDDEPLOY_CONFIG_DIR")
+    if env:
+        return env
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support/td-deploy")
+    if sys.platform.startswith("win"):
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "td-deploy")
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "td-deploy")
+
+
 class Sidecar:
     def __init__(self) -> None:
         self.settings = {
@@ -150,7 +175,10 @@ class Sidecar:
             "asset_roots": [],  # extra directories to search for movie/image assets
             "asset_map": {},  # explicit substitutions: original path/basename -> local file
             "base_image_tag": _base_image_tag(),
+            # Electron passes app.getPath('userData'); deploy keys are stored under it.
+            "config_dir": _default_config_dir(),
         }
+        self._keystore = None  # lazily built from settings["config_dir"]
         self.toe: str | None = None
         self._deploy_req = threading.Event()
         self._watch = False
@@ -283,6 +311,7 @@ class Sidecar:
         image: str | None,
         hostname: str | None = None,
         networks: list | None = None,
+        authorized_keys: list | None = None,
     ) -> None:
         from deploy_engine import download, flasher
 
@@ -306,6 +335,7 @@ class Sidecar:
                 ),
                 hostname=hostname or None,
                 networks=networks or None,
+                authorized_keys=authorized_keys or None,
                 # Boot-config drop is best-effort: the raw write already succeeded,
                 # so a failure here is a warning, not a flash error.
                 on_warn=lambda m: emit({"type": "warning", "message": m}),
@@ -322,9 +352,18 @@ class Sidecar:
         hostname: str | None = None,
         networks: list | None = None,
     ) -> None:
+        # Include the ACTIVE deploy key's public line so the flashed card's
+        # /boot/firmware/authorized_keys trusts it at first boot (image half).
+        authorized_keys = None
+        try:
+            active_pub = self._keystore_for().active_public_line()
+            if active_pub:
+                authorized_keys = [active_pub]
+        except Exception:  # noqa: BLE001 - no active key just means none written
+            authorized_keys = None
         threading.Thread(
             target=self._flash_worker,
-            args=(disk_id, tag, image, hostname, networks),
+            args=(disk_id, tag, image, hostname, networks, authorized_keys),
             daemon=True,
         ).start()
 
@@ -348,11 +387,71 @@ class Sidecar:
         except Exception as e:  # noqa: BLE001 - surface to UI but keep it non-fatal
             emit({"type": "releases", "releases": [], "message": f"list_releases: {e}"})
 
+    # --- deploy keys (pure-Python ed25519; stored under config_dir) ---
+    def _keystore_for(self):
+        """Build (and cache) a KeyStore rooted at the current config_dir. Rebuilt
+        if config_dir changed (Electron sends it after userData is known)."""
+        from deploy_engine.deploy_keys import KeyStore
+
+        cfg = self.settings.get("config_dir") or _default_config_dir()
+        if self._keystore is None or getattr(self._keystore, "_root", None) != cfg:
+            ks = KeyStore(cfg)
+            ks._root = cfg  # remember for the change check
+            self._keystore = ks
+        return self._keystore
+
+    def _sync_active_key(self) -> None:
+        """Point the deploy-time `key` setting at the active key's private half, so a
+        deploy uses the same key the flasher writes to the card."""
+        try:
+            priv = self._keystore_for().active_private_path()
+        except Exception:  # noqa: BLE001 - never let key store errors break deploy
+            priv = None
+        if priv:
+            self.settings["key"] = priv
+
+    def emit_deploy_keys(self) -> None:
+        try:
+            ks = self._keystore_for()
+            emit({"type": "deploy_keys", "keys": ks.list(), "active": ks.active()})
+        except Exception as e:  # noqa: BLE001
+            emit({"type": "error", "message": f"list_deploy_keys: {e}"})
+
+    def gen_deploy_key(self, name: str, comment: str | None) -> None:
+        try:
+            ks = self._keystore_for()
+            info = ks.generate(name, comment=comment)
+            self._sync_active_key()  # newly generated key is active -> use it for deploy
+            emit(
+                {
+                    "type": "deploy_key_generated",
+                    "name": info["name"],
+                    "fingerprint": info["fingerprint"],
+                    "pub": info["pub"],
+                }
+            )
+            self.emit_deploy_keys()
+            emit({"type": "settings", "settings": self.settings})
+        except Exception as e:  # noqa: BLE001
+            emit({"type": "error", "message": f"gen_deploy_key: {e}"})
+
+    def select_deploy_key(self, name: str) -> None:
+        try:
+            self._keystore_for().select(name)
+            self._sync_active_key()
+            self.emit_deploy_keys()
+            emit({"type": "settings", "settings": self.settings})
+        except Exception as e:  # noqa: BLE001
+            emit({"type": "error", "message": f"select_deploy_key: {e}"})
+
     # --- command dispatch ---
     def handle(self, msg: dict) -> None:
         cmd = msg.get("cmd")
         if cmd == "set_settings":
             self.settings.update(msg.get("settings", {}))
+            # config_dir may have just arrived (Electron's userData) — if there's an
+            # active key, point the deploy `key` at its private half.
+            self._sync_active_key()
             emit({"type": "settings", "settings": self.settings})
         elif cmd == "pick_toe":
             self.toe = msg.get("toe")
@@ -377,6 +476,12 @@ class Sidecar:
                 msg.get("hostname"),
                 msg.get("networks"),
             )
+        elif cmd == "gen_deploy_key":
+            self.gen_deploy_key(msg.get("name"), msg.get("comment"))
+        elif cmd == "list_deploy_keys":
+            self.emit_deploy_keys()
+        elif cmd == "select_deploy_key":
+            self.select_deploy_key(msg.get("name"))
         elif cmd == "ping":
             emit({"type": "pong"})
         else:

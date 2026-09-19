@@ -139,6 +139,10 @@ ipcMain.handle('pick-key', async () => {
 
 ipcMain.on('command', (_e, obj) => toSidecar(obj));
 
+// The app's per-user config dir (deploy keys are stored under it by the sidecar).
+// The renderer includes this in set_settings so keys live in the OS-standard spot.
+ipcMain.handle('config-dir', () => app.getPath('userData'));
+
 // Copy the fix-it prompt to the clipboard (renderer file:// isn't a secure context, so
 // navigator.clipboard is unavailable — go through the main-process clipboard).
 ipcMain.handle('copy-text', (_e, text) => {

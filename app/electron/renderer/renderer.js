@@ -13,12 +13,16 @@ const els = {
   rememberWifiPw: $('remember-wifi-pw'),
   assets: $('assets'), assetsList: $('assets-list'),
   assetsAddRoot: $('assets-addroot'), assetsRedeploy: $('assets-redeploy'),
+  deployKeySelect: $('deploy-key-select'), deployKeyGen: $('deploy-key-gen'),
+  deployKeyFp: $('deploy-key-fp'),
 };
 
 const STORE = 'td-deploy-settings';
 let state = { toe: null, busy: false };
 let assetRoots = [];      // extra folders to search for assets
 let assetMap = {};        // original asset path/basename -> chosen replacement file
+let configDir = null;     // app.getPath('userData'); where deploy keys are stored
+let deployKeys = [];      // [{name, fingerprint, active}] from the sidecar
 
 function loadSettings() {
   try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch (e) { return {}; }
@@ -46,6 +50,8 @@ function pushSettings() {
     pi: s.pi, target: s.target, key: s.key || null,
     skip_unsupported: !!s.skipUnsupported, magic_chop: !!s.magicChop,
     asset_roots: assetRoots, asset_map: assetMap,
+    // config_dir tells the sidecar where to store/read deploy keys (userData).
+    ...(configDir ? { config_dir: configDir } : {}),
   }});
 }
 
@@ -115,6 +121,41 @@ function renderAssets(missing) {
   els.assets.classList.remove('hidden');
 }
 
+// --- deploy keys: generate + select the active ed25519 key ---
+// The ACTIVE key's public half is written to the SD card (so the flashed Pi trusts
+// it) and its private half is used to deploy. The sidecar owns the store; the
+// renderer just lists/selects and asks it to generate.
+function renderDeployKeys(keys, active) {
+  deployKeys = keys || [];
+  const sel = els.deployKeySelect;
+  sel.innerHTML = '';
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = '(none — using SSH key above)';
+  sel.appendChild(none);
+  for (const k of deployKeys) {
+    const o = document.createElement('option');
+    o.value = k.name;
+    const fp = (k.fingerprint || '').replace(/^SHA256:/, '').slice(0, 12);
+    o.textContent = `${k.name}${fp ? ' — ' + fp + '…' : ''}`;
+    sel.appendChild(o);
+  }
+  const activeName = active || (deployKeys.find((k) => k.active) || {}).name || '';
+  sel.value = activeName;
+  const cur = deployKeys.find((k) => k.name === activeName);
+  els.deployKeyFp.textContent = cur ? cur.fingerprint : '';
+}
+
+els.deployKeyGen.onclick = () => {
+  const name = (prompt('Name for the new deploy key:', 'deploy') || '').trim();
+  if (!name) return;
+  window.td.send({ cmd: 'gen_deploy_key', name });
+};
+els.deployKeySelect.onchange = () => {
+  const name = els.deployKeySelect.value;
+  if (name) window.td.send({ cmd: 'select_deploy_key', name });
+};
+
 els.assetsAddRoot.onclick = async () => {
   const d = await window.td.pickDir();
   if (!d) return;
@@ -166,6 +207,7 @@ window.td.onEvent((evt) => {
       if (els.watch.checked) window.td.send({ cmd: 'watch', enable: true, toe: state.toe });
       if (evt.settings && evt.settings.base_image_tag)
         setDefaultTag(evt.settings.base_image_tag);   // CI-stamped default
+      window.td.send({ cmd: 'list_deploy_keys' });    // populate the key selector
       log('sidecar ready');
       break;
     case 'start':
@@ -201,6 +243,12 @@ window.td.onEvent((evt) => {
       break;
     case 'assets':
       renderAssets(evt.missing || []);
+      break;
+    case 'deploy_keys':
+      renderDeployKeys(evt.keys || [], evt.active);
+      break;
+    case 'deploy_key_generated':
+      log('deploy key generated: ' + evt.name + ' (' + evt.fingerprint + ')', 'ok');
       break;
     case 'watch':
       els.watch.checked = !!evt.enabled;
@@ -362,7 +410,10 @@ fm.go.onclick = () => {
 };
 
 // --- init from stored settings ---
-(function init() {
+(async function init() {
+  // Learn the app config dir up front so the very first set_settings carries it and
+  // the sidecar stores deploy keys in the OS-standard userData path.
+  try { configDir = await window.td.configDir(); } catch (e) { configDir = null; }
   const s = loadSettings();
   if (s.pi) els.pi.value = s.pi;
   if (s.target) els.target.value = s.target;
@@ -378,4 +429,10 @@ fm.go.onclick = () => {
   if (s.flashSsid) fm.ssid.value = s.flashSsid;
   if (s.flashPsk && s.rememberWifiPw) fm.psk.value = s.flashPsk;
   if (s.toe) setToe(s.toe);
+  // configDir is now known: push it and (re)load the key list from that dir. Safe
+  // if 'ready' already fired with the default dir — this re-syncs to userData.
+  if (configDir) {
+    pushSettings();
+    window.td.send({ cmd: 'list_deploy_keys' });
+  }
 })();

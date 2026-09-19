@@ -227,3 +227,16 @@ py_test(
     data = ["//app:deploy_engine/flash_config.py"],
     imports = ["."],
 )
+
+# Pure-Python ed25519 deploy-key generation/management (app/deploy_engine/
+# deploy_keys.py). Safety-critical: a wrong key silently breaks deploy, so the
+# curve math is pinned to the RFC 8032 §7.1 vectors, the OpenSSH private-key
+# encoding is round-tripped, and — where ssh-keygen is on PATH — cross-checked
+# against `ssh-keygen -y` (skipped cleanly otherwise). Stdlib-only, loaded by
+# path; no crypto deps, no hardware.
+py_test(
+    name = "deploy_keys_test",
+    srcs = ["tests/deploy_keys_test.py"],
+    data = ["//app:deploy_engine/deploy_keys.py"],
+    imports = ["."],
+)
