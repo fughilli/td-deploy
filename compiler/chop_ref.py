@@ -69,6 +69,12 @@ class Store:
     def set(self, name: str, chan, v: float) -> None:
         self.d[(name, str(chan))] = float(v)
 
+    def channels(self, name: str) -> list[str]:
+        """Channel keys `name` actually published, numeric ones in numeric order
+        (so channel 10 does not sort ahead of channel 2)."""
+        ks = [c for (n, c) in self.d if n == name]
+        return sorted(ks, key=lambda k: (0, int(k), "") if k.isdigit() else (1, 0, k))
+
 
 def eval_expr(expr, t: float, frame: float, store: Store) -> float:
     s = str(expr).strip().strip('"').strip("'")
@@ -99,19 +105,38 @@ class ChopEval:
 
     def __init__(self, chops: list[dict]):
         self.chops = chops
-        self.speed: dict[tuple[str, int], float] = {}
+        self.speed: dict[tuple[str, str], float] = {}
         self.last_t = 0.0
+        self.defined = {c["name"] for c in chops}
         # Channel count per CHOP. Only a Constant declares its own; everything
         # else is as wide as what it carries. Derived independently of the
         # lowering's copy on purpose — if the two ever disagree, the bit-parity
         # test sees it instead of both being quietly wrong together.
+        #
+        # `dynamic` is the exception: a CHOP carrying a live MIDI/OSC service has
+        # no width until that service publishes, and its channels are NAMED, not
+        # indexed. Those read their channel set from the store each frame, and
+        # the property is contagious — a Null downstream of one is just as
+        # unindexable. The lowering declines this shape outright; the runtime
+        # (which this mirrors) evaluates it, so it has to be modelled here.
         self.width: dict[str, int] = {}
+        self.dynamic: set[str] = set()
         for c in self.chops:
+            name = c["name"]
             if c.get("type") == "constant":
-                self.width[c["name"]] = max(1, len(c.get("channels") or []))
-            else:
-                ins = c.get("inputs") or []
-                self.width[c["name"]] = self.width.get(ins[0], 1) if ins else 1
+                self.width[name] = max(1, len(c.get("channels") or []))
+                continue
+            ins = c.get("inputs") or []
+            if ins and (ins[0] not in self.defined or ins[0] in self.dynamic):
+                self.dynamic.add(name)
+                continue
+            self.width[name] = self.width.get(ins[0], 1) if ins else 1
+
+    def _in_channels(self, store: "Store", name: str, src: str) -> list[str]:
+        """Channel keys to carry from `src` into `name`."""
+        if name in self.dynamic:
+            return store.channels(src)
+        return [str(i) for i in range(self.width.get(name, 1))]
 
     def step(self, t: float, sources: dict[str, dict]) -> Store:
         store = Store()
@@ -129,14 +154,14 @@ class ChopEval:
             elif typ == "speed":
                 inps = c.get("inputs") or []
                 if inps:
-                    for i in range(self.width.get(name, 1)):
-                        iv = store.get(inps[0], i)
-                        key = (name, i)
+                    for ch in self._in_channels(store, name, inps[0]):
+                        iv = store.get(inps[0], ch)
+                        key = (name, ch)
                         self.speed[key] = self.speed.get(key, 0.0) + iv * dt
-                        store.set(name, i, self.speed[key])
+                        store.set(name, ch, self.speed[key])
             else:
                 inps = c.get("inputs") or []
                 if inps:
-                    for i in range(self.width.get(name, 1)):
-                        store.set(name, i, store.get(inps[0], i))
+                    for ch in self._in_channels(store, name, inps[0]):
+                        store.set(name, ch, store.get(inps[0], ch))
         return store

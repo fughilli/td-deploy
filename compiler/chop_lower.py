@@ -183,7 +183,7 @@ def _expr_refs(exprs) -> list[tuple[str, str]]:
     return seen
 
 
-def _widths(chops: list[dict]) -> dict[str, int]:
+def _widths(chops: list[dict], defined: set[str]) -> dict[str, int]:
     """Channel count per CHOP, propagated in dependency order.
 
     Only a Constant states its own width; everything else is as wide as what it
@@ -196,10 +196,41 @@ def _widths(chops: list[dict]) -> dict[str, int]:
         name = c["name"]
         if c.get("type") == "constant":
             w[name] = max(1, len(c.get("channels") or []))
-        else:
-            inps = c.get("inputs") or []
-            w[name] = w.get(inps[0], 1) if inps else 1
+            continue
+        inps = c.get("inputs") or []
+        if not inps:
+            w[name] = 1
+            continue
+        src = inps[0]
+        if src not in defined:
+            # A live MIDI/OSC service. The importer keeps it in `inputs` but
+            # leaves it out of the DAG (it has no expression to fuse), and how
+            # many channels it will publish — and under which names — is only
+            # known once it is running. Decline instead of guessing one channel:
+            # the interpreted path can see the real channel set, this cannot.
+            raise Unsupported(
+                f"CHOP {name!r} carries live source {src!r}; the fused kernel "
+                f"needs a channel count known at compile time"
+            )
+        if src not in w:
+            raise Unsupported(f"CHOP {name!r} reads {src!r} before it is defined")
+        w[name] = w[src]
     return w
+
+
+def _input_ssa(env, fn, name: str, inps: list, i: int, verb: str) -> str:
+    """The SSA value for channel `i` of `name`'s input.
+
+    A CHOP with no input contributes zero — that is a real shape. A CHOP that
+    HAS an input whose channel never got bound is not: it used to silently
+    become 0.0, so a Speed fed something unresolved integrated nothing forever
+    and reported success. Refuse, and name what is missing."""
+    if not inps:
+        return fn._const(0.0)
+    ssa = env.get((inps[0], str(i)))
+    if ssa is None:
+        raise Unsupported(f"CHOP {name!r} {verb} {inps[0]!r} channel {i}, which is never bound")
+    return ssa
 
 
 def lower(chops: list[dict], func_name: str = "chops"):
@@ -214,7 +245,7 @@ def lower(chops: list[dict], func_name: str = "chops"):
             for ref in _expr_refs(c.get("channels", [])):
                 if ref[0] not in defined and ref not in sources:
                     sources.append(ref)
-    widths = _widths(chops)
+    widths = _widths(chops, defined)
     # A Speed integrates each channel independently, so it carries one
     # accumulator PER CHANNEL.
     states = [
@@ -251,9 +282,7 @@ def lower(chops: list[dict], func_name: str = "chops"):
         elif typ == "speed":
             inps = c.get("inputs") or []
             for i in range(widths[name]):
-                iv = env.get((inps[0], str(i))) if inps else None
-                if iv is None:
-                    iv = fn._const(0.0)
+                iv = _input_ssa(env, fn, name, inps, i, "integrates")
                 m = fn._fresh()
                 fn.lines.append(f"{m} = arith.mulf {iv}, %dt : f64")
                 acc = fn._fresh()
@@ -263,8 +292,7 @@ def lower(chops: list[dict], func_name: str = "chops"):
             # null / select / in / out: alias every channel of the input.
             inps = c.get("inputs") or []
             for i in range(widths[name]):
-                iv = env.get((inps[0], str(i))) if inps else fn._const(0.0)
-                bind(name, i, iv)
+                bind(name, i, _input_ssa(env, fn, name, inps, i, "carries"))
 
     if not outputs:
         raise Unsupported("empty CHOP DAG")

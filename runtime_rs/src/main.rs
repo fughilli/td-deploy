@@ -661,7 +661,7 @@ struct Renderer<'a> {
     chop_names: HashMap<String, Vec<String>>,  // chop -> channel names, for either path
     // Pre-compiled interpreted uniforms, keyed by (step index, uniform name).
     uniform_progs: HashMap<(usize, String), expr::Program>,
-    speed_state: RefCell<HashMap<(String, usize), f64>>,
+    speed_state: RefCell<HashMap<(String, String), f64>>,
     last_t: Cell<f64>,
     prof: Prof,
     profile_gpu: bool,
@@ -724,6 +724,12 @@ fn chop_put(store: &Chops, chop: &str, i: usize, names: &[String], v: f64) {
 }
 
 /// How many channels a CHOP published, counted by its numeric keys.
+///
+/// Only meaningful for a CHOP the DAG itself wrote, because `chop_put` gives
+/// those a dense 0..n. A live MIDI/OSC service is keyed by NAME (`ch1ctrl5`,
+/// `cc4`) and has no such indexing — and MIDI also writes the raw CC number as
+/// a key, so counting from 0 there returns whatever CC numbers happen to be in
+/// use rather than a channel count. Use `chop_keys` for those.
 fn chop_width(store: &Chops, name: &str) -> usize {
     let g = store.lock().unwrap();
     let m = match g.get(name) {
@@ -731,6 +737,23 @@ fn chop_width(store: &Chops, name: &str) -> usize {
         None => return 0,
     };
     (0..).take_while(|i| m.contains_key(&i.to_string())).count()
+}
+
+/// Every channel key a CHOP published, numeric keys first and in numeric order
+/// so the ordering is stable across frames (HashMap iteration is not).
+fn chop_keys(store: &Chops, name: &str) -> Vec<String> {
+    let g = store.lock().unwrap();
+    let mut ks: Vec<String> = match g.get(name) {
+        Some(m) => m.keys().cloned().collect(),
+        None => return Vec::new(),
+    };
+    ks.sort_by(|a, b| match (a.parse::<u64>(), b.parse::<u64>()) {
+        (Ok(x), Ok(y)) => x.cmp(&y),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Err(_)) => a.cmp(b),
+    });
+    ks
 }
 
 fn chop_get(store: &Chops, name: &str, chan: &str) -> f64 {
@@ -940,6 +963,15 @@ impl<'a> Renderer<'a> {
         let dt = (t - self.last_t.get()).max(0.0).min(1.0);
         self.last_t.set(t);
         let frame = (t * 60.0).floor();
+        // Names the DAG itself defines. Anything else appearing in `inputs` is a
+        // live MIDI/OSC service: the importer keeps it wired as an input but
+        // leaves it out of the DAG, since it has no expression to evaluate.
+        let defined: HashSet<&str> = self.chop_progs.iter().map(|c| c.name.as_str()).collect();
+        // A CHOP carrying a live service cannot be walked as 0..n — the service
+        // publishes NAMED channels. Such a CHOP copies by key instead, and since
+        // it then has no dense indexing of its own, everything downstream of it
+        // has to copy by key too.
+        let mut by_key: HashSet<&str> = HashSet::new();
         for cp in &self.chop_progs {
             match cp.ty.as_str() {
                 "constant" => {
@@ -949,31 +981,39 @@ impl<'a> Renderer<'a> {
                         chop_put(&self.store, &cp.name, i, &cp.names, v);
                     }
                 }
-                "speed" => {
-                    // One integrator PER CHANNEL: a Speed CHOP fed a three-channel
-                    // rate (roll/pitch/yaw) has to integrate all three, not just
-                    // the first.
-                    if let Some(inp) = cp.inputs.first() {
-                        let w = chop_width(&self.store, inp).max(1);
-                        for i in 0..w {
-                            let iv = chop_get(&self.store, inp, &i.to_string());
-                            let val = {
-                                let mut ss = self.speed_state.borrow_mut();
-                                let acc = ss.entry((cp.name.clone(), i)).or_insert(0.0);
-                                *acc += iv * dt;
-                                *acc
-                            };
-                            chop_put(&self.store, &cp.name, i, &cp.names, val);
-                        }
+                ty => {
+                    let inp = match cp.inputs.first() {
+                        Some(i) => i,
+                        None => continue,
+                    };
+                    let keyed = !defined.contains(inp.as_str()) || by_key.contains(inp.as_str());
+                    if keyed {
+                        by_key.insert(cp.name.as_str());
                     }
-                }
-                _ => {
-                    // null / select / in / passthrough: copy every channel through.
-                    if let Some(inp) = cp.inputs.first() {
-                        let w = chop_width(&self.store, inp).max(1);
-                        for i in 0..w {
-                            let iv = chop_get(&self.store, inp, &i.to_string());
-                            chop_put(&self.store, &cp.name, i, &cp.names, iv);
+                    // Index-walk what this runtime wrote itself; key-walk a live
+                    // source (or anything carrying one).
+                    let chans: Vec<String> = if keyed {
+                        chop_keys(&self.store, inp)
+                    } else {
+                        (0..chop_width(&self.store, inp).max(1)).map(|i| i.to_string()).collect()
+                    };
+                    for (i, ch) in chans.iter().enumerate() {
+                        let iv = chop_get(&self.store, inp, ch);
+                        // A Speed integrates each channel independently.
+                        let v = if ty == "speed" {
+                            let mut ss = self.speed_state.borrow_mut();
+                            let acc = ss.entry((cp.name.clone(), ch.clone())).or_insert(0.0);
+                            *acc += iv * dt;
+                            *acc
+                        } else {
+                            iv
+                        };
+                        if keyed {
+                            // Keep the source's own channel names; there is no
+                            // index for them to land on.
+                            chop_set(&self.store, &cp.name, ch, v);
+                        } else {
+                            chop_put(&self.store, &cp.name, i, &cp.names, v);
                         }
                     }
                 }

@@ -16,7 +16,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from chop_lower import lower  # noqa: E402
+from chop_lower import Unsupported, lower  # noqa: E402
 from chop_ref import ChopEval  # noqa: E402
 
 LOWER = [
@@ -153,10 +153,44 @@ SPIN_FRAMES = [
 ]
 
 
+def run_declines(name: str, chops: list, *, expect: tuple[str, ...]) -> bool:
+    """Assert the lowering REFUSES a DAG, with a message that says why.
+
+    The gate needs this arm because a refusal is the correct answer for some
+    shapes, and a refusal cannot be bit-compared. Left unasserted, the two ways
+    of getting no kernel — declining on purpose and crashing — look identical
+    from outside, which is exactly how a `TypeError` once sat in the coverage
+    log passing for an unsupported operator.
+    """
+    try:
+        lower(chops)
+    except Unsupported as e:
+        missing = [w for w in expect if w not in str(e)]
+        ok = not missing
+        print(f"[{'OK  ' if ok else 'FAIL'}] {name}  declined: {e}")
+        if missing:
+            print(f"  message omits {missing}")
+        return ok
+    except Exception as e:  # noqa: BLE001
+        print(f"[FAIL] {name}  raised {type(e).__name__} instead of Unsupported: {e}")
+        return False
+    print(f"[FAIL] {name}  lowered a DAG it cannot represent")
+    return False
+
+
+# A CHOP wired straight off a live service. The importer keeps the service in
+# `inputs` but leaves it out of the DAG, so its width — and its channel NAMES —
+# are only known once it runs. Not fusable; the interpreted path carries it.
+SRC_FED = [{"name": "null1", "type": "null", "inputs": ["midiin1"], "channels": []}]
+SRC_FED_SPEED = [{"name": "spin1", "type": "speed", "inputs": ["oscin1"], "channels": []}]
+
+
 if __name__ == "__main__":
     ok = True
     ok &= run_parity("ascii", ASCII, ASCII_FRAMES)
     ok &= run_parity("mix", MIX, MIX_FRAMES)
     ok &= run_parity("spin", SPIN, SPIN_FRAMES)
+    ok &= run_declines("src-fed-null", SRC_FED, expect=("null1", "midiin1"))
+    ok &= run_declines("src-fed-speed", SRC_FED_SPEED, expect=("spin1", "oscin1"))
     print("\nALL PASS" if ok else "\nFAILURES")
     sys.exit(0 if ok else 1)
