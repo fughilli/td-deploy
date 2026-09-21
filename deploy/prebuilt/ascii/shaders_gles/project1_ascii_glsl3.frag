@@ -10,6 +10,7 @@ struct TDInfo
 
 uniform TDInfo uTD2DInfos[3];
 uniform highp sampler2D sTD2DInputs[3];
+uniform highp vec4 uSat;
 
 varying highp vec3 vUV;
 
@@ -86,7 +87,8 @@ void main()
     highp float param_2 = sobel.y;
     highp float param_3 = gray;
     highp vec4 result = lookup_sprite_sheet(sTD2DInputs[1], param, param_1, param_2, param_3);
-    highp vec4 param_4 = result;
+    highp vec3 tint = mix(vec3(1.0), color.xyz, vec3(clamp(uSat.x, 0.0, 1.0)));
+    highp vec4 param_4 = vec4(result.xyz * tint, result.w);
     gl_FragData[0] = TDOutputSwizzle(param_4);
 }
 

@@ -640,6 +640,7 @@ struct Renderer<'a> {
     chops_abi: Option<ChopAbi>,
     chop_state: RefCell<Vec<f64>>,      // carried Speed accumulators (abi.states)
     chop_state_idx: Vec<usize>,         // each state's position in abi.outputs
+    chop_names: HashMap<String, Vec<String>>,  // chop -> channel names, for either path
     // Pre-compiled interpreted uniforms, keyed by (step index, uniform name).
     uniform_progs: HashMap<(usize, String), expr::Program>,
     speed_state: RefCell<HashMap<(String, usize), f64>>,
@@ -731,6 +732,20 @@ fn prof_summary(p: &Prof) -> String {
 }
 
 // Resolve a shader path, redirecting to the translated ES1.00 set on gles2.
+/// Read a shader the schedule references, naming the file if it is missing —
+/// an artifact that was emitted without its translated `shaders_gles/` is an easy
+/// mistake to make and an opaque unwrap panic is a poor way to find out.
+fn read_shader(dir: &str, gles2: bool, rel: &str) -> String {
+    let path = resolve_shader(dir, gles2, rel);
+    match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => panic!(
+            "shader {path} not found ({e}). The artifact may be missing its \
+             translated shaders_gles/ — re-run the finish step before deploying."
+        ),
+    }
+}
+
 fn resolve_shader(dir: &str, gles2: bool, p: &str) -> String {
     let p = if gles2 { p.replacen("shaders/", "shaders_gles/", 1) } else { p.to_string() };
     format!("{dir}/{p}")
@@ -784,6 +799,11 @@ impl<'a> Renderer<'a> {
                 names: c.names.clone(),
             })
             .collect();
+        let chop_names: HashMap<String, Vec<String>> = sched
+            .chops
+            .iter()
+            .map(|c| (c.name.clone(), c.names.clone()))
+            .collect();
         let mut uniform_progs = HashMap::new();
         for (si, st) in sched.steps.iter().enumerate() {
             for (name, tu) in &st.time_uniforms {
@@ -800,6 +820,7 @@ impl<'a> Renderer<'a> {
             vbo: HashMap::new(), ebo: HashMap::new(), mesh_tex: HashMap::new(),
             step_sig: HashMap::new(), last_dirty: HashMap::new(), cooked_once: false,
             chop_progs, chops_lib, chops_abi, chop_state, chop_state_idx, uniform_progs,
+            chop_names,
             speed_state: RefCell::new(HashMap::new()), last_t: Cell::new(0.0),
             prof: Arc::new(Mutex::new(Default::default())),
             profile_gpu: std::env::var("TOXC_PROFILE").is_ok(),
@@ -836,6 +857,15 @@ impl<'a> Renderer<'a> {
             }
             for (i, (n, c)) in abi.outputs.iter().enumerate() {
                 chop_set(&self.store, n, c, out[i]);
+                // The fused kernel addresses channels by INDEX; expressions may
+                // name them, so mirror each value under its channel name too.
+                if let Ok(ci) = c.parse::<usize>() {
+                    if let Some(nm) = self.chop_names.get(n).and_then(|v| v.get(ci)) {
+                        if !nm.is_empty() {
+                            chop_set(&self.store, n, nm, out[i]);
+                        }
+                    }
+                }
             }
             let mut st = self.chop_state.borrow_mut();
             for (j, &idx) in self.chop_state_idx.iter().enumerate() {
@@ -934,9 +964,9 @@ impl<'a> Renderer<'a> {
                 self.size.insert(st.id.clone(), (w as i32, h as i32));
             } else if st.kind == "shader" {
                 let vs = compile(gl, glow::VERTEX_SHADER,
-                    &std::fs::read_to_string(resolve_shader(&dir, gles2, st.vert.as_ref().unwrap())).unwrap());
+                    &read_shader(&dir, gles2, st.vert.as_ref().unwrap()));
                 let fs = compile(gl, glow::FRAGMENT_SHADER,
-                    &std::fs::read_to_string(resolve_shader(&dir, gles2, st.frag.as_ref().unwrap())).unwrap());
+                    &read_shader(&dir, gles2, st.frag.as_ref().unwrap()));
                 unsafe {
                     let p = gl.create_program().unwrap();
                     gl.attach_shader(p, vs);
@@ -954,9 +984,9 @@ impl<'a> Renderer<'a> {
                 }
             } else if st.kind == "render3d" {
                 let vs = compile(gl, glow::VERTEX_SHADER,
-                    &std::fs::read_to_string(resolve_shader(&dir, gles2, st.vert.as_ref().unwrap())).unwrap());
+                    &read_shader(&dir, gles2, st.vert.as_ref().unwrap()));
                 let fs = compile(gl, glow::FRAGMENT_SHADER,
-                    &std::fs::read_to_string(resolve_shader(&dir, gles2, st.frag.as_ref().unwrap())).unwrap());
+                    &read_shader(&dir, gles2, st.frag.as_ref().unwrap()));
                 unsafe {
                     let p = gl.create_program().unwrap();
                     gl.attach_shader(p, vs);

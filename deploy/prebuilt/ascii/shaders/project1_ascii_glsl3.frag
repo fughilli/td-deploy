@@ -8,6 +8,10 @@ vec4 TDOutputSwizzle(vec4 c) { return c; }
 
 out vec4 fragColor;
 
+// Character tint: 0 = white glyphs on black (classic ASCII),
+// 1 = glyphs tinted by the source pixel under the cell.
+uniform vec4 uSat;   // .x = tint amount
+
 //const float blockSize = 8.;
 const vec2 blockSize = vec2(24, 33) / 2.;
 #define M_PI 3.1415926
@@ -145,5 +149,8 @@ void main()
   
   vec4 result = lookup_sprite_sheet(sTD2DInputs[1], charUv, sobel.x, sobel.y, gray);
 
-  fragColor = TDOutputSwizzle(result);
+  // `color` is the source sampled at the cell centre, so the whole
+  // character takes one colour rather than smearing across the glyph.
+  vec3 tint = mix(vec3(1.0), color.rgb, clamp(uSat.x, 0.0, 1.0));
+  fragColor = TDOutputSwizzle(vec4(result.rgb * tint, result.a));
 }
