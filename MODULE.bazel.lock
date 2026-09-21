@@ -675,8 +675,8 @@
           "REPO_MAPPING:rules_rust+,bazel_skylib bazel_skylib+",
           "REPO_MAPPING:rules_rust+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_rust+,rules_cc rules_cc+",
-          "FILE:@@//runtime_rs/Cargo.lock f26cf6cd2622dc5eaf371b1e439230a559e1677360cb3a353e7d9657abbe9b71",
-          "FILE:@@//runtime_rs/Cargo.toml 7a0a125d64c19e2abcfa15629df63eb6f01e1e62c8d5eec832c8084c06c1a7af"
+          "FILE:@@//runtime_rs/Cargo.lock 88b01315bdd0da273ac0c78fac57d78c09cd5ff739e2bde6406af4e9c0e5068e",
+          "FILE:@@//runtime_rs/Cargo.toml 62ebc01911dfeeac02211049c1f52c8d40b475b1a242409fefc2d7618bd8a8b0"
         ],
         "generatedRepoSpecs": {
           "toxc_crates": {

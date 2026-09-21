@@ -1,7 +1,7 @@
 {
   "name": "td-deploy-studio",
   "productName": "td-deploy Studio",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Compile a TouchDesigner .toe and live-deploy it to a Raspberry Pi",
   "main": "main.js",
   "author": "fughilli",
