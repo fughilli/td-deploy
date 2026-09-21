@@ -243,7 +243,7 @@ def _param_expr(raw) -> str:
     return toks[0] if toks else "0"
 
 
-def _collect_chops(ops: dict) -> list:
+def _collect_chops(ops: dict, compinputs: dict | None = None) -> list:
     """Import the CHOP DAG feeding any op('X') reference in a param expr, in
     dependency (topo) order. Services (oscin/midiin) are excluded — the runtime
     reads them live. constant: per-channel exprs; speed/math/null: passthrough."""
@@ -270,6 +270,15 @@ def _collect_chops(ops: dict) -> list:
             defs[name] = None  # service or external — read live, don't emit
             continue
         inputs = [rel for (_i, rel) in sorted(op.inputs)]
+        if op.optype == "in" and not inputs and compinputs:
+            # An In CHOP has no internal input: its data arrives over the COMP's
+            # external wire. That is the same boundary _effective_inputs threads
+            # for TOPs, so thread it here too — otherwise a COMP that takes its
+            # control signal as a CHOP input evaluates to a dead 0 on device.
+            parent, _, leaf = op.path.rpartition("/")
+            ext = compinputs.get((parent, leaf))
+            if ext:
+                inputs = [ext]
         channels = []
         if op.optype == "constant":
             i = 0
@@ -523,7 +532,7 @@ def import_dir(dirroot: str) -> ImportResult:
     # render path is TOP-only, but exprs read CHOPs; import that little DAG so the
     # runtime can evaluate it per-frame. Services (oscin/midiin) are excluded —
     # the runtime reads them live.
-    chops = _collect_chops(ops)
+    chops = _collect_chops(ops, compinputs)
     for c in chops:
         coverage.append(f"chop: {c['type']} {c['name']} <- {c['inputs']}")
 
