@@ -70,3 +70,53 @@ class ChopLowerAbiTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MultiChannelTest(unittest.TestCase):
+    """A Speed fed a multi-channel rate must integrate EVERY channel, and a
+    passthrough must carry them all. Both used to handle only channel 0, which
+    left a three-axis spin moving on one axis with nothing reporting it."""
+
+    DAG = [
+        {
+            "name": "rate1",
+            "type": "constant",
+            "inputs": [],
+            "channels": ["1.0", "2.0", "-4.0"],
+        },
+        {"name": "spin1", "type": "speed", "inputs": ["rate1"], "channels": []},
+        {"name": "out1", "type": "null", "inputs": ["spin1"], "channels": []},
+    ]
+
+    def test_reference_integrates_every_channel(self):
+        ev = ChopEval(self.DAG)
+        ev.step(0.0, {})
+        st = ev.step(1.0, {})          # one second of integration
+        self.assertAlmostEqual(st.get("spin1", 0), 1.0, places=6)
+        self.assertAlmostEqual(st.get("spin1", 1), 2.0, places=6)
+        self.assertAlmostEqual(st.get("spin1", 2), -4.0, places=6)
+
+    def test_passthrough_carries_every_channel(self):
+        ev = ChopEval(self.DAG)
+        ev.step(0.0, {})
+        st = ev.step(1.0, {})
+        for i in range(3):
+            self.assertAlmostEqual(st.get("out1", i), st.get("spin1", i), places=9)
+
+    def test_lowering_carries_one_accumulator_per_channel(self):
+        _mlir, abi = lower(self.DAG)
+        self.assertEqual(
+            [tuple(x) for x in abi["states"]],
+            [("spin1", "0"), ("spin1", "1"), ("spin1", "2")],
+        )
+        outs = [tuple(x) for x in abi["outputs"]]
+        for i in ("0", "1", "2"):
+            self.assertIn(("out1", i), outs)
+
+    def test_width_propagates_through_a_chain(self):
+        _mlir, abi = lower(self.DAG)
+        # Every CHOP in the chain is as wide as the Constant that originated it.
+        for nm in ("rate1", "spin1", "out1"):
+            self.assertEqual(
+                sum(1 for n, _c in (tuple(x) for x in abi["outputs"]) if n == nm), 3
+            )

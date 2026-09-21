@@ -6,8 +6,12 @@ the P1 compiled kernel (chop_lower.py -> MLIR -> .so) can be bit-diffed against 
   dt    = clamp(t - last_t, 0, 1)
   frame = floor(t * 60)
   constant: each channel i = eval(expr) read/written through the store
-  speed:    acc[(name,0)] += input_ch0 * dt ; write acc
-  else:     passthrough — copy input channel 0
+  speed:    acc[(name,i)] += input_ch_i * dt ; write acc, for every channel i
+  else:     passthrough — copy every channel of the input
+
+A CHOP's channel count comes from the Constant that originates it and is carried
+by everything downstream, so each op evaluates ALL of its channels rather than
+just the first.
 
 Within a frame, a CHOP reads the *current* frame's upstream values (the store is
 updated in DAG order), matching the runtime. Expression semantics match the
@@ -97,6 +101,17 @@ class ChopEval:
         self.chops = chops
         self.speed: dict[tuple[str, int], float] = {}
         self.last_t = 0.0
+        # Channel count per CHOP. Only a Constant declares its own; everything
+        # else is as wide as what it carries. Derived independently of the
+        # lowering's copy on purpose — if the two ever disagree, the bit-parity
+        # test sees it instead of both being quietly wrong together.
+        self.width: dict[str, int] = {}
+        for c in self.chops:
+            if c.get("type") == "constant":
+                self.width[c["name"]] = max(1, len(c.get("channels") or []))
+            else:
+                ins = c.get("inputs") or []
+                self.width[c["name"]] = self.width.get(ins[0], 1) if ins else 1
 
     def step(self, t: float, sources: dict[str, dict]) -> Store:
         store = Store()
@@ -114,12 +129,14 @@ class ChopEval:
             elif typ == "speed":
                 inps = c.get("inputs") or []
                 if inps:
-                    iv = store.get(inps[0], "0")
-                    key = (name, 0)
-                    self.speed[key] = self.speed.get(key, 0.0) + iv * dt
-                    store.set(name, "0", self.speed[key])
+                    for i in range(self.width.get(name, 1)):
+                        iv = store.get(inps[0], i)
+                        key = (name, i)
+                        self.speed[key] = self.speed.get(key, 0.0) + iv * dt
+                        store.set(name, i, self.speed[key])
             else:
                 inps = c.get("inputs") or []
                 if inps:
-                    store.set(name, "0", store.get(inps[0], "0"))
+                    for i in range(self.width.get(name, 1)):
+                        store.set(name, i, store.get(inps[0], i))
         return store

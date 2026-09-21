@@ -173,6 +173,7 @@ coverage log.
 | `math`            | `math`          | Combine inputs, then pre-offset / gain / post-offset.                |
 | `noise`           | `noise`         | Generate gradient noise (approximates TD's noise generators).        |
 | `feedback`        | `feedback`      | Echo the previous frame of its Target TOP (feedback loops).          |
+| `render`          | `render3d`      | Rasterize a 3D scene (camera + geometry + lights) into a texture.    |
 | `in`              | _(passthrough)_ | COMP input — structural passthrough after flattening.                |
 | `out`             | _(passthrough)_ | COMP output — structural passthrough.                                |
 | `null`            | _(passthrough)_ | Null / terminator — structural passthrough (often the display node). |
@@ -181,6 +182,8 @@ coverage log.
 
 Read at runtime and exposed to parameter expressions.
 
+- `file` — Read a mesh from disk (`.obj`), baked into the artifact at compile time.
+- `filein` — Read a mesh from disk (`.obj`), baked into the artifact at compile time.
 - `midiin` — MIDI input (notes + control changes), read live for expressions.
 - `oscin` — OSC input, read live and exposed to parameter expressions.
 
