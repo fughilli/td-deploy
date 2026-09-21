@@ -501,6 +501,85 @@
       ]
     }
   ],
-  "chops_lib": null,
-  "chops_abi": null
+  "chops_lib": "chops/libchops.so",
+  "chops_abi": {
+    "sources": [
+      [
+        "midiin1",
+        "ch1ctrl5"
+      ],
+      [
+        "midiin1",
+        "ch1ctrl1"
+      ],
+      [
+        "midiin1",
+        "ch1ctrl2"
+      ],
+      [
+        "midiin1",
+        "ch1ctrl3"
+      ]
+    ],
+    "states": [
+      [
+        "speed1",
+        "0"
+      ],
+      [
+        "spin1",
+        "0"
+      ],
+      [
+        "spin1",
+        "1"
+      ],
+      [
+        "spin1",
+        "2"
+      ]
+    ],
+    "outputs": [
+      [
+        "project1/sat",
+        "0"
+      ],
+      [
+        "in_sat",
+        "0"
+      ],
+      [
+        "constant1",
+        "0"
+      ],
+      [
+        "speed1",
+        "0"
+      ],
+      [
+        "rate1",
+        "0"
+      ],
+      [
+        "rate1",
+        "1"
+      ],
+      [
+        "rate1",
+        "2"
+      ],
+      [
+        "spin1",
+        "0"
+      ],
+      [
+        "spin1",
+        "1"
+      ],
+      [
+        "spin1",
+        "2"
+      ]
+    ]
+  }
 }
