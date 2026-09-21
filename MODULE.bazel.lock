@@ -225,7 +225,7 @@
     "@@rules_nixpkgs_core+//extensions:package.bzl%nix_pkg": {
       "general": {
         "bzlTransitiveDigest": "2alEQC7q9PgrArc8ZeI662VmDHLGfuswqnzBJvVDnmg=",
-        "usagesDigest": "AasO6WFPr9O/3YAL+5QTDiubBuxR6AkeHDbGCtYwTcs=",
+        "usagesDigest": "SSAXj3HyCcybZ6gapsr/12bdxRQYJVqnwS4AxtfpA+8=",
         "recordedInputs": [
           "REPO_MAPPING:,nixpkgs rules_nixpkgs_core++nix_repo+nixpkgs",
           "REPO_MAPPING:rules_nixpkgs_core+,bazel_skylib bazel_skylib+"
@@ -655,7 +655,7 @@
     "@@rules_rust+//crate_universe:extensions.bzl%crate": {
       "general": {
         "bzlTransitiveDigest": "KwLKXd8Sy6SQW8Sq5ehY11H9038el94Ka4Snf4LVPE8=",
-        "usagesDigest": "v1gp5Vgx36T3MuDQLjUVSB7gdBcqhgzYJllr5fEu4TI=",
+        "usagesDigest": "j4FRMnJVN4WGmRKnz2wyAVy14VZH82HXZJMaAQqpHeE=",
         "recordedInputs": [
           "ENV:CARGO_BAZEL_DEBUG \\0",
           "ENV:CARGO_BAZEL_GENERATOR_SHA256 \\0",
@@ -675,8 +675,8 @@
           "REPO_MAPPING:rules_rust+,bazel_skylib bazel_skylib+",
           "REPO_MAPPING:rules_rust+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_rust+,rules_cc rules_cc+",
-          "FILE:@@//runtime_rs/Cargo.lock 11b21a105ad27213ca0fa7de9688b2756045f8cce753eb6d5290b656023ae291",
-          "FILE:@@//runtime_rs/Cargo.toml eb0ffcc69d6812ca4a1ebf33871ba635b08b4176426a5843246976002faa28b3"
+          "FILE:@@//runtime_rs/Cargo.lock f26cf6cd2622dc5eaf371b1e439230a559e1677360cb3a353e7d9657abbe9b71",
+          "FILE:@@//runtime_rs/Cargo.toml 7a0a125d64c19e2abcfa15629df63eb6f01e1e62c8d5eec832c8084c06c1a7af"
         ],
         "generatedRepoSpecs": {
           "toxc_crates": {

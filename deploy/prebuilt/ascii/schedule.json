@@ -15,18 +15,6 @@
       }
     },
     {
-      "id": "project1/moviefilein1",
-      "op": "image_in",
-      "kind": "source",
-      "w": 1280,
-      "h": 720,
-      "inputs": [],
-      "source": {
-        "type": "image",
-        "path": "assets/project1_moviefilein1.png"
-      }
-    },
-    {
       "id": "project1/old_crt/noise1",
       "op": "noise",
       "kind": "shader",
@@ -100,59 +88,130 @@
       }
     },
     {
-      "id": "project1/transform1",
-      "op": "transform",
-      "kind": "shader",
+      "id": "project1/render1",
+      "op": "render3d",
+      "kind": "render3d",
       "w": 512,
       "h": 512,
-      "inputs": [
-        "project1/moviefilein1"
-      ],
-      "vert": "shaders/project1_transform1.vert",
-      "frag": "shaders/project1_transform1.frag",
-      "sampler_array": null,
+      "inputs": [],
+      "mesh": {
+        "vtx": "meshes/project1_render1.vtx",
+        "idx": "meshes/project1_render1.idx",
+        "vertices": 982,
+        "indices": 1884,
+        "stride": 32,
+        "index_type": "u16"
+      },
+      "texture": "assets/project1_render1_tex.png",
+      "vert": "shaders/project1_render1.vert",
+      "frag": "shaders/project1_render1.frag",
       "uniforms": {
-        "uCropRect": {
-          "type": "vec4",
-          "value": [
-            0.2578125,
-            0.8203125,
-            0.0,
-            1.0
-          ]
+        "uCamX": {
+          "type": "float",
+          "value": 0.0
+        },
+        "uCamY": {
+          "type": "float",
+          "value": 0.0
+        },
+        "uCamZ": {
+          "type": "float",
+          "value": 4.0
+        },
+        "uFov": {
+          "type": "float",
+          "value": 45.0
+        },
+        "uNear": {
+          "type": "float",
+          "value": 0.1
+        },
+        "uFar": {
+          "type": "float",
+          "value": 1000.0
         },
         "uAspect": {
           "type": "float",
           "value": 1.0
+        },
+        "uLightX": {
+          "type": "float",
+          "value": 2.0
+        },
+        "uLightY": {
+          "type": "float",
+          "value": 3.0
+        },
+        "uLightZ": {
+          "type": "float",
+          "value": 4.0
         }
       },
       "time_uniforms": {
-        "uRotate": {
-          "interpreted": "op('speed1')[0] * 1000",
-          "mul": 0.017453292519943295,
-          "mod": 6.283185307179586
-        },
-        "uTranslateX": {
-          "fn": "expr2",
-          "inputs": [],
-          "mul": 1.0
-        },
-        "uTranslateY": {
-          "fn": "expr2",
-          "inputs": [],
-          "mul": 1.0
-        },
-        "uScaleX": {
+        "uRotX": {
           "fn": "expr3",
           "inputs": [
-            "chop_midiin1_ch1ctrl2"
+            "chop_spin1_rx"
+          ],
+          "mul": 1.0,
+          "mod": 360.0
+        },
+        "uRotY": {
+          "fn": "expr4",
+          "inputs": [
+            "chop_spin1_ry"
+          ],
+          "mul": 1.0,
+          "mod": 360.0
+        },
+        "uRotZ": {
+          "fn": "expr5",
+          "inputs": [
+            "chop_spin1_rz"
+          ],
+          "mul": 1.0,
+          "mod": 360.0
+        },
+        "uSclX": {
+          "fn": "expr6",
+          "inputs": [
+            "chop_midiin1_ch1ctrl4"
           ],
           "mul": 1.0
         },
-        "uScaleY": {
-          "fn": "expr3",
+        "uSclY": {
+          "fn": "expr6",
           "inputs": [
-            "chop_midiin1_ch1ctrl2"
+            "chop_midiin1_ch1ctrl4"
+          ],
+          "mul": 1.0
+        },
+        "uSclZ": {
+          "fn": "expr6",
+          "inputs": [
+            "chop_midiin1_ch1ctrl4"
+          ],
+          "mul": 1.0
+        },
+        "uTrnX": {
+          "fn": "expr2",
+          "inputs": [],
+          "mul": 1.0
+        },
+        "uTrnY": {
+          "fn": "expr2",
+          "inputs": [],
+          "mul": 1.0
+        },
+        "uTrnZ": {
+          "fn": "expr2",
+          "inputs": [],
+          "mul": 1.0
+        },
+        "uDimmer": {
+          "fn": "expr7",
+          "inputs": [
+            "chop_midiin1_ch1ctrl6"
           ],
           "mul": 1.0
         }
@@ -165,7 +224,7 @@
       "w": 512,
       "h": 512,
       "inputs": [
-        "project1/transform1"
+        "project1/render1"
       ]
     },
     {
@@ -236,7 +295,33 @@
           ]
         }
       },
-      "time_uniforms": {}
+      "time_uniforms": {},
+      "vec_uniforms": {
+        "uSat": [
+          {
+            "fn": "expr8",
+            "inputs": [
+              "chop_in_sat_sat"
+            ],
+            "mul": 1.0
+          },
+          {
+            "fn": "expr2",
+            "inputs": [],
+            "mul": 1.0
+          },
+          {
+            "fn": "expr2",
+            "inputs": [],
+            "mul": 1.0
+          },
+          {
+            "fn": "expr2",
+            "inputs": [],
+            "mul": 1.0
+          }
+        ]
+      }
     },
     {
       "id": "project1/ascii/out2",
@@ -249,106 +334,13 @@
       ]
     },
     {
-      "id": "project1/glsl1",
-      "op": "glsl_top",
-      "kind": "shader",
-      "w": 512,
-      "h": 512,
-      "inputs": [
-        "project1/ascii/out2"
-      ],
-      "vert": "shaders/project1_glsl1.vert",
-      "frag": "shaders/project1_glsl1.frag",
-      "sampler_array": "sTD2DInputs",
-      "uniforms": {
-        "uTD2DInfos[0].res": {
-          "type": "vec4",
-          "value": [
-            0.001953125,
-            0.001953125,
-            512.0,
-            512.0
-          ]
-        }
-      },
-      "time_uniforms": {}
-    },
-    {
-      "id": "project1/null2",
-      "op": "passthrough",
-      "kind": "passthrough",
-      "w": 512,
-      "h": 512,
-      "inputs": [
-        "project1/glsl1"
-      ]
-    },
-    {
-      "id": "project1/feedback1",
-      "op": "feedback",
-      "kind": "feedback",
-      "w": 512,
-      "h": 512,
-      "inputs": [
-        "project1/null2"
-      ],
-      "feedback_from": "project1/add1"
-    },
-    {
-      "id": "project1/math1",
-      "op": "math",
-      "kind": "shader",
-      "w": 512,
-      "h": 512,
-      "inputs": [
-        "project1/feedback1"
-      ],
-      "vert": "shaders/project1_math1.vert",
-      "frag": "shaders/project1_math1.frag",
-      "sampler_array": null,
-      "uniforms": {},
-      "time_uniforms": {
-        "uPreOff": {
-          "fn": "expr2",
-          "inputs": [],
-          "mul": 1.0
-        },
-        "uGain": {
-          "fn": "expr4",
-          "inputs": [],
-          "mul": 1.0
-        },
-        "uPostOff": {
-          "fn": "expr2",
-          "inputs": [],
-          "mul": 1.0
-        }
-      }
-    },
-    {
-      "id": "project1/add1",
-      "op": "add",
-      "kind": "shader",
-      "w": 512,
-      "h": 512,
-      "inputs": [
-        "project1/math1",
-        "project1/null2"
-      ],
-      "vert": "shaders/project1_add1.vert",
-      "frag": "shaders/project1_add1.frag",
-      "sampler_array": null,
-      "uniforms": {},
-      "time_uniforms": {}
-    },
-    {
       "id": "project1/old_crt/in2",
       "op": "passthrough",
       "kind": "passthrough",
       "w": 512,
       "h": 512,
       "inputs": [
-        "project1/add1"
+        "project1/ascii/out2"
       ]
     },
     {
@@ -384,7 +376,33 @@
           ]
         }
       },
-      "time_uniforms": {}
+      "time_uniforms": {},
+      "vec_uniforms": {
+        "time": [
+          {
+            "fn": "expr9",
+            "inputs": [
+              "t"
+            ],
+            "mul": 1.0
+          },
+          {
+            "fn": "expr2",
+            "inputs": [],
+            "mul": 1.0
+          },
+          {
+            "fn": "expr2",
+            "inputs": [],
+            "mul": 1.0
+          },
+          {
+            "fn": "expr2",
+            "inputs": [],
+            "mul": 1.0
+          }
+        ]
+      }
     },
     {
       "id": "project1/old_crt/out1",
@@ -411,11 +429,36 @@
   "services": "services.json",
   "chops": [
     {
+      "name": "project1/sat",
+      "type": "constant",
+      "inputs": [],
+      "channels": [
+        "op('midiin1')['ch1ctrl5'] / 127.0"
+      ],
+      "names": [
+        "sat"
+      ]
+    },
+    {
+      "name": "in_sat",
+      "type": "in",
+      "inputs": [
+        "project1/sat"
+      ],
+      "channels": [],
+      "names": [
+        "sat"
+      ]
+    },
+    {
       "name": "constant1",
       "type": "constant",
       "inputs": [],
       "channels": [
         "op('midiin1')['ch1ctrl1']/127 - 0.5"
+      ],
+      "names": [
+        "chan1"
       ]
     },
     {
@@ -424,7 +467,38 @@
       "inputs": [
         "constant1"
       ],
-      "channels": []
+      "channels": [],
+      "names": [
+        "chan1"
+      ]
+    },
+    {
+      "name": "rate1",
+      "type": "constant",
+      "inputs": [],
+      "channels": [
+        "(op('midiin1')['ch1ctrl1'] - 64.0) / 64.0 * 180.0",
+        "(op('midiin1')['ch1ctrl2'] - 64.0) / 64.0 * 180.0",
+        "(op('midiin1')['ch1ctrl3'] - 64.0) / 64.0 * 180.0"
+      ],
+      "names": [
+        "rx",
+        "ry",
+        "rz"
+      ]
+    },
+    {
+      "name": "spin1",
+      "type": "speed",
+      "inputs": [
+        "rate1"
+      ],
+      "channels": [],
+      "names": [
+        "rx",
+        "ry",
+        "rz"
+      ]
     }
   ],
   "chops_lib": "chops/libchops.so",
@@ -432,16 +506,48 @@
     "sources": [
       [
         "midiin1",
+        "ch1ctrl5"
+      ],
+      [
+        "midiin1",
         "ch1ctrl1"
+      ],
+      [
+        "midiin1",
+        "ch1ctrl2"
+      ],
+      [
+        "midiin1",
+        "ch1ctrl3"
       ]
     ],
     "states": [
       [
         "speed1",
         "0"
+      ],
+      [
+        "spin1",
+        "0"
+      ],
+      [
+        "spin1",
+        "1"
+      ],
+      [
+        "spin1",
+        "2"
       ]
     ],
     "outputs": [
+      [
+        "project1/sat",
+        "0"
+      ],
+      [
+        "in_sat",
+        "0"
+      ],
       [
         "constant1",
         "0"
@@ -449,6 +555,30 @@
       [
         "speed1",
         "0"
+      ],
+      [
+        "rate1",
+        "0"
+      ],
+      [
+        "rate1",
+        "1"
+      ],
+      [
+        "rate1",
+        "2"
+      ],
+      [
+        "spin1",
+        "0"
+      ],
+      [
+        "spin1",
+        "1"
+      ],
+      [
+        "spin1",
+        "2"
       ]
     ]
   }

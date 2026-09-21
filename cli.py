@@ -115,19 +115,26 @@ def _fetch_host_assets(g: Graph, host: str, assetdir: str) -> None:
 def _load_graph(path: str, host: str, keep: str | None) -> tuple[Graph, list[str]]:
     if path.endswith(".json"):
         return Graph.load(path), []
-    if path.endswith((".tox", ".toe")):
+    if path.endswith((".tox", ".toe")) or os.path.isdir(path):
         from importer.from_toeexpand import import_dir
 
-        workdir = keep or tempfile.mkdtemp(prefix="toxc_import_")
-        print(f"[expand] {path} via bridge {host} -> {workdir}")
-        dirroot = _expand_via_bridge(path, host, workdir)
-        print(f"[import] {dirroot}")
+        if os.path.isdir(path):
+            # Already expanded (`toeexpand foo.toe` -> `foo.toe.dir`). Skips the
+            # bridge, so a compile is reproducible without TouchDesigner running
+            # — assets still resolve from disk when their paths exist locally.
+            dirroot = path
+            print(f"[import] {dirroot} (pre-expanded; no bridge)")
+        else:
+            workdir = keep or tempfile.mkdtemp(prefix="toxc_import_")
+            print(f"[expand] {path} via bridge {host} -> {workdir}")
+            dirroot = _expand_via_bridge(path, host, workdir)
+            print(f"[import] {dirroot}")
         res = import_dir(dirroot)
         print("[coverage]")
         for c in res.coverage:
             print("  " + c)
         return res.graph, res.coverage
-    raise ValueError(f"unsupported input {path!r} (want .tox/.toe/.json)")
+    raise ValueError(f"unsupported input {path!r} (want .tox/.toe/.json or an expanded dir)")
 
 
 def main() -> int:

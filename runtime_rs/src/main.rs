@@ -77,7 +77,7 @@ struct ChopAbi {
 }
 // A control-rate node the importer pulled in because an expr reads it.
 // constant: `channels` are per-channel exprs. speed: integrates its input over
-// time. null/select/math: passthrough of channel 0 (extend as needed).
+// time. null/select/math: passthrough of every channel of its input.
 #[derive(Deserialize, Clone)]
 struct ChopDef {
     name: String,
@@ -87,6 +87,10 @@ struct ChopDef {
     inputs: Vec<String>,
     #[serde(default)]
     channels: Vec<String>,
+    /// Channel names. Expressions reference channels by name at least as often
+    /// as by index (`op('spin1')['rx']`), so the store is keyed by both.
+    #[serde(default)]
+    names: Vec<String>,
 }
 #[derive(Deserialize)]
 struct Step {
@@ -110,9 +114,29 @@ struct Step {
     uniforms: HashMap<String, Uniform>,
     #[serde(default)]
     time_uniforms: HashMap<String, TimeUniform>,
+    /// vec4 user uniforms from a GLSL TOP's "Vectors" page: name -> 4 per-frame
+    /// components, each evaluated like a scalar time uniform.
+    #[serde(default)]
+    vec_uniforms: HashMap<String, Vec<TimeUniform>>,
     /// kind == "feedback": the step whose PREVIOUS frame this buffer holds.
     #[serde(default)]
     feedback_from: Option<String>,
+    /// kind == "render3d": baked geometry and its material texture.
+    #[serde(default)]
+    mesh: Option<MeshRef>,
+    #[serde(default)]
+    texture: Option<String>,
+}
+
+/// Interleaved vertex buffer (pos3, nrm3, uv2 -> 32-byte stride) plus indices.
+#[derive(Deserialize)]
+struct MeshRef {
+    vtx: String,
+    idx: String,
+    indices: i32,
+    stride: i32,
+    #[serde(default)]
+    index_type: String,
 }
 #[derive(Deserialize)]
 struct Source {
@@ -417,12 +441,26 @@ mod midi_tests {
     }
 }
 
+/// Resolve a compiled expression's `chop_<name>_<channel>` argument.
+///
+/// That encoding is AMBIGUOUS as soon as the CHOP's own name contains an
+/// underscore: `chop_in_sat_sat` is (in_sat, sat) but splitting at the first
+/// separator reads it as (in, sat_sat), which matches nothing and silently
+/// evaluates to 0 — a knob wired through a COMP inlet named `in_sat` simply
+/// stopped working with no error anywhere. Try every split, longest CHOP name
+/// first so the most specific match wins, and take the one the store actually
+/// holds.
 fn chop_value(store: &Chops, input: &str) -> f64 {
-    if let Some(rest) = input.strip_prefix("chop_") {
-        let mut it = rest.splitn(2, '_');
-        let op = it.next().unwrap_or("");
-        let ch = it.next().unwrap_or("");
-        return store.lock().unwrap().get(op).and_then(|m| m.get(ch)).copied().unwrap_or(0.0);
+    let rest = match input.strip_prefix("chop_") {
+        Some(r) => r,
+        None => return 0.0,
+    };
+    let g = store.lock().unwrap();
+    let cuts: Vec<usize> = rest.match_indices('_').map(|(i, _)| i).collect();
+    for i in cuts.iter().rev() {
+        if let Some(v) = g.get(&rest[..*i]).and_then(|m| m.get(&rest[i + 1..])) {
+            return *v;
+        }
     }
     0.0
 }
@@ -600,6 +638,18 @@ struct Renderer<'a> {
     // feedback buffer, and the set of buffers already seeded from their input.
     capture_fbo: Option<glow::Framebuffer>,
     fb_seeded: HashSet<String>,
+    // Incremental cook. `step_sig` is the last evaluated per-frame uniform vector
+    // for each step, `last_dirty` which steps actually redrew on the previous
+    // frame. A step whose inputs and uniforms are unchanged still holds last
+    // frame's pixels in its own FBO, so the draw can simply be skipped.
+    // Mesh passes: geometry buffers, a depth attachment and the material texture,
+    // none of which a full-screen fragment pass ever needs.
+    vbo: HashMap<String, glow::Buffer>,
+    ebo: HashMap<String, glow::Buffer>,
+    mesh_tex: HashMap<String, glow::Texture>,
+    step_sig: HashMap<String, Vec<f64>>,
+    last_dirty: HashMap<String, bool>,
+    cooked_once: bool,
     // Control-rate (CHOP) evaluation: the pre-compiled DAG + integrator state.
     chop_progs: Vec<ChopProg>,
     // The compiled CHOP kernel (chops_v), if the DAG was fully lowered. Preferred
@@ -608,6 +658,7 @@ struct Renderer<'a> {
     chops_abi: Option<ChopAbi>,
     chop_state: RefCell<Vec<f64>>,      // carried Speed accumulators (abi.states)
     chop_state_idx: Vec<usize>,         // each state's position in abi.outputs
+    chop_names: HashMap<String, Vec<String>>,  // chop -> channel names, for either path
     // Pre-compiled interpreted uniforms, keyed by (step index, uniform name).
     uniform_progs: HashMap<(usize, String), expr::Program>,
     speed_state: RefCell<HashMap<(String, usize), f64>>,
@@ -625,6 +676,61 @@ struct ChopProg {
     ty: String,
     inputs: Vec<String>,
     chans: Vec<expr::Program>,
+    names: Vec<String>,
+}
+
+/// Evaluate one per-frame uniform: the compiled expression when the artifact
+/// carries one, else the interpreted fallback, else zero.
+fn eval_tu(
+    tu: &TimeUniform,
+    exprs: &Option<libloading::Library>,
+    interp: Option<&expr::Program>,
+    store: &Chops,
+    t: f64,
+    frame: f64,
+) -> f64 {
+    let v = if let (Some(func), Some(lib)) = (&tu.func, exprs) {
+        let args: Vec<f64> = tu
+            .inputs
+            .iter()
+            .map(|n| match n.as_str() {
+                "t" => t,
+                "frame" => frame,
+                other => chop_value(store, other),
+            })
+            .collect();
+        (unsafe { call_expr(lib, func, &args) }) * tu.mul
+    } else if let Some(prog) = interp {
+        let st = store.clone();
+        prog.eval(t, frame, &|n, ch| chop_get(&st, n, ch)) * tu.mul
+    } else {
+        0.0
+    };
+    match tu.modulo {
+        Some(m) if m != 0.0 => v % m,
+        _ => v,
+    }
+}
+
+/// Write a channel under BOTH its index and its name, so `op('x')[0]` and
+/// `op('x')['rx']` resolve to the same value.
+fn chop_put(store: &Chops, chop: &str, i: usize, names: &[String], v: f64) {
+    chop_set(store, chop, &i.to_string(), v);
+    if let Some(n) = names.get(i) {
+        if !n.is_empty() {
+            chop_set(store, chop, n, v);
+        }
+    }
+}
+
+/// How many channels a CHOP published, counted by its numeric keys.
+fn chop_width(store: &Chops, name: &str) -> usize {
+    let g = store.lock().unwrap();
+    let m = match g.get(name) {
+        Some(m) => m,
+        None => return 0,
+    };
+    (0..).take_while(|i| m.contains_key(&i.to_string())).count()
 }
 
 fn chop_get(store: &Chops, name: &str, chan: &str) -> f64 {
@@ -677,6 +783,20 @@ fn prof_summary(p: &Prof) -> String {
 }
 
 // Resolve a shader path, redirecting to the translated ES1.00 set on gles2.
+/// Read a shader the schedule references, naming the file if it is missing —
+/// an artifact that was emitted without its translated `shaders_gles/` is an easy
+/// mistake to make and an opaque unwrap panic is a poor way to find out.
+fn read_shader(dir: &str, gles2: bool, rel: &str) -> String {
+    let path = resolve_shader(dir, gles2, rel);
+    match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => panic!(
+            "shader {path} not found ({e}). The artifact may be missing its \
+             translated shaders_gles/ — re-run the finish step before deploying."
+        ),
+    }
+}
+
 fn resolve_shader(dir: &str, gles2: bool, p: &str) -> String {
     let p = if gles2 { p.replacen("shaders/", "shaders_gles/", 1) } else { p.to_string() };
     format!("{dir}/{p}")
@@ -727,7 +847,13 @@ impl<'a> Renderer<'a> {
                 ty: c.ty.clone(),
                 inputs: c.inputs.clone(),
                 chans: c.channels.iter().map(|e| expr::Program::compile(e)).collect(),
+                names: c.names.clone(),
             })
+            .collect();
+        let chop_names: HashMap<String, Vec<String>> = sched
+            .chops
+            .iter()
+            .map(|c| (c.name.clone(), c.names.clone()))
             .collect();
         let mut uniform_progs = HashMap::new();
         for (si, st) in sched.steps.iter().enumerate() {
@@ -736,13 +862,26 @@ impl<'a> Renderer<'a> {
                     uniform_progs.insert((si, name.clone()), expr::Program::compile(s));
                 }
             }
+            // vec4 components are keyed "<name>[<component>]" so they share the
+            // same interpreted-program table as scalars.
+            for (name, comps) in &st.vec_uniforms {
+                for (k, tu) in comps.iter().take(4).enumerate() {
+                    if let Some(s) = &tu.interpreted {
+                        uniform_progs
+                            .insert((si, format!("{name}[{k}]")), expr::Program::compile(s));
+                    }
+                }
+            }
         }
         let mut r = Renderer {
             gl, dir: dir.to_string(), sched, exprs, store,
             tex: HashMap::new(), fbo: HashMap::new(), prog: HashMap::new(), size: HashMap::new(),
             gles2, quad: None, blit_prog: None,
             capture_fbo: None, fb_seeded: HashSet::new(),
+            vbo: HashMap::new(), ebo: HashMap::new(), mesh_tex: HashMap::new(),
+            step_sig: HashMap::new(), last_dirty: HashMap::new(), cooked_once: false,
             chop_progs, chops_lib, chops_abi, chop_state, chop_state_idx, uniform_progs,
+            chop_names,
             speed_state: RefCell::new(HashMap::new()), last_t: Cell::new(0.0),
             prof: Arc::new(Mutex::new(Default::default())),
             profile_gpu: std::env::var("TOXC_PROFILE").is_ok(),
@@ -757,7 +896,7 @@ impl<'a> Renderer<'a> {
 
     // Evaluate the control-rate CHOP DAG (dependency order) into the store, so
     // interpreted uniforms like op('speed1')[0] resolve. Constant = its expr;
-    // speed = time-integral of its input; others pass channel 0 through.
+    // speed = time-integral of its input, per channel; others pass every channel.
     fn eval_chops(&self, t: f64) {
         // Preferred path: the whole DAG fused + compiled to one native kernel.
         if let (Some(lib), Some(abi)) = (&self.chops_lib, &self.chops_abi) {
@@ -779,6 +918,15 @@ impl<'a> Renderer<'a> {
             }
             for (i, (n, c)) in abi.outputs.iter().enumerate() {
                 chop_set(&self.store, n, c, out[i]);
+                // The fused kernel addresses channels by INDEX; expressions may
+                // name them, so mirror each value under its channel name too.
+                if let Ok(ci) = c.parse::<usize>() {
+                    if let Some(nm) = self.chop_names.get(n).and_then(|v| v.get(ci)) {
+                        if !nm.is_empty() {
+                            chop_set(&self.store, n, nm, out[i]);
+                        }
+                    }
+                }
             }
             let mut st = self.chop_state.borrow_mut();
             for (j, &idx) in self.chop_state_idx.iter().enumerate() {
@@ -798,26 +946,35 @@ impl<'a> Renderer<'a> {
                     for (i, prog) in cp.chans.iter().enumerate() {
                         let store = self.store.clone();
                         let v = prog.eval(t, frame, &|n, ch| chop_get(&store, n, ch));
-                        chop_set(&self.store, &cp.name, &i.to_string(), v);
+                        chop_put(&self.store, &cp.name, i, &cp.names, v);
                     }
                 }
                 "speed" => {
+                    // One integrator PER CHANNEL: a Speed CHOP fed a three-channel
+                    // rate (roll/pitch/yaw) has to integrate all three, not just
+                    // the first.
                     if let Some(inp) = cp.inputs.first() {
-                        let iv = chop_get(&self.store, inp, "0");
-                        let val = {
-                            let mut ss = self.speed_state.borrow_mut();
-                            let acc = ss.entry((cp.name.clone(), 0)).or_insert(0.0);
-                            *acc += iv * dt;
-                            *acc
-                        };
-                        chop_set(&self.store, &cp.name, "0", val);
+                        let w = chop_width(&self.store, inp).max(1);
+                        for i in 0..w {
+                            let iv = chop_get(&self.store, inp, &i.to_string());
+                            let val = {
+                                let mut ss = self.speed_state.borrow_mut();
+                                let acc = ss.entry((cp.name.clone(), i)).or_insert(0.0);
+                                *acc += iv * dt;
+                                *acc
+                            };
+                            chop_put(&self.store, &cp.name, i, &cp.names, val);
+                        }
                     }
                 }
                 _ => {
-                    // null / select / passthrough: copy channel 0 of the input.
+                    // null / select / in / passthrough: copy every channel through.
                     if let Some(inp) = cp.inputs.first() {
-                        let iv = chop_get(&self.store, inp, "0");
-                        chop_set(&self.store, &cp.name, "0", iv);
+                        let w = chop_width(&self.store, inp).max(1);
+                        for i in 0..w {
+                            let iv = chop_get(&self.store, inp, &i.to_string());
+                            chop_put(&self.store, &cp.name, i, &cp.names, iv);
+                        }
                     }
                 }
             }
@@ -868,9 +1025,9 @@ impl<'a> Renderer<'a> {
                 self.size.insert(st.id.clone(), (w as i32, h as i32));
             } else if st.kind == "shader" {
                 let vs = compile(gl, glow::VERTEX_SHADER,
-                    &std::fs::read_to_string(resolve_shader(&dir, gles2, st.vert.as_ref().unwrap())).unwrap());
+                    &read_shader(&dir, gles2, st.vert.as_ref().unwrap()));
                 let fs = compile(gl, glow::FRAGMENT_SHADER,
-                    &std::fs::read_to_string(resolve_shader(&dir, gles2, st.frag.as_ref().unwrap())).unwrap());
+                    &read_shader(&dir, gles2, st.frag.as_ref().unwrap()));
                 unsafe {
                     let p = gl.create_program().unwrap();
                     gl.attach_shader(p, vs);
@@ -885,6 +1042,58 @@ impl<'a> Renderer<'a> {
                     self.tex.insert(st.id.clone(), ot);
                     self.fbo.insert(st.id.clone(), f);
                     self.size.insert(st.id.clone(), (st.w, st.h));
+                }
+            } else if st.kind == "render3d" {
+                let vs = compile(gl, glow::VERTEX_SHADER,
+                    &read_shader(&dir, gles2, st.vert.as_ref().unwrap()));
+                let fs = compile(gl, glow::FRAGMENT_SHADER,
+                    &read_shader(&dir, gles2, st.frag.as_ref().unwrap()));
+                unsafe {
+                    let p = gl.create_program().unwrap();
+                    gl.attach_shader(p, vs);
+                    gl.attach_shader(p, fs);
+                    gl.link_program(p);
+                    assert!(gl.get_program_link_status(p), "link: {}", gl.get_program_info_log(p));
+                    let ot = make_tex(gl, st.w, st.h, None, gles2);
+                    let f = gl.create_framebuffer().unwrap();
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f));
+                    gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0,
+                        glow::TEXTURE_2D, Some(ot), 0);
+                    // Unlike a full-screen pass, a mesh needs depth or far
+                    // triangles paint over near ones.
+                    let rb = gl.create_renderbuffer().unwrap();
+                    gl.bind_renderbuffer(glow::RENDERBUFFER, Some(rb));
+                    gl.renderbuffer_storage(glow::RENDERBUFFER, glow::DEPTH_COMPONENT16, st.w, st.h);
+                    gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT,
+                        glow::RENDERBUFFER, Some(rb));
+                    self.prog.insert(st.id.clone(), p);
+                    self.tex.insert(st.id.clone(), ot);
+                    self.fbo.insert(st.id.clone(), f);
+                    self.size.insert(st.id.clone(), (st.w, st.h));
+
+                    if let Some(m) = &st.mesh {
+                        let vdata = std::fs::read(format!("{}/{}", dir, m.vtx)).unwrap();
+                        let idata = std::fs::read(format!("{}/{}", dir, m.idx)).unwrap();
+                        let vb = gl.create_buffer().unwrap();
+                        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vb));
+                        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &vdata, glow::STATIC_DRAW);
+                        let ib = gl.create_buffer().unwrap();
+                        gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ib));
+                        gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, &idata, glow::STATIC_DRAW);
+                        self.vbo.insert(st.id.clone(), vb);
+                        self.ebo.insert(st.id.clone(), ib);
+                        println!("[mesh] {} {} indices ({} bytes vtx)", st.id, m.indices, vdata.len());
+                    } else {
+                        eprintln!("[mesh] {} has no geometry — nothing to draw", st.id);
+                    }
+                    if let Some(tp) = &st.texture {
+                        let im = image::open(format!("{}/{}", dir, tp)).unwrap().to_rgba8();
+                        let (tw, th) = (im.width() as usize, im.height() as usize);
+                        let data = im.into_raw();
+                        let t = make_tex(gl, tw as i32, th as i32,
+                                         Some(&flip_vert(&data, tw, th)), gles2);
+                        self.mesh_tex.insert(st.id.clone(), t);
+                    }
                 }
             } else if st.kind == "feedback" {
                 // A Feedback TOP owns a texture that PERSISTS between frames; it
@@ -917,6 +1126,15 @@ impl<'a> Renderer<'a> {
         self.eval_chops(t); // control-rate pass -> store, before the shader uniforms read it
         prof_add(&self.prof, "chop:eval", tc.elapsed().as_secs_f64());
         let scratch = self.capture_fbo;
+        // Which steps produce new pixels this frame. A step is dirty when it has
+        // never cooked, when anything it samples is dirty, or when one of its
+        // per-frame uniforms actually changed value — so a static subgraph (a
+        // Noise TOP with constant parameters, say) draws once and is then
+        // replayed from its own texture for free. This is decided from the
+        // evaluated values rather than from compile-time analysis, so it keeps
+        // working however the graph is rewritten upstream.
+        let first = !self.cooked_once;
+        let mut dirty: HashMap<String, bool> = HashMap::new();
         for (si, st) in self.sched.steps.iter().enumerate() {
             if st.kind == "feedback" {
                 // The buffer already holds the previous frame's target — exactly
@@ -933,13 +1151,157 @@ impl<'a> Renderer<'a> {
                     }
                     self.fb_seeded.insert(st.id.clone());
                 }
+                // The buffer's pixels changed if the target redrew LAST frame —
+                // that is when the end-of-frame capture copied new content in.
+                let tgt_moved = st.feedback_from.as_ref()
+                    .map(|f| *self.last_dirty.get(f).unwrap_or(&true))
+                    .unwrap_or(false);
+                dirty.insert(st.id.clone(), first || tgt_moved);
+            } else if st.kind == "render3d" {
+                // Same signature gate as a shader pass: a scene whose transform
+                // expressions are unchanged does not need redrawing.
+                let frame = (t * 60.0).floor();
+                let mut names: Vec<&String> = Vec::with_capacity(st.time_uniforms.len());
+                let mut sig: Vec<f64> = Vec::with_capacity(st.time_uniforms.len());
+                for (name, tu) in &st.time_uniforms {
+                    let v = if let (Some(func), Some(lib)) = (&tu.func, &self.exprs) {
+                        let args: Vec<f64> = tu.inputs.iter().map(|n| match n.as_str() {
+                            "t" => t,
+                            "frame" => frame,
+                            other => chop_value(&self.store, other),
+                        }).collect();
+                        (unsafe { call_expr(lib, func, &args) }) * tu.mul
+                    } else if let Some(prog) = self.uniform_progs.get(&(si, name.clone())) {
+                        let store = self.store.clone();
+                        prog.eval(t, frame, &|n, ch| chop_get(&store, n, ch)) * tu.mul
+                    } else {
+                        0.0
+                    };
+                    names.push(name);
+                    sig.push(match tu.modulo { Some(m) if m != 0.0 => v % m, _ => v });
+                }
+                let changed = self.step_sig.get(&st.id).map_or(true, |prev| prev != &sig);
+                let must_draw = first || changed;
+                dirty.insert(st.id.clone(), must_draw);
+                if must_draw {
+                    let ts = Instant::now();
+                    unsafe {
+                        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo[&st.id]));
+                        gl.viewport(0, 0, st.w, st.h);
+                        gl.enable(glow::DEPTH_TEST);
+                        gl.depth_func(glow::LESS);
+                        gl.clear_color(0.0, 0.0, 0.0, 0.0);
+                        gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+                        let p = self.prog[&st.id];
+                        gl.use_program(Some(p));
+                        for (name, u) in &st.uniforms {
+                            if let Some(l) = gl.get_uniform_location(p, name) {
+                                if u.ty == "float" {
+                                    gl.uniform_1_f32(Some(&l), u.value.as_f64().unwrap() as f32);
+                                }
+                            }
+                        }
+                        for (name, v) in names.iter().zip(sig.iter()) {
+                            if let Some(l) = gl.get_uniform_location(p, name) {
+                                gl.uniform_1_f32(Some(&l), *v as f32);
+                            }
+                        }
+                        if let Some(mt) = self.mesh_tex.get(&st.id) {
+                            gl.active_texture(glow::TEXTURE0);
+                            gl.bind_texture(glow::TEXTURE_2D, Some(*mt));
+                            if let Some(l) = gl.get_uniform_location(p, "tex0") {
+                                gl.uniform_1_i32(Some(&l), 0);
+                            }
+                        }
+                        if let (Some(m), Some(vb), Some(ib)) =
+                            (&st.mesh, self.vbo.get(&st.id), self.ebo.get(&st.id))
+                        {
+                            gl.bind_buffer(glow::ARRAY_BUFFER, Some(*vb));
+                            gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(*ib));
+                            // pos3 | nrm3 | uv2, tightly interleaved.
+                            for (attr, comps, off) in
+                                [("aPos", 3, 0i32), ("aNrm", 3, 12), ("aUV", 2, 24)]
+                            {
+                                if let Some(loc) = gl.get_attrib_location(p, attr) {
+                                    gl.enable_vertex_attrib_array(loc);
+                                    gl.vertex_attrib_pointer_f32(
+                                        loc, comps, glow::FLOAT, false, m.stride, off);
+                                }
+                            }
+                            let ity = if m.index_type == "u32" {
+                                glow::UNSIGNED_INT
+                            } else {
+                                glow::UNSIGNED_SHORT
+                            };
+                            gl.draw_elements(glow::TRIANGLES, m.indices, ity, 0);
+                        }
+                        gl.disable(glow::DEPTH_TEST);
+                        if self.profile_gpu {
+                            gl.finish();
+                        }
+                    }
+                    prof_add(&self.prof, &format!("top:{}", st.id), ts.elapsed().as_secs_f64());
+                    self.step_sig.insert(st.id.clone(), sig);
+                }
             } else if st.kind == "passthrough" {
                 if let Some(src) = st.inputs.first() {
                     let (a, b) = (self.tex[src], self.size[src]);
                     self.tex.insert(st.id.clone(), a);
                     self.size.insert(st.id.clone(), b);
                 }
+                // An alias is exactly as fresh as what it aliases.
+                let d = st.inputs.first()
+                    .map(|i| *dirty.get(i).unwrap_or(&true)).unwrap_or(first);
+                dirty.insert(st.id.clone(), d);
             } else if st.kind == "shader" {
+                // The per-frame uniforms ARE this step's signature. Evaluate them
+                // first (cheap — a few expression calls) so they can be compared
+                // against last frame; the expensive part is the draw that follows.
+                let frame = (t * 60.0).floor();
+                let mut names: Vec<&String> = Vec::with_capacity(st.time_uniforms.len());
+                let mut sig: Vec<f64> = Vec::with_capacity(st.time_uniforms.len());
+                for (name, tu) in &st.time_uniforms {
+                    let v = if let (Some(func), Some(lib)) = (&tu.func, &self.exprs) {
+                        let args: Vec<f64> = tu.inputs.iter().map(|n| match n.as_str() {
+                            "t" => t,
+                            "frame" => frame,
+                            other => chop_value(&self.store, other),
+                        }).collect();
+                        // Calls into the dlopen'd expression library.
+                        (unsafe { call_expr(lib, func, &args) }) * tu.mul
+                    } else if let Some(prog) = self.uniform_progs.get(&(si, name.clone())) {
+                        // Interpreted expr (op('name')[i], absTime, math) via fasteval.
+                        let store = self.store.clone();
+                        prog.eval(t, frame, &|n, ch| chop_get(&store, n, ch)) * tu.mul
+                    } else {
+                        0.0
+                    };
+                    // Wrap periodic uniforms (rotation: mod=2pi) in f64 before the
+                    // f32 cast, so a large angle keeps full float precision.
+                    names.push(name);
+                    sig.push(match tu.modulo { Some(m) if m != 0.0 => v % m, _ => v });
+                }
+                // vec4 user uniforms (a GLSL TOP's "Vectors" page). Their
+                // components join the signature so a knob driving one still wakes
+                // the step up.
+                let mut vecs: Vec<(&String, [f32; 4])> = Vec::new();
+                for (name, comps) in &st.vec_uniforms {
+                    let mut v = [0.0f32; 4];
+                    for (k, tu) in comps.iter().take(4).enumerate() {
+                        let interp = self
+                            .uniform_progs
+                            .get(&(si, format!("{name}[{k}]")));
+                        let value = eval_tu(tu, &self.exprs, interp, &self.store, t, frame);
+                        v[k] = value as f32;
+                        sig.push(value);
+                    }
+                    vecs.push((name, v));
+                }
+                let inputs_dirty = st.inputs.iter().any(|i| *dirty.get(i).unwrap_or(&true));
+                let changed = self.step_sig.get(&st.id).map_or(true, |prev| prev != &sig);
+                let must_draw = first || inputs_dirty || changed;
+                dirty.insert(st.id.clone(), must_draw);
+                if must_draw {
                 let ts = Instant::now();
                 unsafe {
                     gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo[&st.id]));
@@ -975,30 +1337,14 @@ impl<'a> Renderer<'a> {
                             }
                         }
                     }
-                    for (name, tu) in &st.time_uniforms {
+                    for (name, v) in names.iter().zip(sig.iter()) {
                         if let Some(l) = gl.get_uniform_location(p, name) {
-                            let v = if let (Some(func), Some(lib)) = (&tu.func, &self.exprs) {
-                                let args: Vec<f64> = tu.inputs.iter().map(|n| match n.as_str() {
-                                    "t" => t,
-                                    "frame" => (t * 60.0).floor(),
-                                    other => chop_value(&self.store, other),
-                                }).collect();
-                                call_expr(lib, func, &args) * tu.mul
-                            } else if let Some(prog) = self.uniform_progs.get(&(si, name.clone())) {
-                                // Interpreted expr (op('name')[i], absTime, math) via fasteval.
-                                let store = self.store.clone();
-                                let frame = (t * 60.0).floor();
-                                prog.eval(t, frame, &|n, ch| chop_get(&store, n, ch)) * tu.mul
-                            } else {
-                                0.0
-                            };
-                            // Wrap periodic uniforms (rotation: mod=2pi) in f64 before
-                            // the f32 cast, so a large angle keeps full float precision.
-                            let v = match tu.modulo {
-                                Some(m) if m != 0.0 => v % m,
-                                _ => v,
-                            };
-                            gl.uniform_1_f32(Some(&l), v as f32);
+                            gl.uniform_1_f32(Some(&l), *v as f32);
+                        }
+                    }
+                    for (name, v) in &vecs {
+                        if let Some(l) = gl.get_uniform_location(p, name) {
+                            gl.uniform_4_f32(Some(&l), v[0], v[1], v[2], v[3]);
                         }
                     }
                     if self.gles2 {
@@ -1018,6 +1364,8 @@ impl<'a> Renderer<'a> {
                     }
                 }
                 prof_add(&self.prof, &format!("top:{}", st.id), ts.elapsed().as_secs_f64());
+                self.step_sig.insert(st.id.clone(), sig);
+                }
             }
         }
 
@@ -1041,6 +1389,8 @@ impl<'a> Renderer<'a> {
             }
             prof_add(&self.prof, "feedback:capture", tf.elapsed().as_secs_f64());
         }
+        self.last_dirty = dirty;
+        self.cooked_once = true;
     }
 
     // GPU->CPU readback of the final output (for MJPEG / the CPU sink / snapshots).

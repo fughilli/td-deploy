@@ -92,6 +92,20 @@ class _Gen:
                     return self._arg("t")
                 if node.attr in ("frame", "step"):
                     return self._arg("frame")
+            # `me.time.seconds` is the component-local timeline. With a default
+            # timeline it advances with absolute time, and shaders reach for it
+            # at least as often as absTime — leaving it unsupported silently
+            # froze any uniform driven by it.
+            if (
+                isinstance(node.value, ast.Attribute)
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "me"
+                and node.value.attr == "time"
+            ):
+                if node.attr == "seconds":
+                    return self._arg("t")
+                if node.attr in ("frame", "step"):
+                    return self._arg("frame")
             raise Unsupported("attribute")
         if isinstance(node, ast.Call):
             fn = node.func.id if isinstance(node.func, ast.Name) else None

@@ -49,6 +49,7 @@ OP_MAP = {
     ("TOP", "math"): "math",
     ("TOP", "noise"): "noise",
     ("TOP", "feedback"): "feedback",
+    ("TOP", "render"): "render3d",
     ("TOP", "in"): None,  # COMP input  -> passthrough after flattening
     ("TOP", "out"): None,  # COMP output -> passthrough
     ("TOP", "null"): None,  # null        -> passthrough (often the display node)
@@ -111,7 +112,23 @@ def _parse_parm(text: str) -> dict:
             continue
         toks = ln.split()
         if len(toks) >= 3:
-            params[toks[0]] = " ".join(toks[2:])
+            # toks[1] is TD's parameter mode. Bit 0 set means the EXPRESSION IS
+            # ACTIVE; otherwise the parameter is pinned to its constant and any
+            # trailing expression text is stale — TouchDesigner keeps the text
+            # around when you switch a parameter back to constant, and compiling
+            # it in would animate something the user deliberately pinned.
+            try:
+                flags = int(toks[1])
+            except ValueError:
+                flags = 0
+            rest = toks[2:]
+            if not (flags & 1) and len(rest) > 1:
+                try:
+                    float(rest[0])  # only numeric params carry `<value> <expr>`;
+                    rest = rest[:1]  # a path with spaces must survive intact
+                except ValueError:
+                    pass
+            params[toks[0]] = " ".join(rest)
         elif len(toks) == 2:
             params[toks[0]] = toks[1]
     return params
@@ -242,7 +259,7 @@ def _param_expr(raw) -> str:
     return toks[0] if toks else "0"
 
 
-def _collect_chops(ops: dict) -> list:
+def _collect_chops(ops: dict, compinputs: dict | None = None) -> list:
     """Import the CHOP DAG feeding any op('X') reference in a param expr, in
     dependency (topo) order. Services (oscin/midiin) are excluded — the runtime
     reads them live. constant: per-channel exprs; speed/math/null: passthrough."""
@@ -269,13 +286,33 @@ def _collect_chops(ops: dict) -> list:
             defs[name] = None  # service or external — read live, don't emit
             continue
         inputs = [rel for (_i, rel) in sorted(op.inputs)]
-        channels = []
+        if op.optype == "in" and not inputs and compinputs:
+            # An In CHOP has no internal input: its data arrives over the COMP's
+            # external wire. That is the same boundary _effective_inputs threads
+            # for TOPs, so thread it here too — otherwise a COMP that takes its
+            # control signal as a CHOP input evaluates to a dead 0 on device.
+            parent, _, leaf = op.path.rpartition("/")
+            ext = compinputs.get((parent, leaf))
+            if ext:
+                inputs = [ext]
+        channels, names = [], []
         if op.optype == "constant":
             i = 0
             while f"const{i}value" in op.params:
                 channels.append(_param_expr(op.params[f"const{i}value"]))
+                # Carry the channel NAME too: expressions reference channels by
+                # name (op('spin1')['rx']) at least as often as by index, and the
+                # runtime store needs both to resolve either.
+                raw = (op.params.get(f"const{i}name") or "").split()
+                names.append(raw[0].strip('"') if raw else f"chan{i + 1}")
                 i += 1
-        defs[name] = {"name": name, "type": op.optype, "inputs": inputs, "channels": channels}
+        defs[name] = {
+            "name": name,
+            "type": op.optype,
+            "inputs": inputs,
+            "channels": channels,
+            "names": names,
+        }
         stack += inputs
         for v in op.params.values():
             stack += _OPREF.findall(str(v))
@@ -294,7 +331,109 @@ def _collect_chops(ops: dict) -> list:
 
     for n in list(real):
         visit(n)
+    # A CHOP that just carries its input through (speed/null/select/in) keeps the
+    # input's channel names. `order` is topological, so a producer is always
+    # filled in before the consumer that copies from it.
+    by_name = {d["name"]: d for d in order}
+    for d in order:
+        if not d["names"] and d["inputs"]:
+            src = by_name.get(d["inputs"][0])
+            if src:
+                d["names"] = list(src["names"])
     return order
+
+
+def _ref_param(op_params: dict, name: str, parent: str) -> str | None:
+    """A COMP-path parameter (`camera`, `geometry`, `lights`, `file`) resolved to a
+    tree path. TD writes these absolute or relative to the referring op's parent."""
+    raw = (op_params.get(name) or "").split()
+    if not raw:
+        return None
+    tok = raw[0].strip('"')
+    if not tok:
+        return None
+    return _resolve("" if tok.startswith("/") else parent, tok)
+
+
+# Object-transform parameters lifted off the geometry COMP. They are ordinary TD
+# parameters, so any of them may be an expression (the knob rig drives rx/ry/rz
+# and the scale from CHOPs) — they are passed through verbatim for lowering to
+# turn into per-frame uniforms.
+_XFORM = ("tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz", "px", "py", "pz", "scale")
+# Camera intrinsics we honor. TD only writes non-defaults, so lowering supplies
+# TD's own defaults (perspective, horizontal fov 45, near 0.1, far 1000).
+_CAM = ("fov", "near", "far", "projection", "viewanglemethod", "orthowidth")
+
+
+def _render_scene(ops: dict, path: str, op: "RawOp", coverage: list[str]) -> dict:
+    """Flatten a Render TOP's camera / geometry / lights into plain params."""
+    parent = path.rsplit("/", 1)[0] if "/" in path else ""
+    out: dict = {}
+
+    cam = _ref_param(op.params, "camera", parent)
+    if cam and cam in ops:
+        for k in _XFORM + _CAM:
+            v = ops[cam].params.get(k)
+            if v is not None:
+                out[f"_cam_{k}"] = v
+    else:
+        coverage.append(f"{path}: Render TOP camera {cam!r} unresolved — using a default view")
+
+    lit = _ref_param(op.params, "lights", parent)
+    if lit and lit in ops:
+        for k in ("tx", "ty", "tz", "dimmer"):
+            v = ops[lit].params.get(k)
+            if v is not None:
+                out[f"_light_{k}"] = v
+
+    geo = _ref_param(op.params, "geometry", parent)
+    if not geo or geo not in ops:
+        coverage.append(f"{path}: Render TOP geometry {geo!r} unresolved — nothing to draw")
+        return out
+    for k in _XFORM:
+        v = ops[geo].params.get(k)
+        if v is not None:
+            out[f"_geo_{k}"] = v
+
+    # Material texture: geometry -> material MAT -> its colour map TOP -> file.
+    mat = _ref_param(ops[geo].params, "material", geo.rsplit("/", 1)[0])
+    if mat and mat in ops:
+        cmap = _ref_param(ops[mat].params, "colormap", mat.rsplit("/", 1)[0])
+        if cmap and cmap in ops:
+            raw = (ops[cmap].params.get("file") or "").split()
+            if raw:
+                out["_texture_path"] = raw[0].strip('"')
+            else:
+                coverage.append(f"{path}: material colour map {cmap} has no file")
+        elif cmap:
+            coverage.append(f"{path}: material colour map {cmap!r} unresolved")
+
+    # The mesh itself. TouchDesigner does not expand procedural SOPs — a Torus SOP
+    # is just `torus1.n` plus parameters, with no vertices on disk — so the only
+    # geometry we can actually read is a SOP that points at a file.
+    # TouchDesigner 2025 renders geometry from POPs (Point Operators); older
+    # projects use SOPs. Accept either — the file-backed case looks the same.
+    sops = [
+        (p2, o2)
+        for p2, o2 in ops.items()
+        if o2.family in ("SOP", "POP") and p2.startswith(geo + "/")
+    ]
+    if not sops:
+        coverage.append(f"{path}: geometry {geo} contains no SOP/POP to draw")
+        return out
+    for p2, o2 in sops:
+        if o2.optype in ("filein", "file"):
+            # A filesystem path, not a node path — take the raw token.
+            raw = (o2.params.get("file") or "").split()
+            out["_mesh_path"] = raw[0].strip('"') if raw else None
+            out["_mesh_sop"] = p2
+            return out
+    kinds = ", ".join(sorted({f"{o2.family}:{o2.optype}" for _, o2 in sops}))
+    coverage.append(
+        f"{path}: geometry {geo} is procedural ({kinds}) — TouchDesigner does not "
+        f"expand SOP geometry, so the mesh must come from a File In SOP (.obj)"
+    )
+    return out
 
 
 def import_dir(dirroot: str) -> ImportResult:
@@ -379,6 +518,13 @@ def import_dir(dirroot: str) -> ImportResult:
                 )
 
         ports = [Port(node=s) for s in top_ins]
+        if kernel == "render3d":
+            # A Render TOP references its scene through PARAMETERS (camera /
+            # geometry / lights), not wires, so nothing arrives as a TOP input.
+            # Those COMPs and the SOP inside the geometry are pulled in here and
+            # flattened onto this node — the render is a leaf in the TOP graph.
+            params.update(_render_scene(ops, path, op, coverage))
+
         if kernel == "feedback":
             # A Feedback TOP names its source in the `top` parameter, not as a wire:
             # it emits that TOP's PREVIOUS frame. Model it as a delay=1 edge so the
@@ -435,7 +581,7 @@ def import_dir(dirroot: str) -> ImportResult:
     # render path is TOP-only, but exprs read CHOPs; import that little DAG so the
     # runtime can evaluate it per-frame. Services (oscin/midiin) are excluded —
     # the runtime reads them live.
-    chops = _collect_chops(ops)
+    chops = _collect_chops(ops, compinputs)
     for c in chops:
         coverage.append(f"chop: {c['type']} {c['name']} <- {c['inputs']}")
 

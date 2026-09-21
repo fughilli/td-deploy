@@ -10,7 +10,7 @@ args/results:
   states   Speed CHOP accumulators (loop-carried across frames)  -> args AND results
   outputs  every channel the DAG writes                          -> results
 
-  func.func @chops(%t, %dt, %frame, <sources...>, <states-in...>)
+  func.func private @chops(%t, %dt, %frame, <sources...>, <states-in...>)
       -> (<outputs...>)          // a Speed output IS its next-frame state
 
 Channel semantics match runtime_rs eval_chops / the fasteval preprocess:
@@ -42,7 +42,7 @@ _FUNCS = {
     "ceil": "math.ceil",
     "abs": "math.absf",
 }
-_PASSTHROUGH = {"null", "select", "out", "output"}
+_PASSTHROUGH = {"null", "select", "in", "out", "output"}
 
 
 class Unsupported(Exception):
@@ -183,6 +183,25 @@ def _expr_refs(exprs) -> list[tuple[str, str]]:
     return seen
 
 
+def _widths(chops: list[dict]) -> dict[str, int]:
+    """Channel count per CHOP, propagated in dependency order.
+
+    Only a Constant states its own width; everything else is as wide as what it
+    carries. Deriving it once here is what lets every op emit per-channel, rather
+    than each kind having its own (and, historically, its own single-channel
+    assumption). `chops` arrives topologically ordered, so a producer is always
+    measured before its consumer."""
+    w: dict[str, int] = {}
+    for c in chops:
+        name = c["name"]
+        if c.get("type") == "constant":
+            w[name] = max(1, len(c.get("channels") or []))
+        else:
+            inps = c.get("inputs") or []
+            w[name] = w.get(inps[0], 1) if inps else 1
+    return w
+
+
 def lower(chops: list[dict], func_name: str = "chops"):
     """Return (mlir_text, abi). abi = {'sources':[(n,c)], 'states':[(n,'0')],
     'outputs':[(n,c)]} giving the arg/result order after (t, dt, frame)."""
@@ -195,7 +214,15 @@ def lower(chops: list[dict], func_name: str = "chops"):
             for ref in _expr_refs(c.get("channels", [])):
                 if ref[0] not in defined and ref not in sources:
                     sources.append(ref)
-    states = [(c["name"], "0") for c in chops if c.get("type") == "speed"]
+    widths = _widths(chops)
+    # A Speed integrates each channel independently, so it carries one
+    # accumulator PER CHANNEL.
+    states = [
+        (c["name"], str(i))
+        for c in chops
+        if c.get("type") == "speed"
+        for i in range(widths[c["name"]])
+    ]
 
     env: dict[tuple[str, str], str] = {}
     args = ["%t: f64", "%dt: f64", "%frame: f64"]
@@ -205,7 +232,7 @@ def lower(chops: list[dict], func_name: str = "chops"):
         args.append(f"{a}: f64")
     for n, ch in states:
         a = f"%st_{_san(n)}_{_san(ch)}"
-        env[("__state__", n)] = a  # carried-in accumulator
+        env[("__state__", n, ch)] = a  # carried-in accumulator, per channel
         args.append(f"{a}: f64")
 
     fn = _Fn(env, "%t", "%frame")
@@ -223,18 +250,21 @@ def lower(chops: list[dict], func_name: str = "chops"):
                 bind(name, i, fn.emit(tree.body))
         elif typ == "speed":
             inps = c.get("inputs") or []
-            iv = env.get((inps[0], "0")) if inps else None
-            if iv is None:
-                iv = fn._const(0.0)
-            m = fn._fresh()
-            fn.lines.append(f"{m} = arith.mulf {iv}, %dt : f64")
-            s = fn._fresh()
-            fn.lines.append(f"{s} = arith.addf {env[('__state__', name)]}, {m} : f64")
-            bind(name, "0", s)
+            for i in range(widths[name]):
+                iv = env.get((inps[0], str(i))) if inps else None
+                if iv is None:
+                    iv = fn._const(0.0)
+                m = fn._fresh()
+                fn.lines.append(f"{m} = arith.mulf {iv}, %dt : f64")
+                acc = fn._fresh()
+                fn.lines.append(f"{acc} = arith.addf {env[('__state__', name, str(i))]}, {m} : f64")
+                bind(name, i, acc)
         else:
+            # null / select / in / out: alias every channel of the input.
             inps = c.get("inputs") or []
-            iv = env.get((inps[0], "0")) if inps else fn._const(0.0)
-            bind(name, "0", iv)  # passthrough: alias the SSA value
+            for i in range(widths[name]):
+                iv = env.get((inps[0], str(i))) if inps else fn._const(0.0)
+                bind(name, i, iv)
 
     if not outputs:
         raise Unsupported("empty CHOP DAG")
@@ -243,7 +273,8 @@ def lower(chops: list[dict], func_name: str = "chops"):
     ret_ty = ret_ty if len(outputs) == 1 else f"({ret_ty})"
     body = "\n    ".join(fn.lines)
     mlir = (
-        f"func.func @{func_name}({', '.join(args)}) -> {ret_ty} {{\n"
+        f"func.func private @{func_name}({', '.join(args)}) -> {ret_ty}\n"
+        f"    attributes {{llvm.linkage = #llvm.linkage<internal>}} {{\n"
         f"    {body}\n"
         f"    return {ret_ssa} : {', '.join('f64' for _ in outputs)}\n"
         f"}}\n"
@@ -267,6 +298,15 @@ def _wrapper(abi: dict, func_name: str) -> str:
     so the runtime dlopens one symbol and calls it with two f64 buffers, no
     per-graph signature. Emitted in the llvm dialect; the standard
     convert-*-to-llvm passes turn the func.call into an llvm.call.
+
+    This wrapper is the ONLY exported entry. @chops itself is private, because
+    its multi-result signature lowers to a literal struct return that is not
+    AArch64 C-ABI: LLVM hands back 5..8 doubles in d0..d7, while AAPCS says an
+    HFA stops at 4 members and anything larger returns indirectly via x8. A C
+    caller in that range reads uninitialized memory and gets no diagnostic.
+    (<=4 is a real HFA and >8 falls back to indirect, so both happen to agree,
+    which is exactly what made the gap easy to miss.) Keeping @chops internal
+    means the broken signature is never something a caller can bind to.
     """
     n_in = 3 + len(abi["sources"]) + len(abi["states"])
     n_out = len(abi["outputs"])

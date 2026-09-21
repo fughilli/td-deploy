@@ -82,6 +82,12 @@ class Step:
     params: dict = field(default_factory=dict)
     # kind == "feedback": the step whose PREVIOUS frame this buffer echoes.
     feedback_from: str | None = None
+    # kind == "render3d": the .obj to draw and the texture to modulate it with.
+    mesh_path: str | None = None
+    texture_path: str | None = None
+    # vec4 per-frame uniforms: name -> [x, y, z, w], each a literal or expression.
+    # (A TD GLSL TOP's "Vectors" page; its "Constants" page lands in time_uniforms.)
+    vec_uniforms: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -93,7 +99,8 @@ class RuntimePlan:
     def has_gl_only_ops(self) -> bool:
         # ops with no CPU reference kernel (GL is the oracle for these)
         return any(
-            s.op in ("glsl_top", "crop", "transform", "noise", "feedback") for s in self.steps
+            s.op in ("glsl_top", "crop", "transform", "noise", "feedback", "render3d")
+            for s in self.steps
         )
 
 
@@ -121,6 +128,29 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
 
     if n.op == "glsl_top":
         src = n.params.get("_shader") or shaders.passthrough(target)
+        # User uniforms declared on the TOP's parameter pages. TouchDesigner
+        # exposes scalars on "Constants" and vec4s on "Vectors"; either may be
+        # driven by an expression, which is the whole point of them (a knob
+        # feeding a shader), so both lower as per-frame values.
+        user_scalars, user_vecs = {}, {}
+        i = 0
+        while f"const{i}name" in n.params:
+            nm = str(_first_token(n.params.get(f"const{i}name"), ""))
+            if nm:
+                user_scalars[nm] = {
+                    "expr": value_or_expr(n.params.get(f"const{i}value"), 0.0),
+                    "mul": 1.0,
+                }
+            i += 1
+        i = 0
+        while f"vec{i}name" in n.params:
+            nm = str(_first_token(n.params.get(f"vec{i}name"), ""))
+            if nm:
+                user_vecs[nm] = [
+                    value_or_expr(n.params.get(f"vec{i}value{c}"), 0.0)
+                    for c in ("x", "y", "z", "w")
+                ]
+            i += 1
         uniforms = {}
         for i, src_id in enumerate(inputs):
             it = g.nodes[src_id].out_type
@@ -136,6 +166,8 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
             fragment=shaders.td_glsl_top(target, len(inputs), src),
             sampler_array="sTD2DInputs",
             uniforms=uniforms,
+            time_uniforms=user_scalars,
+            vec_uniforms=user_vecs,
             params=dict(n.params),
         )
 
@@ -293,6 +325,61 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
             ot,
             inputs=seed,
             feedback_from=target_id,
+            params=dict(n.params),
+        )
+
+    if n.op == "render3d":
+        # A Render TOP draws a scene rather than filtering an input, so it has no
+        # bound textures from the graph — its inputs are a mesh file and a
+        # material texture, both baked into the artifact.
+        def _g(name, default):
+            return value_or_expr(n.params.get(f"_geo_{name}"), default)
+
+        def _c(name, default):
+            return float(_first_token(n.params.get(f"_cam_{name}"), default))
+
+        def _l(name, default):
+            return float(_first_token(n.params.get(f"_light_{name}"), default))
+
+        tex = n.params.get("_texture_path")
+        return Step(
+            nid,
+            n.op,
+            "render3d",
+            ot,
+            inputs=[],
+            vertex=shaders.mesh_vertex(target),
+            fragment=shaders.mesh_fragment(target, textured=bool(tex)),
+            mesh_path=n.params.get("_mesh_path"),
+            texture_path=tex,
+            # The object transform stays expression-driven: this is where a knob
+            # rig feeding rx/ry/rz through a Speed CHOP actually lands.
+            time_uniforms={
+                "uRotX": {"expr": _g("rx", 0.0), "mul": 1.0, "mod": 360.0},
+                "uRotY": {"expr": _g("ry", 0.0), "mul": 1.0, "mod": 360.0},
+                "uRotZ": {"expr": _g("rz", 0.0), "mul": 1.0, "mod": 360.0},
+                "uSclX": {"expr": _g("sx", 1.0), "mul": 1.0},
+                "uSclY": {"expr": _g("sy", 1.0), "mul": 1.0},
+                "uSclZ": {"expr": _g("sz", 1.0), "mul": 1.0},
+                "uTrnX": {"expr": _g("tx", 0.0), "mul": 1.0},
+                "uTrnY": {"expr": _g("ty", 0.0), "mul": 1.0},
+                "uTrnZ": {"expr": _g("tz", 0.0), "mul": 1.0},
+                "uDimmer": {"expr": value_or_expr(n.params.get("_light_dimmer"), 1.0), "mul": 1.0},
+            },
+            # TD writes only non-default camera/light parameters, so these
+            # defaults are TouchDesigner's own.
+            uniforms={
+                "uCamX": ("float", _c("tx", 0.0)),
+                "uCamY": ("float", _c("ty", 0.0)),
+                "uCamZ": ("float", _c("tz", 0.0)),
+                "uFov": ("float", _c("fov", 45.0)),
+                "uNear": ("float", _c("near", 0.1)),
+                "uFar": ("float", _c("far", 1000.0)),
+                "uAspect": ("float", float(ot["w"]) / float(ot["h"])),
+                "uLightX": ("float", _l("tx", 0.0)),
+                "uLightY": ("float", _l("ty", 0.0)),
+                "uLightZ": ("float", _l("tz", 1.0)),
+            },
             params=dict(n.params),
         )
 
