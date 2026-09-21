@@ -27,11 +27,84 @@
       }
     },
     {
-      "id": "project1/transform1",
-      "op": "transform",
+      "id": "project1/old_crt/noise1",
+      "op": "noise",
       "kind": "shader",
       "w": 256,
       "h": 256,
+      "inputs": [],
+      "vert": "shaders/project1_old_crt_noise1.vert",
+      "frag": "shaders/project1_old_crt_noise1.frag",
+      "sampler_array": null,
+      "uniforms": {
+        "uSeed": {
+          "type": "float",
+          "value": 1.0
+        },
+        "uExp": {
+          "type": "float",
+          "value": 1.0
+        },
+        "uSpread": {
+          "type": "float",
+          "value": 2.0
+        },
+        "uRough": {
+          "type": "float",
+          "value": 0.5
+        },
+        "uAspect": {
+          "type": "float",
+          "value": 1.0
+        },
+        "uTranslate": {
+          "type": "vec4",
+          "value": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "uScale": {
+          "type": "vec4",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            0.0
+          ]
+        }
+      },
+      "time_uniforms": {
+        "uPeriod": {
+          "fn": "expr0",
+          "inputs": [],
+          "mul": 1.0
+        },
+        "uAmp": {
+          "fn": "expr1",
+          "inputs": [],
+          "mul": 1.0
+        },
+        "uOffset": {
+          "fn": "expr1",
+          "inputs": [],
+          "mul": 1.0
+        },
+        "uT": {
+          "fn": "expr2",
+          "inputs": [],
+          "mul": 1.0
+        }
+      }
+    },
+    {
+      "id": "project1/transform1",
+      "op": "transform",
+      "kind": "shader",
+      "w": 512,
+      "h": 512,
       "inputs": [
         "project1/moviefilein1"
       ],
@@ -47,29 +120,40 @@
             0.0,
             1.0
           ]
+        },
+        "uAspect": {
+          "type": "float",
+          "value": 1.0
         }
       },
       "time_uniforms": {
         "uRotate": {
           "interpreted": "op('speed1')[0] * 1000",
-          "mul": 0.017453292519943295
+          "mul": 0.017453292519943295,
+          "mod": 6.283185307179586
         },
         "uTranslateX": {
-          "fn": "expr0",
+          "fn": "expr2",
           "inputs": [],
           "mul": 1.0
         },
         "uTranslateY": {
-          "fn": "expr0",
+          "fn": "expr2",
           "inputs": [],
           "mul": 1.0
         },
         "uScaleX": {
-          "interpreted": "op('midiin1')[1] / 64",
+          "fn": "expr3",
+          "inputs": [
+            "chop_midiin1_ch1ctrl2"
+          ],
           "mul": 1.0
         },
         "uScaleY": {
-          "interpreted": "op('midiin1')[1] / 64",
+          "fn": "expr3",
+          "inputs": [
+            "chop_midiin1_ch1ctrl2"
+          ],
           "mul": 1.0
         }
       }
@@ -78,8 +162,8 @@
       "id": "project1/ascii/in1",
       "op": "passthrough",
       "kind": "passthrough",
-      "w": 256,
-      "h": 256,
+      "w": 512,
+      "h": 512,
       "inputs": [
         "project1/transform1"
       ]
@@ -88,8 +172,8 @@
       "id": "project1/ascii/glsl2",
       "op": "glsl_top",
       "kind": "shader",
-      "w": 256,
-      "h": 256,
+      "w": 512,
+      "h": 512,
       "inputs": [
         "project1/ascii/in1"
       ],
@@ -100,10 +184,10 @@
         "uTD2DInfos[0].res": {
           "type": "vec4",
           "value": [
-            0.00390625,
-            0.00390625,
-            256.0,
-            256.0
+            0.001953125,
+            0.001953125,
+            512.0,
+            512.0
           ]
         }
       },
@@ -113,8 +197,8 @@
       "id": "project1/ascii/glsl3",
       "op": "glsl_top",
       "kind": "shader",
-      "w": 256,
-      "h": 256,
+      "w": 512,
+      "h": 512,
       "inputs": [
         "project1/ascii/glsl2",
         "project1/ascii/moviefilein1",
@@ -127,10 +211,10 @@
         "uTD2DInfos[0].res": {
           "type": "vec4",
           "value": [
-            0.00390625,
-            0.00390625,
-            256.0,
-            256.0
+            0.001953125,
+            0.001953125,
+            512.0,
+            512.0
           ]
         },
         "uTD2DInfos[1].res": {
@@ -145,6 +229,154 @@
         "uTD2DInfos[2].res": {
           "type": "vec4",
           "value": [
+            0.001953125,
+            0.001953125,
+            512.0,
+            512.0
+          ]
+        }
+      },
+      "time_uniforms": {}
+    },
+    {
+      "id": "project1/ascii/out2",
+      "op": "passthrough",
+      "kind": "passthrough",
+      "w": 512,
+      "h": 512,
+      "inputs": [
+        "project1/ascii/glsl3"
+      ]
+    },
+    {
+      "id": "project1/glsl1",
+      "op": "glsl_top",
+      "kind": "shader",
+      "w": 512,
+      "h": 512,
+      "inputs": [
+        "project1/ascii/out2"
+      ],
+      "vert": "shaders/project1_glsl1.vert",
+      "frag": "shaders/project1_glsl1.frag",
+      "sampler_array": "sTD2DInputs",
+      "uniforms": {
+        "uTD2DInfos[0].res": {
+          "type": "vec4",
+          "value": [
+            0.001953125,
+            0.001953125,
+            512.0,
+            512.0
+          ]
+        }
+      },
+      "time_uniforms": {}
+    },
+    {
+      "id": "project1/null2",
+      "op": "passthrough",
+      "kind": "passthrough",
+      "w": 512,
+      "h": 512,
+      "inputs": [
+        "project1/glsl1"
+      ]
+    },
+    {
+      "id": "project1/feedback1",
+      "op": "feedback",
+      "kind": "feedback",
+      "w": 512,
+      "h": 512,
+      "inputs": [
+        "project1/null2"
+      ],
+      "feedback_from": "project1/add1"
+    },
+    {
+      "id": "project1/math1",
+      "op": "math",
+      "kind": "shader",
+      "w": 512,
+      "h": 512,
+      "inputs": [
+        "project1/feedback1"
+      ],
+      "vert": "shaders/project1_math1.vert",
+      "frag": "shaders/project1_math1.frag",
+      "sampler_array": null,
+      "uniforms": {},
+      "time_uniforms": {
+        "uPreOff": {
+          "fn": "expr2",
+          "inputs": [],
+          "mul": 1.0
+        },
+        "uGain": {
+          "fn": "expr4",
+          "inputs": [],
+          "mul": 1.0
+        },
+        "uPostOff": {
+          "fn": "expr2",
+          "inputs": [],
+          "mul": 1.0
+        }
+      }
+    },
+    {
+      "id": "project1/add1",
+      "op": "add",
+      "kind": "shader",
+      "w": 512,
+      "h": 512,
+      "inputs": [
+        "project1/math1",
+        "project1/null2"
+      ],
+      "vert": "shaders/project1_add1.vert",
+      "frag": "shaders/project1_add1.frag",
+      "sampler_array": null,
+      "uniforms": {},
+      "time_uniforms": {}
+    },
+    {
+      "id": "project1/old_crt/in2",
+      "op": "passthrough",
+      "kind": "passthrough",
+      "w": 512,
+      "h": 512,
+      "inputs": [
+        "project1/add1"
+      ]
+    },
+    {
+      "id": "project1/old_crt/glsl1",
+      "op": "glsl_top",
+      "kind": "shader",
+      "w": 512,
+      "h": 512,
+      "inputs": [
+        "project1/old_crt/in2",
+        "project1/old_crt/noise1"
+      ],
+      "vert": "shaders/project1_old_crt_glsl1.vert",
+      "frag": "shaders/project1_old_crt_glsl1.frag",
+      "sampler_array": "sTD2DInputs",
+      "uniforms": {
+        "uTD2DInfos[0].res": {
+          "type": "vec4",
+          "value": [
+            0.001953125,
+            0.001953125,
+            512.0,
+            512.0
+          ]
+        },
+        "uTD2DInfos[1].res": {
+          "type": "vec4",
+          "value": [
             0.00390625,
             0.00390625,
             256.0,
@@ -155,23 +387,23 @@
       "time_uniforms": {}
     },
     {
-      "id": "project1/ascii/out2",
+      "id": "project1/old_crt/out1",
       "op": "passthrough",
       "kind": "passthrough",
-      "w": 256,
-      "h": 256,
+      "w": 512,
+      "h": 512,
       "inputs": [
-        "project1/ascii/glsl3"
+        "project1/old_crt/glsl1"
       ]
     },
     {
       "id": "project1/null1",
       "op": "passthrough",
       "kind": "passthrough",
-      "w": 256,
-      "h": 256,
+      "w": 512,
+      "h": 512,
       "inputs": [
-        "project1/ascii/out2"
+        "project1/old_crt/out1"
       ]
     }
   ],
@@ -183,7 +415,7 @@
       "type": "constant",
       "inputs": [],
       "channels": [
-        "op('midiin1')[0][0]/127 - 0.5"
+        "op('midiin1')['ch1ctrl1']/127 - 0.5"
       ]
     },
     {
@@ -200,7 +432,7 @@
     "sources": [
       [
         "midiin1",
-        "0"
+        "ch1ctrl1"
       ]
     ],
     "states": [

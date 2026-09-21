@@ -1,7 +1,7 @@
 module {
-func.func @chops(%t: f64, %dt: f64, %frame: f64, %src_midiin1_0: f64, %st_speed1_0: f64) -> (f64, f64) {
+func.func @chops(%t: f64, %dt: f64, %frame: f64, %src_midiin1_ch1ctrl1: f64, %st_speed1_0: f64) -> (f64, f64) {
     %v0 = arith.constant 127.0 : f64
-    %v1 = arith.divf %src_midiin1_0, %v0 : f64
+    %v1 = arith.divf %src_midiin1_ch1ctrl1, %v0 : f64
     %v2 = arith.constant 0.5 : f64
     %v3 = arith.subf %v1, %v2 : f64
     %v4 = arith.mulf %v3, %dt : f64

@@ -2,7 +2,7 @@
 Emit a compiled artifact from a lowered plan — the ABI the Rust runtime loads.
 
 Layout (a directory):
-  schedule.json      ordered steps (source/shader/passthrough), refs to shaders,
+  schedule.json      ordered steps (source/shader/passthrough/feedback), refs to
                      assets, per-frame expr functions, output node, services
   shaders/<id>.vert  fullscreen vertex shader per shader step
   shaders/<id>.frag  fragment shader (GLSL; SPIR-V is a later refinement)
@@ -78,6 +78,11 @@ def emit(plan, graph, outdir: str) -> dict:
                 j["source"] = {"type": "image", "path": f"assets/{sid}.png"}
             else:
                 j["source"] = {"type": "testcard", "w": st.target["w"], "h": st.target["h"]}
+
+        elif st.kind == "feedback":
+            # A persistent buffer: no shader of its own. `feedback_from` names the
+            # step whose previous frame it serves; `inputs` (if any) seed it.
+            j["feedback_from"] = st.feedback_from
 
         elif st.kind == "shader":
             with open(os.path.join(outdir, "shaders", f"{sid}.vert"), "w") as f:

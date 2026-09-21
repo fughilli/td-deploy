@@ -169,6 +169,10 @@ coverage log.
 | `crop`            | `crop`          | Crop / resize the image.                                             |
 | `transform`       | `transform`     | Translate, rotate, and scale.                                        |
 | `level`           | `level`         | Brightness / contrast / gamma / opacity adjustments.                 |
+| `add`             | `add`           | Sum the input images.                                                |
+| `math`            | `math`          | Combine inputs, then pre-offset / gain / post-offset.                |
+| `noise`           | `noise`         | Generate gradient noise (approximates TD's noise generators).        |
+| `feedback`        | `feedback`      | Echo the previous frame of its Target TOP (feedback loops).          |
 | `in`              | _(passthrough)_ | COMP input — structural passthrough after flattening.                |
 | `out`             | _(passthrough)_ | COMP output — structural passthrough.                                |
 | `null`            | _(passthrough)_ | Null / terminator — structural passthrough (often the display node). |

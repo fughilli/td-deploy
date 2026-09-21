@@ -9,6 +9,8 @@ Step kinds:
   shader      — full-screen fragment pass over bound inputs -> new texture.
   passthrough — alias input 0's texture (identity ops: in/out/null/out_display,
                 and — for now — crop/transform until real kernels land).
+  feedback    — a persistent buffer holding the PREVIOUS frame of another step
+                (Feedback TOP); seeded from input 0 and re-filled after each cook.
 
 Both backends read the same plan: the GL backend uses `vertex`/`fragment`, the
 CPU reference uses `op`+`params`. GL-only ops (glsl_top) have no CPU kernel.
@@ -36,6 +38,34 @@ def _crop_edge(params, name, unit_name, size, default):
     return v / size if unit.startswith("pix") else v
 
 
+def _first_token(v, default):
+    """First whitespace token of a `.parm` value (they can carry a trailing
+    default/expr), falling back to `default` when absent or unparseable."""
+    if v is None:
+        return default
+    tok = str(v).split()
+    if not tok:
+        return default
+    t = tok[0].strip('"')
+    if isinstance(default, str):
+        return t
+    try:
+        return float(t)
+    except ValueError:
+        return default
+
+
+def _truthy(v, default: bool) -> bool:
+    if v is None:
+        return default
+    t = str(v).split()[0].strip('"').lower() if str(v).split() else ""
+    if t in ("on", "1", "true", "yes"):
+        return True
+    if t in ("off", "0", "false", "no"):
+        return False
+    return default
+
+
 @dataclass
 class Step:
     node_id: str
@@ -50,6 +80,8 @@ class Step:
     # per-frame uniforms: name -> {"expr": <literal|expr str>, "mul": float}
     time_uniforms: dict = field(default_factory=dict)
     params: dict = field(default_factory=dict)
+    # kind == "feedback": the step whose PREVIOUS frame this buffer echoes.
+    feedback_from: str | None = None
 
 
 @dataclass
@@ -60,7 +92,9 @@ class RuntimePlan:
 
     def has_gl_only_ops(self) -> bool:
         # ops with no CPU reference kernel (GL is the oracle for these)
-        return any(s.op in ("glsl_top", "crop", "transform") for s in self.steps)
+        return any(
+            s.op in ("glsl_top", "crop", "transform", "noise", "feedback") for s in self.steps
+        )
 
 
 def _lower_node(g: Graph, nid: str, target: str) -> Step:
@@ -163,6 +197,102 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
             # Output aspect (w/h): the shader rotates in aspect-corrected space so a
             # non-square frame doesn't stretch under rotation.
             uniforms={"uAspect": ("float", float(ot["w"]) / float(ot["h"]))},
+            params=dict(n.params),
+        )
+
+    if n.op == "add":
+        return Step(
+            nid,
+            n.op,
+            "shader",
+            ot,
+            inputs=inputs,
+            vertex=shaders.vertex(target),
+            fragment=shaders.add_top(target, len(inputs)),
+            params=dict(n.params),
+        )
+
+    if n.op == "math":
+        # TD writes `no_op` when no multi-input combine is selected; a single
+        # input then just passes through to the Pre-Offset/Gain/Post-Offset chain.
+        combine = str(_first_token(n.params.get("op"), "add"))
+        if combine in ("no_op", "off", ""):
+            combine = "add"
+        return Step(
+            nid,
+            n.op,
+            "shader",
+            ot,
+            inputs=inputs,
+            vertex=shaders.vertex(target),
+            fragment=shaders.math_top(target, len(inputs), combine),
+            # Gain/offsets are ordinary TD parameters, so they may be driven by an
+            # expression (e.g. a CHOP) — lower them as per-frame uniforms.
+            time_uniforms={
+                "uPreOff": {"expr": value_or_expr(n.params.get("preoff", 0.0), 0.0), "mul": 1.0},
+                "uGain": {"expr": value_or_expr(n.params.get("gain", 1.0), 1.0), "mul": 1.0},
+                "uPostOff": {"expr": value_or_expr(n.params.get("postoff", 0.0), 0.0), "mul": 1.0},
+            },
+            params=dict(n.params),
+        )
+
+    if n.op == "noise":
+
+        def _f(name, default):
+            return float(_first_token(n.params.get(name), default))
+
+        # Defaults below mirror TouchDesigner's own Noise TOP defaults, because a
+        # TD node that has never been touched writes no `.parm` entry at all — so
+        # every one of these applies verbatim to the common case. Notably amp 0.5 /
+        # offset 0.5 map the signed noise into [0,1]; amp 1 / offset 0 would clip
+        # half the field to black.
+        return Step(
+            nid,
+            n.op,
+            "shader",
+            ot,
+            inputs=[],  # a generator: TD's Noise TOP input only modulates, unsupported
+            vertex=shaders.vertex(target),
+            # harmon/mono/exp are constant TD parameters, so bake them into the
+            # shader: the octave loop unrolls and the branches vanish, which is
+            # most of the win on a VideoCore GPU.
+            fragment=shaders.noise_top(
+                target,
+                octaves=int(_f("harmon", 2.0)) + 1,
+                mono=_truthy(n.params.get("mono"), True),
+                apply_exp=abs(_f("exp", 1.0) - 1.0) > 1e-6,
+            ),
+            uniforms={
+                "uSeed": ("float", _f("seed", 1.0)),
+                "uExp": ("float", _f("exp", 1.0)),
+                "uSpread": ("float", _f("spread", 2.0)),
+                "uRough": ("float", _f("rough", 0.5)),
+                "uAspect": ("float", float(ot["w"]) / float(ot["h"])),
+                "uTranslate": ("vec4", [_f("tx", 0.0), _f("ty", 0.0), _f("tz", 0.0), 0.0]),
+                "uScale": ("vec4", [_f("sx", 1.0), _f("sy", 1.0), _f("sz", 1.0), 0.0]),
+            },
+            time_uniforms={
+                "uPeriod": {"expr": value_or_expr(n.params.get("period", 1.0), 1.0), "mul": 1.0},
+                "uAmp": {"expr": value_or_expr(n.params.get("amp", 0.5), 0.5), "mul": 1.0},
+                "uOffset": {"expr": value_or_expr(n.params.get("offset", 0.5), 0.5), "mul": 1.0},
+                "uT": {"expr": value_or_expr(n.params.get("t4d", 0.0), 0.0), "mul": 1.0},
+            },
+            params=dict(n.params),
+        )
+
+    if n.op == "feedback":
+        # The Feedback TOP echoes the PREVIOUS frame of its Target TOP. The target
+        # arrives as a delay=1 edge so it never constrains cook order (ir.Graph
+        # cuts delayed edges in topo_order); delay-0 input 0 seeds the buffer.
+        seed = [p.node for p in n.inputs if p.delay == 0]
+        target_id = next((p.node for p in n.inputs if p.delay > 0), None)
+        return Step(
+            nid,
+            n.op,
+            "feedback",
+            ot,
+            inputs=seed,
+            feedback_from=target_id,
             params=dict(n.params),
         )
 

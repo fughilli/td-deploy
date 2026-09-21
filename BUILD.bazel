@@ -170,6 +170,21 @@ py_test(
     ],
 )
 
+# Add / Math / Noise / Feedback TOPs: import, type inference and lowering —
+# most importantly that a Feedback TOP's Target becomes a delay=1 edge, so the
+# loop it closes stays topologically orderable.
+py_test(
+    name = "new_top_ops_test",
+    srcs = ["tests/new_top_ops_test.py"],
+    imports = ["."],
+    deps = [
+        ":importer",
+        ":ir",
+        ":lowering",
+        ":passes",
+    ],
+)
+
 # Regression: the frozen deploy-engine sidecar must declare every third-party
 # module the compile/emit path imports. emit_artifact decodes a video source's
 # first frame via runtime.video.VideoSource, which needs numpy — so numpy must be

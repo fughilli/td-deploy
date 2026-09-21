@@ -45,6 +45,10 @@ OP_MAP = {
     ("TOP", "crop"): "crop",
     ("TOP", "transform"): "transform",
     ("TOP", "level"): "level",
+    ("TOP", "add"): "add",
+    ("TOP", "math"): "math",
+    ("TOP", "noise"): "noise",
+    ("TOP", "feedback"): "feedback",
     ("TOP", "in"): None,  # COMP input  -> passthrough after flattening
     ("TOP", "out"): None,  # COMP output -> passthrough
     ("TOP", "null"): None,  # null        -> passthrough (often the display node)
@@ -374,12 +378,35 @@ def import_dir(dirroot: str) -> ImportResult:
                     f"resolving it against the project dir and asset roots"
                 )
 
+        ports = [Port(node=s) for s in top_ins]
+        if kernel == "feedback":
+            # A Feedback TOP names its source in the `top` parameter, not as a wire:
+            # it emits that TOP's PREVIOUS frame. Model it as a delay=1 edge so the
+            # loop is legal (Graph.topo_order cuts delayed edges) and so the target
+            # stays reachable for dead-node elimination. Input 0 seeds the buffer.
+            raw = (params.get("top") or "").split()
+            tgt = raw[0].strip('"') if raw else ""
+            tgt_path = None
+            if tgt:
+                parent = path.rsplit("/", 1)[0] if "/" in path else ""
+                # `top` may be absolute (/project1/add1) or relative to the parent.
+                tgt_path = _resolve("" if tgt.startswith("/") else parent, tgt)
+            if tgt_path and ops.get(tgt_path) is not None and ops[tgt_path].family == "TOP":
+                params["_feedback_target"] = tgt_path
+                ports.append(Port(node=tgt_path, delay=1))
+                stack.append(tgt_path)  # pull the target in even if nothing else uses it
+            else:
+                coverage.append(
+                    f"{path}: Feedback TOP target {tgt!r} unresolved — "
+                    f"buffer will just echo input 0"
+                )
+
         nodes[path] = Node(
             id=path,
             op=(kernel or "passthrough"),
             family="TOP",
             params=params,
-            inputs=[Port(node=s) for s in top_ins],
+            inputs=ports,
         )
 
     # Collect I/O CHOP services (OSC/MIDI In) — they live outside the TOP render

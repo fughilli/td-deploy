@@ -16,6 +16,7 @@ import os
 import numpy as np
 from OpenGL import GL
 
+from lowering import shaders
 from lowering.lower import RuntimePlan
 from runtime import egl_context, sources, video
 from runtime.expr import eval_expr
@@ -92,6 +93,8 @@ class Renderer:
         self.fbo: dict[str, int] = {}
         self.size: dict[str, tuple[int, int]] = {}
         self.videos: dict[str, video.VideoSource] = {}
+        self._seeded: set[str] = set()  # feedback buffers already given a first frame
+        self._blit: int | None = None  # lazily built copy program for feedback
         for st in plan.steps:
             w, h = st.target["w"], st.target["h"]
             if st.kind == "source":
@@ -107,9 +110,12 @@ class Renderer:
                         w, h = img.shape[1], img.shape[0]
                     self.tex[st.node_id] = _texture(w, h, (img * 255.0 + 0.5).astype(np.uint8))
                 self.size[st.node_id] = (w, h)
-            elif st.kind == "shader":
-                self.prog[st.node_id] = _program(st.vertex, st.fragment)
-                out = _texture(w, h, None)
+            elif st.kind in ("shader", "feedback"):
+                if st.kind == "shader":
+                    self.prog[st.node_id] = _program(st.vertex, st.fragment)
+                # A feedback buffer has no shader of its own; it just needs a
+                # texture that survives between frames, plus an FBO to copy into.
+                out = _texture(w, h, np.zeros((h, w, 4), np.uint8))
                 fbo = GL.glGenFramebuffers(1)
                 GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
                 GL.glFramebufferTexture2D(
@@ -118,6 +124,23 @@ class Renderer:
                 self.tex[st.node_id] = out
                 self.fbo[st.node_id] = fbo
                 self.size[st.node_id] = (w, h)
+
+    def _copy(self, src_tex: int, dst_id: str) -> None:
+        """Full-screen copy of `src_tex` into the feedback buffer `dst_id`."""
+        if self._blit is None:
+            self._blit = _program(
+                shaders.vertex(self.plan.target), shaders.passthrough(self.plan.target)
+            )
+        w, h = self.size[dst_id]
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.fbo[dst_id])
+        GL.glViewport(0, 0, w, h)
+        GL.glUseProgram(self._blit)
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, src_tex)
+        loc = GL.glGetUniformLocation(self._blit, "tex0")
+        if loc != -1:
+            GL.glUniform1i(loc, 0)
+        GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)
 
     def render(self, t: float, frame: int = 0) -> np.ndarray:
         # advance any video sources to the frame for this time
@@ -145,6 +168,15 @@ class Renderer:
                     w, h = st.target["w"], st.target["h"]
                     self.tex[st.node_id] = _texture(w, h, np.zeros((h, w, 4), np.uint8))
                     self.size[st.node_id] = (w, h)
+            elif st.kind == "feedback":
+                # Its texture already holds the PREVIOUS frame of the target, which
+                # is exactly what downstream should sample — so nothing to do here
+                # except seed it the first time from input 0 (TD's reset image).
+                if st.node_id not in self._seeded:
+                    self._seeded.add(st.node_id)
+                    src = st.inputs[0] if st.inputs else None
+                    if src in self.tex:
+                        self._copy(self.tex[src], st.node_id)
             elif st.kind == "shader":
                 w, h = self.size[st.node_id]
                 GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.fbo[st.node_id])
@@ -178,6 +210,13 @@ class Renderer:
                         v = math.fmod(v, mod)
                     _set_uniform(prog, name, "float", v)
                 GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)
+
+        # End of frame: capture each target into its feedback buffer, so the NEXT
+        # frame reads this frame's result. Done after the whole cook because a
+        # target is normally downstream of the feedback that echoes it.
+        for st in self.plan.steps:
+            if st.kind == "feedback" and st.feedback_from in self.tex:
+                self._copy(self.tex[st.feedback_from], st.node_id)
 
         out_id = self.plan.output_id
         sw, sh = self.size[out_id]
