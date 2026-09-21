@@ -37,10 +37,10 @@ def build(mlir: str) -> str:
     return so
 
 
-def _ret_type(n: int):
-    return type(
-        f"Ret{n}", (ctypes.Structure,), {"_fields_": [(f"f{i}", ctypes.c_double) for i in range(n)]}
-    )
+def hasattr_export(so: str, sym: str) -> bool:
+    """True if `sym` is an exported dynamic symbol of the shared object."""
+    out = subprocess.run(["nm", "-gU", so], capture_output=True, text=True).stdout
+    return any(line.split()[-1] == sym for line in out.splitlines() if line.strip())
 
 
 def run_parity(name: str, chops: list, frames: list) -> bool:
@@ -50,10 +50,12 @@ def run_parity(name: str, chops: list, frames: list) -> bool:
     lib = ctypes.CDLL(so)
     n_in = 3 + len(abi["sources"]) + len(abi["states"])
     n_out = len(abi["outputs"])
-    # scalar entry (struct return) — used to cross-check the pointer wrapper.
-    fn = lib.chops
-    fn.argtypes = [ctypes.c_double] * n_in
-    fn.restype = _ret_type(n_out)
+    # The scalar @chops entry is private and deliberately unbindable: its
+    # multi-result signature lowers to a literal struct return that is not
+    # AArch64 C-ABI for 5..8 doubles (see chop_lower._wrapper). It used to be
+    # cross-checked here, which silently compared against uninitialized memory
+    # the moment a DAG got wide enough. chops_v is the only supported entry.
+    assert not hasattr_export(so, "_chops"), "scalar @chops should not be exported"
     # pointer entry `void chops_v(const double* in, double* out)` — the runtime path.
     fnv = lib.chops_v
     fnv.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double)]
@@ -76,15 +78,6 @@ def run_parity(name: str, chops: list, frames: list) -> bool:
         out_buf = (ctypes.c_double * n_out)()
         fnv(in_buf, out_buf)
         native = list(out_buf)
-        # scalar ABI must agree with the pointer wrapper
-        sres = fn(*[ctypes.c_double(a) for a in args])
-        for i in range(n_out):
-            if abs(getattr(sres, f"f{i}") - native[i]) > 0:
-                print(
-                    f"  ABI MISMATCH {name} t={t} out{i}: "
-                    f"scalar={getattr(sres, f'f{i}')} ptr={native[i]}"
-                )
-                ok = False
         # feed each Speed output back as its next-frame state
         for s in abi["states"]:
             state[s] = native[out_index[s]]
@@ -133,9 +126,37 @@ MIX = [
 MIX_FRAMES = [(i * 0.25, {"osc1": {"0": 0.1 * i}}) for i in range(8)]
 
 
+# The 3-axis spin from the real project: one Constant carrying roll/pitch/yaw
+# rates off three MIDI knobs, integrated by a single Speed and carried through a
+# Null. Every channel past the first used to vanish before reaching the ABI, so
+# this DAG passed the gate by having nothing to compare.
+SPIN = [
+    {
+        "name": "rate1",
+        "type": "constant",
+        "inputs": [],
+        "channels": [
+            "op('midiin1')[0][0]/127 - 0.5",
+            "op('midiin1')[1][0]/127 - 0.5",
+            "op('midiin1')[2][0]/127 - 0.5",
+        ],
+    },
+    {"name": "spin1", "type": "speed", "inputs": ["rate1"], "channels": []},
+    {"name": "out1", "type": "null", "inputs": ["spin1"], "channels": []},
+]
+# Each axis is swept differently so a channel crossing wires would show up.
+SPIN_FRAMES = [
+    (i / 60.0, {"midiin1": {"0": r, "1": p, "2": y}})
+    for i, (r, p, y) in enumerate(
+        [(0, 127, 64), (32, 96, 64), (64, 64, 64), (96, 32, 0), (127, 0, 0), (127, 0, 127)]
+    )
+]
+
+
 if __name__ == "__main__":
     ok = True
     ok &= run_parity("ascii", ASCII, ASCII_FRAMES)
     ok &= run_parity("mix", MIX, MIX_FRAMES)
+    ok &= run_parity("spin", SPIN, SPIN_FRAMES)
     print("\nALL PASS" if ok else "\nFAILURES")
     sys.exit(0 if ok else 1)

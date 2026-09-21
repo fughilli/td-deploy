@@ -91,7 +91,7 @@ class MultiChannelTest(unittest.TestCase):
     def test_reference_integrates_every_channel(self):
         ev = ChopEval(self.DAG)
         ev.step(0.0, {})
-        st = ev.step(1.0, {})          # one second of integration
+        st = ev.step(1.0, {})  # one second of integration
         self.assertAlmostEqual(st.get("spin1", 0), 1.0, places=6)
         self.assertAlmostEqual(st.get("spin1", 1), 2.0, places=6)
         self.assertAlmostEqual(st.get("spin1", 2), -4.0, places=6)
@@ -117,6 +117,4 @@ class MultiChannelTest(unittest.TestCase):
         _mlir, abi = lower(self.DAG)
         # Every CHOP in the chain is as wide as the Constant that originated it.
         for nm in ("rate1", "spin1", "out1"):
-            self.assertEqual(
-                sum(1 for n, _c in (tuple(x) for x in abi["outputs"]) if n == nm), 3
-            )
+            self.assertEqual(sum(1 for n, _c in (tuple(x) for x in abi["outputs"]) if n == nm), 3)

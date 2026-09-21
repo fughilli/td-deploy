@@ -10,7 +10,7 @@ args/results:
   states   Speed CHOP accumulators (loop-carried across frames)  -> args AND results
   outputs  every channel the DAG writes                          -> results
 
-  func.func @chops(%t, %dt, %frame, <sources...>, <states-in...>)
+  func.func private @chops(%t, %dt, %frame, <sources...>, <states-in...>)
       -> (<outputs...>)          // a Speed output IS its next-frame state
 
 Channel semantics match runtime_rs eval_chops / the fasteval preprocess:
@@ -257,9 +257,7 @@ def lower(chops: list[dict], func_name: str = "chops"):
                 m = fn._fresh()
                 fn.lines.append(f"{m} = arith.mulf {iv}, %dt : f64")
                 acc = fn._fresh()
-                fn.lines.append(
-                    f"{acc} = arith.addf {env[('__state__', name, str(i))]}, {m} : f64"
-                )
+                fn.lines.append(f"{acc} = arith.addf {env[('__state__', name, str(i))]}, {m} : f64")
                 bind(name, i, acc)
         else:
             # null / select / in / out: alias every channel of the input.
@@ -275,7 +273,8 @@ def lower(chops: list[dict], func_name: str = "chops"):
     ret_ty = ret_ty if len(outputs) == 1 else f"({ret_ty})"
     body = "\n    ".join(fn.lines)
     mlir = (
-        f"func.func @{func_name}({', '.join(args)}) -> {ret_ty} {{\n"
+        f"func.func private @{func_name}({', '.join(args)}) -> {ret_ty}\n"
+        f"    attributes {{llvm.linkage = #llvm.linkage<internal>}} {{\n"
         f"    {body}\n"
         f"    return {ret_ssa} : {', '.join('f64' for _ in outputs)}\n"
         f"}}\n"
@@ -299,6 +298,15 @@ def _wrapper(abi: dict, func_name: str) -> str:
     so the runtime dlopens one symbol and calls it with two f64 buffers, no
     per-graph signature. Emitted in the llvm dialect; the standard
     convert-*-to-llvm passes turn the func.call into an llvm.call.
+
+    This wrapper is the ONLY exported entry. @chops itself is private, because
+    its multi-result signature lowers to a literal struct return that is not
+    AArch64 C-ABI: LLVM hands back 5..8 doubles in d0..d7, while AAPCS says an
+    HFA stops at 4 members and anything larger returns indirectly via x8. A C
+    caller in that range reads uninitialized memory and gets no diagnostic.
+    (<=4 is a real HFA and >8 falls back to indirect, so both happen to agree,
+    which is exactly what made the gap easy to miss.) Keeping @chops internal
+    means the broken signature is never something a caller can bind to.
     """
     n_in = 3 + len(abi["sources"]) + len(abi["states"])
     n_out = len(abi["outputs"])
