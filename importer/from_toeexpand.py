@@ -279,13 +279,24 @@ def _collect_chops(ops: dict, compinputs: dict | None = None) -> list:
             ext = compinputs.get((parent, leaf))
             if ext:
                 inputs = [ext]
-        channels = []
+        channels, names = [], []
         if op.optype == "constant":
             i = 0
             while f"const{i}value" in op.params:
                 channels.append(_param_expr(op.params[f"const{i}value"]))
+                # Carry the channel NAME too: expressions reference channels by
+                # name (op('spin1')['rx']) at least as often as by index, and the
+                # runtime store needs both to resolve either.
+                raw = (op.params.get(f"const{i}name") or "").split()
+                names.append(raw[0].strip('"') if raw else f"chan{i + 1}")
                 i += 1
-        defs[name] = {"name": name, "type": op.optype, "inputs": inputs, "channels": channels}
+        defs[name] = {
+            "name": name,
+            "type": op.optype,
+            "inputs": inputs,
+            "channels": channels,
+            "names": names,
+        }
         stack += inputs
         for v in op.params.values():
             stack += _OPREF.findall(str(v))
@@ -304,6 +315,15 @@ def _collect_chops(ops: dict, compinputs: dict | None = None) -> list:
 
     for n in list(real):
         visit(n)
+    # A CHOP that just carries its input through (speed/null/select/in) keeps the
+    # input's channel names. `order` is topological, so a producer is always
+    # filled in before the consumer that copies from it.
+    by_name = {d["name"]: d for d in order}
+    for d in order:
+        if not d["names"] and d["inputs"]:
+            src = by_name.get(d["inputs"][0])
+            if src:
+                d["names"] = list(src["names"])
     return order
 
 

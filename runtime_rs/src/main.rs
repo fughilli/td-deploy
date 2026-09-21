@@ -87,6 +87,10 @@ struct ChopDef {
     inputs: Vec<String>,
     #[serde(default)]
     channels: Vec<String>,
+    /// Channel names. Expressions reference channels by name at least as often
+    /// as by index (`op('spin1')['rx']`), so the store is keyed by both.
+    #[serde(default)]
+    names: Vec<String>,
 }
 #[derive(Deserialize)]
 struct Step {
@@ -632,6 +636,28 @@ struct ChopProg {
     ty: String,
     inputs: Vec<String>,
     chans: Vec<expr::Program>,
+    names: Vec<String>,
+}
+
+/// Write a channel under BOTH its index and its name, so `op('x')[0]` and
+/// `op('x')['rx']` resolve to the same value.
+fn chop_put(store: &Chops, chop: &str, i: usize, names: &[String], v: f64) {
+    chop_set(store, chop, &i.to_string(), v);
+    if let Some(n) = names.get(i) {
+        if !n.is_empty() {
+            chop_set(store, chop, n, v);
+        }
+    }
+}
+
+/// How many channels a CHOP published, counted by its numeric keys.
+fn chop_width(store: &Chops, name: &str) -> usize {
+    let g = store.lock().unwrap();
+    let m = match g.get(name) {
+        Some(m) => m,
+        None => return 0,
+    };
+    (0..).take_while(|i| m.contains_key(&i.to_string())).count()
 }
 
 fn chop_get(store: &Chops, name: &str, chan: &str) -> f64 {
@@ -734,6 +760,7 @@ impl<'a> Renderer<'a> {
                 ty: c.ty.clone(),
                 inputs: c.inputs.clone(),
                 chans: c.channels.iter().map(|e| expr::Program::compile(e)).collect(),
+                names: c.names.clone(),
             })
             .collect();
         let mut uniform_progs = HashMap::new();
@@ -806,26 +833,35 @@ impl<'a> Renderer<'a> {
                     for (i, prog) in cp.chans.iter().enumerate() {
                         let store = self.store.clone();
                         let v = prog.eval(t, frame, &|n, ch| chop_get(&store, n, ch));
-                        chop_set(&self.store, &cp.name, &i.to_string(), v);
+                        chop_put(&self.store, &cp.name, i, &cp.names, v);
                     }
                 }
                 "speed" => {
+                    // One integrator PER CHANNEL: a Speed CHOP fed a three-channel
+                    // rate (roll/pitch/yaw) has to integrate all three, not just
+                    // the first.
                     if let Some(inp) = cp.inputs.first() {
-                        let iv = chop_get(&self.store, inp, "0");
-                        let val = {
-                            let mut ss = self.speed_state.borrow_mut();
-                            let acc = ss.entry((cp.name.clone(), 0)).or_insert(0.0);
-                            *acc += iv * dt;
-                            *acc
-                        };
-                        chop_set(&self.store, &cp.name, "0", val);
+                        let w = chop_width(&self.store, inp).max(1);
+                        for i in 0..w {
+                            let iv = chop_get(&self.store, inp, &i.to_string());
+                            let val = {
+                                let mut ss = self.speed_state.borrow_mut();
+                                let acc = ss.entry((cp.name.clone(), i)).or_insert(0.0);
+                                *acc += iv * dt;
+                                *acc
+                            };
+                            chop_put(&self.store, &cp.name, i, &cp.names, val);
+                        }
                     }
                 }
                 _ => {
-                    // null / select / passthrough: copy channel 0 of the input.
+                    // null / select / in / passthrough: copy every channel through.
                     if let Some(inp) = cp.inputs.first() {
-                        let iv = chop_get(&self.store, inp, "0");
-                        chop_set(&self.store, &cp.name, "0", iv);
+                        let w = chop_width(&self.store, inp).max(1);
+                        for i in 0..w {
+                            let iv = chop_get(&self.store, inp, &i.to_string());
+                            chop_put(&self.store, &cp.name, i, &cp.names, iv);
+                        }
                     }
                 }
             }
