@@ -241,6 +241,11 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
         def _f(name, default):
             return float(_first_token(n.params.get(name), default))
 
+        # Defaults below mirror TouchDesigner's own Noise TOP defaults, because a
+        # TD node that has never been touched writes no `.parm` entry at all — so
+        # every one of these applies verbatim to the common case. Notably amp 0.5 /
+        # offset 0.5 map the signed noise into [0,1]; amp 1 / offset 0 would clip
+        # half the field to black.
         return Step(
             nid,
             n.op,
@@ -248,22 +253,28 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
             ot,
             inputs=[],  # a generator: TD's Noise TOP input only modulates, unsupported
             vertex=shaders.vertex(target),
-            fragment=shaders.noise_top(target),
+            # harmon/mono/exp are constant TD parameters, so bake them into the
+            # shader: the octave loop unrolls and the branches vanish, which is
+            # most of the win on a VideoCore GPU.
+            fragment=shaders.noise_top(
+                target,
+                octaves=int(_f("harmon", 2.0)) + 1,
+                mono=_truthy(n.params.get("mono"), True),
+                apply_exp=abs(_f("exp", 1.0) - 1.0) > 1e-6,
+            ),
             uniforms={
                 "uSeed": ("float", _f("seed", 1.0)),
                 "uExp": ("float", _f("exp", 1.0)),
-                "uHarmonics": ("float", _f("harmon", 0.0)),
                 "uSpread": ("float", _f("spread", 2.0)),
                 "uRough": ("float", _f("rough", 0.5)),
-                "uMono": ("float", 1.0 if _truthy(n.params.get("mono"), True) else 0.0),
                 "uAspect": ("float", float(ot["w"]) / float(ot["h"])),
                 "uTranslate": ("vec4", [_f("tx", 0.0), _f("ty", 0.0), _f("tz", 0.0), 0.0]),
                 "uScale": ("vec4", [_f("sx", 1.0), _f("sy", 1.0), _f("sz", 1.0), 0.0]),
             },
             time_uniforms={
                 "uPeriod": {"expr": value_or_expr(n.params.get("period", 1.0), 1.0), "mul": 1.0},
-                "uAmp": {"expr": value_or_expr(n.params.get("amp", 1.0), 1.0), "mul": 1.0},
-                "uOffset": {"expr": value_or_expr(n.params.get("offset", 0.0), 0.0), "mul": 1.0},
+                "uAmp": {"expr": value_or_expr(n.params.get("amp", 0.5), 0.5), "mul": 1.0},
+                "uOffset": {"expr": value_or_expr(n.params.get("offset", 0.5), 0.5), "mul": 1.0},
                 "uT": {"expr": value_or_expr(n.params.get("t4d", 0.0), 0.0), "mul": 1.0},
             },
             params=dict(n.params),

@@ -30,9 +30,7 @@ def _locs(src: str) -> dict[str, int]:
 class StructLocationsTest(unittest.TestCase):
     def test_counts_one_per_member(self):
         self.assertEqual(struct_locations("struct TDInfo { vec4 res; };")["TDInfo"], 1)
-        self.assertEqual(
-            struct_locations("struct S { vec4 a; float b; vec2 c; };")["S"], 3
-        )
+        self.assertEqual(struct_locations("struct S { vec4 a; float b; vec2 c; };")["S"], 3)
 
     def test_matrix_member_spans_its_rows(self):
         self.assertEqual(struct_locations("struct M { mat4 m; };")["M"], 4)
@@ -78,11 +76,11 @@ class InjectLocationsTest(unittest.TestCase):
 
     def test_sampler_array_advances_the_binding_counter(self):
         src = (
-            "#version 330 core\n"
-            "uniform sampler2D sTD2DInputs[2];\n"
-            "uniform sampler2D other;\n"
+            "#version 330 core\n" "uniform sampler2D sTD2DInputs[2];\n" "uniform sampler2D other;\n"
         )
-        got = re.findall(r"layout\(binding=(\d+)\)\s+uniform\s+sampler2D\s+(\w+)", inject_locations(src))
+        got = re.findall(
+            r"layout\(binding=(\d+)\)\s+uniform\s+sampler2D\s+(\w+)", inject_locations(src)
+        )
         self.assertEqual(got, [("0", "sTD2DInputs"), ("2", "other")])
 
 

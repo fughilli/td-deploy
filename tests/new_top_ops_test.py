@@ -107,8 +107,14 @@ class NoiseTopTest(unittest.TestCase):
                     "op": "noise",
                     "family": "TOP",
                     "inputs": [],
-                    "params": {"period": "4", "amp": "0.5", "offset": "0.5", "mono": "off",
-                               "seed": "7", "harmon": "2"},
+                    "params": {
+                        "period": "4",
+                        "amp": "0.5",
+                        "offset": "0.5",
+                        "mono": "off",
+                        "seed": "7",
+                        "harmon": "2",
+                    },
                     "out_type": OT,
                 }
             ],
@@ -118,16 +124,84 @@ class NoiseTopTest(unittest.TestCase):
         self.assertEqual(float(st.time_uniforms["uPeriod"]["expr"]), 4.0)
         self.assertEqual(float(st.time_uniforms["uAmp"]["expr"]), 0.5)
         self.assertEqual(st.uniforms["uSeed"], ("float", 7.0))
-        self.assertEqual(st.uniforms["uHarmonics"], ("float", 2.0))
-        # mono off -> the three channels are sampled independently.
-        self.assertEqual(st.uniforms["uMono"], ("float", 0.0))
+        # harmon/mono are BAKED into the shader (unrolled octaves, no branches),
+        # so they are not uniforms — assert on the generated source instead.
+        self.assertEqual(st.fragment.count("sum += amp * gradNoise(q);"), 3)  # harmon 2 -> 3
+        self.assertNotIn("uMono", st.fragment)
+        self.assertIn("channel(uSeed + 31.0)", st.fragment)  # mono off -> per-channel
+
+    def test_harmonics_controls_the_unrolled_octave_count(self):
+        def octaves(harmon):
+            g = _graph(
+                [
+                    {
+                        "id": "n",
+                        "op": "noise",
+                        "family": "TOP",
+                        "inputs": [],
+                        "params": {"harmon": harmon},
+                        "out_type": OT,
+                    }
+                ],
+                "n",
+            )
+            frag = {s.node_id: s for s in lower(g, target="gles").steps}["n"].fragment
+            return frag.count("sum += amp * gradNoise(q);")
+
+        self.assertEqual(octaves("0"), 1)
+        self.assertEqual(octaves("3"), 4)
+        # No dynamic loop or branch survives into the shader.
+        g = _graph(
+            [
+                {
+                    "id": "n",
+                    "op": "noise",
+                    "family": "TOP",
+                    "inputs": [],
+                    "params": {"harmon": "2"},
+                    "out_type": OT,
+                }
+            ],
+            "n",
+        )
+        frag = {s.node_id: s for s in lower(g, target="gles").steps}["n"].fragment
+        self.assertNotIn("for (", frag)
+        self.assertNotIn("break;", frag)
+
+    def test_no_trig_in_the_hash(self):
+        # The gradient hash must stay trig-free: sin/cos per lattice corner was
+        # the whole reason this pass was the most expensive one on the Pi.
+        g = _graph(
+            [
+                {
+                    "id": "n",
+                    "op": "noise",
+                    "family": "TOP",
+                    "inputs": [],
+                    "params": {},
+                    "out_type": OT,
+                }
+            ],
+            "n",
+        )
+        frag = {s.node_id: s for s in lower(g, target="gles").steps}["n"].fragment
+        for banned in ("sin(", "cos(", "tan("):
+            self.assertNotIn(banned, frag)
 
     def test_noise_is_deterministic_for_a_given_seed(self):
         # Same params in, byte-identical shader out: recompiles stay reproducible.
         def frag(seed):
             g = _graph(
-                [{"id": "n", "op": "noise", "family": "TOP", "inputs": [],
-                  "params": {"seed": seed}, "out_type": OT}],
+                [
+                    {
+                        "id": "n",
+                        "op": "noise",
+                        "family": "TOP",
+                        "inputs": [],
+                        "params": {"seed": seed},
+                        "out_type": OT,
+                    }
+                ],
                 "n",
             )
             return {s.node_id: s for s in lower(g, target="gles").steps}["n"].fragment
@@ -150,10 +224,21 @@ class FeedbackTopTest(unittest.TestCase):
                     "params": {"_feedback_target": "add"},
                     "out_type": OT,
                 },
-                {"id": "gain", "op": "math", "family": "TOP", "inputs": ["fb"],
-                 "params": {"gain": "0.95"}, "out_type": OT},
-                {"id": "add", "op": "add", "family": "TOP", "inputs": ["gain", "src"],
-                 "out_type": OT},
+                {
+                    "id": "gain",
+                    "op": "math",
+                    "family": "TOP",
+                    "inputs": ["fb"],
+                    "params": {"gain": "0.95"},
+                    "out_type": OT,
+                },
+                {
+                    "id": "add",
+                    "op": "add",
+                    "family": "TOP",
+                    "inputs": ["gain", "src"],
+                    "out_type": OT,
+                },
             ],
             "add",
         )
@@ -194,8 +279,12 @@ class FeedbackTopTest(unittest.TestCase):
     def test_feedback_without_a_seed_input_still_gets_a_buffer(self):
         g = _graph(
             [
-                {"id": "fb", "op": "feedback", "family": "TOP",
-                 "inputs": [{"node": "a", "delay": 1}]},
+                {
+                    "id": "fb",
+                    "op": "feedback",
+                    "family": "TOP",
+                    "inputs": [{"node": "a", "delay": 1}],
+                },
                 {"id": "a", "op": "add", "family": "TOP", "inputs": ["fb"]},
             ],
             "a",
