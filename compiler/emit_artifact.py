@@ -47,6 +47,15 @@ def emit(plan, graph, outdir: str) -> dict:
         expr_cache[expr] = (fn, info)
         return fn, info
 
+    def _one_expr(expr, mul: float = 1.0) -> dict:
+        """One per-frame value: a native expr fn when it lowers, else an
+        interpreted string for the runtime's fasteval path."""
+        fn, info = add_expr(str(expr))
+        if fn:
+            return {"fn": fn, "inputs": info, "mul": mul}
+        coverage["interpreted_exprs"].append(str(expr))
+        return {"interpreted": str(expr), "mul": mul}
+
     def _time_uniforms(st) -> dict:
         """Per-frame uniforms: compiled to a native expr fn where possible, else
         carried as an interpreted string for the runtime's fasteval path."""
@@ -180,6 +189,12 @@ def emit(plan, graph, outdir: str) -> dict:
             j["sampler_array"] = st.sampler_array
             j["uniforms"] = {n: {"type": t, "value": v} for n, (t, v) in st.uniforms.items()}
             j["time_uniforms"] = _time_uniforms(st)
+            # vec4 user uniforms: each component gets the same compiled/interpreted
+            # treatment as a scalar per-frame uniform.
+            if st.vec_uniforms:
+                j["vec_uniforms"] = {
+                    nm: [_one_expr(c) for c in comps] for nm, comps in st.vec_uniforms.items()
+                }
 
         steps_json.append(j)
 

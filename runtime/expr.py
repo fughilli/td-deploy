@@ -57,7 +57,11 @@ def eval_expr(expr, t: float, frame: int, default: float = 0.0, chops=None) -> f
     s = str(expr).strip().strip('"').strip("'")
     if s == "":
         return default
-    ns = {**_SAFE, "absTime": _AbsTime(t, frame), "op": lambda name: _ChopAccessor(chops, name)}
+    at = _AbsTime(t, frame)
+    # `me.time.*` is the component-local timeline; with a default timeline it
+    # tracks absolute time, so expose it alongside absTime.
+    me = type("_Me", (), {"time": at})()
+    ns = {**_SAFE, "absTime": at, "me": me, "op": lambda name: _ChopAccessor(chops, name)}
     try:
         return float(eval(s, {"__builtins__": {}}, ns))
     except Exception:

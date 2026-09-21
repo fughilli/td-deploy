@@ -114,6 +114,10 @@ struct Step {
     uniforms: HashMap<String, Uniform>,
     #[serde(default)]
     time_uniforms: HashMap<String, TimeUniform>,
+    /// vec4 user uniforms from a GLSL TOP's "Vectors" page: name -> 4 per-frame
+    /// components, each evaluated like a scalar time uniform.
+    #[serde(default)]
+    vec_uniforms: HashMap<String, Vec<TimeUniform>>,
     /// kind == "feedback": the step whose PREVIOUS frame this buffer holds.
     #[serde(default)]
     feedback_from: Option<String>,
@@ -661,6 +665,39 @@ struct ChopProg {
     names: Vec<String>,
 }
 
+/// Evaluate one per-frame uniform: the compiled expression when the artifact
+/// carries one, else the interpreted fallback, else zero.
+fn eval_tu(
+    tu: &TimeUniform,
+    exprs: &Option<libloading::Library>,
+    interp: Option<&expr::Program>,
+    store: &Chops,
+    t: f64,
+    frame: f64,
+) -> f64 {
+    let v = if let (Some(func), Some(lib)) = (&tu.func, exprs) {
+        let args: Vec<f64> = tu
+            .inputs
+            .iter()
+            .map(|n| match n.as_str() {
+                "t" => t,
+                "frame" => frame,
+                other => chop_value(store, other),
+            })
+            .collect();
+        (unsafe { call_expr(lib, func, &args) }) * tu.mul
+    } else if let Some(prog) = interp {
+        let st = store.clone();
+        prog.eval(t, frame, &|n, ch| chop_get(&st, n, ch)) * tu.mul
+    } else {
+        0.0
+    };
+    match tu.modulo {
+        Some(m) if m != 0.0 => v % m,
+        _ => v,
+    }
+}
+
 /// Write a channel under BOTH its index and its name, so `op('x')[0]` and
 /// `op('x')['rx']` resolve to the same value.
 fn chop_put(store: &Chops, chop: &str, i: usize, names: &[String], v: f64) {
@@ -809,6 +846,16 @@ impl<'a> Renderer<'a> {
             for (name, tu) in &st.time_uniforms {
                 if let Some(s) = &tu.interpreted {
                     uniform_progs.insert((si, name.clone()), expr::Program::compile(s));
+                }
+            }
+            // vec4 components are keyed "<name>[<component>]" so they share the
+            // same interpreted-program table as scalars.
+            for (name, comps) in &st.vec_uniforms {
+                for (k, tu) in comps.iter().take(4).enumerate() {
+                    if let Some(s) = &tu.interpreted {
+                        uniform_progs
+                            .insert((si, format!("{name}[{k}]")), expr::Program::compile(s));
+                    }
                 }
             }
         }
@@ -1220,6 +1267,22 @@ impl<'a> Renderer<'a> {
                     names.push(name);
                     sig.push(match tu.modulo { Some(m) if m != 0.0 => v % m, _ => v });
                 }
+                // vec4 user uniforms (a GLSL TOP's "Vectors" page). Their
+                // components join the signature so a knob driving one still wakes
+                // the step up.
+                let mut vecs: Vec<(&String, [f32; 4])> = Vec::new();
+                for (name, comps) in &st.vec_uniforms {
+                    let mut v = [0.0f32; 4];
+                    for (k, tu) in comps.iter().take(4).enumerate() {
+                        let interp = self
+                            .uniform_progs
+                            .get(&(si, format!("{name}[{k}]")));
+                        let value = eval_tu(tu, &self.exprs, interp, &self.store, t, frame);
+                        v[k] = value as f32;
+                        sig.push(value);
+                    }
+                    vecs.push((name, v));
+                }
                 let inputs_dirty = st.inputs.iter().any(|i| *dirty.get(i).unwrap_or(&true));
                 let changed = self.step_sig.get(&st.id).map_or(true, |prev| prev != &sig);
                 let must_draw = first || inputs_dirty || changed;
@@ -1263,6 +1326,11 @@ impl<'a> Renderer<'a> {
                     for (name, v) in names.iter().zip(sig.iter()) {
                         if let Some(l) = gl.get_uniform_location(p, name) {
                             gl.uniform_1_f32(Some(&l), *v as f32);
+                        }
+                    }
+                    for (name, v) in &vecs {
+                        if let Some(l) = gl.get_uniform_location(p, name) {
+                            gl.uniform_4_f32(Some(&l), v[0], v[1], v[2], v[3]);
                         }
                     }
                     if self.gles2 {

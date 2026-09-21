@@ -69,12 +69,18 @@ fn preprocess(src: &str) -> (String, Vec<(String, String, String)>) {
             i = next;
             continue;
         }
-        if let Some(n) = starts_with(&b, i, "absTime.seconds") {
+        if let Some(n) = starts_with(&b, i, "absTime.seconds")
+            .or_else(|| starts_with(&b, i, "me.time.seconds"))
+        {
             out.push('t');
             i = n;
             continue;
         }
-        if let Some(n) = starts_with(&b, i, "absTime.frame").or_else(|| starts_with(&b, i, "absTime.step")) {
+        if let Some(n) = starts_with(&b, i, "absTime.frame")
+            .or_else(|| starts_with(&b, i, "absTime.step"))
+            .or_else(|| starts_with(&b, i, "me.time.frame"))
+            .or_else(|| starts_with(&b, i, "me.time.step"))
+        {
             out.push_str("frame");
             i = n;
             continue;

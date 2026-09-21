@@ -85,6 +85,9 @@ class Step:
     # kind == "render3d": the .obj to draw and the texture to modulate it with.
     mesh_path: str | None = None
     texture_path: str | None = None
+    # vec4 per-frame uniforms: name -> [x, y, z, w], each a literal or expression.
+    # (A TD GLSL TOP's "Vectors" page; its "Constants" page lands in time_uniforms.)
+    vec_uniforms: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -125,6 +128,29 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
 
     if n.op == "glsl_top":
         src = n.params.get("_shader") or shaders.passthrough(target)
+        # User uniforms declared on the TOP's parameter pages. TouchDesigner
+        # exposes scalars on "Constants" and vec4s on "Vectors"; either may be
+        # driven by an expression, which is the whole point of them (a knob
+        # feeding a shader), so both lower as per-frame values.
+        user_scalars, user_vecs = {}, {}
+        i = 0
+        while f"const{i}name" in n.params:
+            nm = str(_first_token(n.params.get(f"const{i}name"), ""))
+            if nm:
+                user_scalars[nm] = {
+                    "expr": value_or_expr(n.params.get(f"const{i}value"), 0.0),
+                    "mul": 1.0,
+                }
+            i += 1
+        i = 0
+        while f"vec{i}name" in n.params:
+            nm = str(_first_token(n.params.get(f"vec{i}name"), ""))
+            if nm:
+                user_vecs[nm] = [
+                    value_or_expr(n.params.get(f"vec{i}value{c}"), 0.0)
+                    for c in ("x", "y", "z", "w")
+                ]
+            i += 1
         uniforms = {}
         for i, src_id in enumerate(inputs):
             it = g.nodes[src_id].out_type
@@ -140,6 +166,8 @@ def _lower_node(g: Graph, nid: str, target: str) -> Step:
             fragment=shaders.td_glsl_top(target, len(inputs), src),
             sampler_array="sTD2DInputs",
             uniforms=uniforms,
+            time_uniforms=user_scalars,
+            vec_uniforms=user_vecs,
             params=dict(n.params),
         )
 
