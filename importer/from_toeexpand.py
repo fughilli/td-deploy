@@ -49,6 +49,7 @@ OP_MAP = {
     ("TOP", "math"): "math",
     ("TOP", "noise"): "noise",
     ("TOP", "feedback"): "feedback",
+    ("TOP", "render"): "render3d",
     ("TOP", "in"): None,  # COMP input  -> passthrough after flattening
     ("TOP", "out"): None,  # COMP output -> passthrough
     ("TOP", "null"): None,  # null        -> passthrough (often the display node)
@@ -297,6 +298,86 @@ def _collect_chops(ops: dict) -> list:
     return order
 
 
+def _ref_param(op_params: dict, name: str, parent: str) -> str | None:
+    """A COMP-path parameter (`camera`, `geometry`, `lights`, `file`) resolved to a
+    tree path. TD writes these absolute or relative to the referring op's parent."""
+    raw = (op_params.get(name) or "").split()
+    if not raw:
+        return None
+    tok = raw[0].strip('"')
+    if not tok:
+        return None
+    return _resolve("" if tok.startswith("/") else parent, tok)
+
+
+# Object-transform parameters lifted off the geometry COMP. They are ordinary TD
+# parameters, so any of them may be an expression (the knob rig drives rx/ry/rz
+# and the scale from CHOPs) — they are passed through verbatim for lowering to
+# turn into per-frame uniforms.
+_XFORM = ("tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz", "px", "py", "pz", "scale")
+# Camera intrinsics we honor. TD only writes non-defaults, so lowering supplies
+# TD's own defaults (perspective, horizontal fov 45, near 0.1, far 1000).
+_CAM = ("fov", "near", "far", "projection", "viewanglemethod", "orthowidth")
+
+
+def _render_scene(ops: dict, path: str, op: "RawOp", coverage: list[str]) -> dict:
+    """Flatten a Render TOP's camera / geometry / lights into plain params."""
+    parent = path.rsplit("/", 1)[0] if "/" in path else ""
+    out: dict = {}
+
+    cam = _ref_param(op.params, "camera", parent)
+    if cam and cam in ops:
+        for k in _XFORM + _CAM:
+            v = ops[cam].params.get(k)
+            if v is not None:
+                out[f"_cam_{k}"] = v
+    else:
+        coverage.append(f"{path}: Render TOP camera {cam!r} unresolved — using a default view")
+
+    lit = _ref_param(op.params, "lights", parent)
+    if lit and lit in ops:
+        for k in ("tx", "ty", "tz"):
+            v = ops[lit].params.get(k)
+            if v is not None:
+                out[f"_light_{k}"] = v
+
+    geo = _ref_param(op.params, "geometry", parent)
+    if not geo or geo not in ops:
+        coverage.append(f"{path}: Render TOP geometry {geo!r} unresolved — nothing to draw")
+        return out
+    for k in _XFORM:
+        v = ops[geo].params.get(k)
+        if v is not None:
+            out[f"_geo_{k}"] = v
+
+    # The mesh itself. TouchDesigner does not expand procedural SOPs — a Torus SOP
+    # is just `torus1.n` plus parameters, with no vertices on disk — so the only
+    # geometry we can actually read is a SOP that points at a file.
+    # TouchDesigner 2025 renders geometry from POPs (Point Operators); older
+    # projects use SOPs. Accept either — the file-backed case looks the same.
+    sops = [
+        (p2, o2)
+        for p2, o2 in ops.items()
+        if o2.family in ("SOP", "POP") and p2.startswith(geo + "/")
+    ]
+    if not sops:
+        coverage.append(f"{path}: geometry {geo} contains no SOP/POP to draw")
+        return out
+    for p2, o2 in sops:
+        if o2.optype in ("filein", "file"):
+            # A filesystem path, not a node path — take the raw token.
+            raw = (o2.params.get("file") or "").split()
+            out["_mesh_path"] = raw[0].strip('"') if raw else None
+            out["_mesh_sop"] = p2
+            return out
+    kinds = ", ".join(sorted({f"{o2.family}:{o2.optype}" for _, o2 in sops}))
+    coverage.append(
+        f"{path}: geometry {geo} is procedural ({kinds}) — TouchDesigner does not "
+        f"expand SOP geometry, so the mesh must come from a File In SOP (.obj)"
+    )
+    return out
+
+
 def import_dir(dirroot: str) -> ImportResult:
     ops = _load_tree(dirroot)
 
@@ -379,6 +460,13 @@ def import_dir(dirroot: str) -> ImportResult:
                 )
 
         ports = [Port(node=s) for s in top_ins]
+        if kernel == "render3d":
+            # A Render TOP references its scene through PARAMETERS (camera /
+            # geometry / lights), not wires, so nothing arrives as a TOP input.
+            # Those COMPs and the SOP inside the geometry are pulled in here and
+            # flattened onto this node — the render is a leaf in the TOP graph.
+            params.update(_render_scene(ops, path, op, coverage))
+
         if kernel == "feedback":
             # A Feedback TOP names its source in the `top` parameter, not as a wire:
             # it emits that TOP's PREVIOUS frame. Model it as a delay=1 edge so the
