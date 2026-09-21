@@ -165,13 +165,19 @@ compiler/chop_to_tox.py deploy/prebuilt/ascii/schedule.json)`). Hermetic test:
   sources, the loop-carried Speed accumulators, and the outputs (a Speed output
   _is_ its next-frame state). Constant exprs lower through the M1 arith/math path
   (extended for integer/double `op('X')[c][s]` indices); Speed = `state + in*dt`;
-  Null/Select = SSA passthrough. It compiles mlir-opt → mlir-translate → clang →
+  Null/Select = SSA passthrough. Channel width propagates in dependency order —
+  a Constant states its own, everything else is as wide as what it carries — so
+  a Speed keeps one accumulator per channel and a passthrough carries them all
+  (2026-09-21; before that everything but Constant emitted only channel 0).
+  It compiles mlir-opt → mlir-translate → clang →
   `.so` and is **bit-parity (|Δ|≤1e-9) vs the reference evaluator**
   (`compiler/chop_ref.py`, which mirrors runtime_rs `eval_chops`) over a
   frame sequence with carried state — gate `//compiler:test_chop_lower`
   (hermetic pieces: `//compiler:test_chop_ref`). **The runtime now runs it:** a
-  stable pointer ABI `void chops_v(const double* in, double* out)` (emitted
-  alongside the scalar `@chops`) is compiled in-image to `chops/libchops.so` and
+  stable pointer ABI `void chops_v(const double* in, double* out)` (the only
+  exported entry — `@chops` is `internal`, because a multi-result signature
+  lowers to a literal struct return that is not AArch64 C-ABI for 5..8 doubles)
+  is compiled in-image to `chops/libchops.so` and
   `dlopen`ed; `Renderer::eval_chops` builds `[t,dt,frame,<sources>,<states>]`,
   calls the kernel, writes the outputs to the store and carries the Speed
   accumulators — the per-node fasteval loop is now the fallback (unlowerable
