@@ -600,6 +600,13 @@ struct Renderer<'a> {
     // feedback buffer, and the set of buffers already seeded from their input.
     capture_fbo: Option<glow::Framebuffer>,
     fb_seeded: HashSet<String>,
+    // Incremental cook. `step_sig` is the last evaluated per-frame uniform vector
+    // for each step, `last_dirty` which steps actually redrew on the previous
+    // frame. A step whose inputs and uniforms are unchanged still holds last
+    // frame's pixels in its own FBO, so the draw can simply be skipped.
+    step_sig: HashMap<String, Vec<f64>>,
+    last_dirty: HashMap<String, bool>,
+    cooked_once: bool,
     // Control-rate (CHOP) evaluation: the pre-compiled DAG + integrator state.
     chop_progs: Vec<ChopProg>,
     // The compiled CHOP kernel (chops_v), if the DAG was fully lowered. Preferred
@@ -742,6 +749,7 @@ impl<'a> Renderer<'a> {
             tex: HashMap::new(), fbo: HashMap::new(), prog: HashMap::new(), size: HashMap::new(),
             gles2, quad: None, blit_prog: None,
             capture_fbo: None, fb_seeded: HashSet::new(),
+            step_sig: HashMap::new(), last_dirty: HashMap::new(), cooked_once: false,
             chop_progs, chops_lib, chops_abi, chop_state, chop_state_idx, uniform_progs,
             speed_state: RefCell::new(HashMap::new()), last_t: Cell::new(0.0),
             prof: Arc::new(Mutex::new(Default::default())),
@@ -917,6 +925,15 @@ impl<'a> Renderer<'a> {
         self.eval_chops(t); // control-rate pass -> store, before the shader uniforms read it
         prof_add(&self.prof, "chop:eval", tc.elapsed().as_secs_f64());
         let scratch = self.capture_fbo;
+        // Which steps produce new pixels this frame. A step is dirty when it has
+        // never cooked, when anything it samples is dirty, or when one of its
+        // per-frame uniforms actually changed value — so a static subgraph (a
+        // Noise TOP with constant parameters, say) draws once and is then
+        // replayed from its own texture for free. This is decided from the
+        // evaluated values rather than from compile-time analysis, so it keeps
+        // working however the graph is rewritten upstream.
+        let first = !self.cooked_once;
+        let mut dirty: HashMap<String, bool> = HashMap::new();
         for (si, st) in self.sched.steps.iter().enumerate() {
             if st.kind == "feedback" {
                 // The buffer already holds the previous frame's target — exactly
@@ -933,13 +950,55 @@ impl<'a> Renderer<'a> {
                     }
                     self.fb_seeded.insert(st.id.clone());
                 }
+                // The buffer's pixels changed if the target redrew LAST frame —
+                // that is when the end-of-frame capture copied new content in.
+                let tgt_moved = st.feedback_from.as_ref()
+                    .map(|f| *self.last_dirty.get(f).unwrap_or(&true))
+                    .unwrap_or(false);
+                dirty.insert(st.id.clone(), first || tgt_moved);
             } else if st.kind == "passthrough" {
                 if let Some(src) = st.inputs.first() {
                     let (a, b) = (self.tex[src], self.size[src]);
                     self.tex.insert(st.id.clone(), a);
                     self.size.insert(st.id.clone(), b);
                 }
+                // An alias is exactly as fresh as what it aliases.
+                let d = st.inputs.first()
+                    .map(|i| *dirty.get(i).unwrap_or(&true)).unwrap_or(first);
+                dirty.insert(st.id.clone(), d);
             } else if st.kind == "shader" {
+                // The per-frame uniforms ARE this step's signature. Evaluate them
+                // first (cheap — a few expression calls) so they can be compared
+                // against last frame; the expensive part is the draw that follows.
+                let frame = (t * 60.0).floor();
+                let mut names: Vec<&String> = Vec::with_capacity(st.time_uniforms.len());
+                let mut sig: Vec<f64> = Vec::with_capacity(st.time_uniforms.len());
+                for (name, tu) in &st.time_uniforms {
+                    let v = if let (Some(func), Some(lib)) = (&tu.func, &self.exprs) {
+                        let args: Vec<f64> = tu.inputs.iter().map(|n| match n.as_str() {
+                            "t" => t,
+                            "frame" => frame,
+                            other => chop_value(&self.store, other),
+                        }).collect();
+                        // Calls into the dlopen'd expression library.
+                        (unsafe { call_expr(lib, func, &args) }) * tu.mul
+                    } else if let Some(prog) = self.uniform_progs.get(&(si, name.clone())) {
+                        // Interpreted expr (op('name')[i], absTime, math) via fasteval.
+                        let store = self.store.clone();
+                        prog.eval(t, frame, &|n, ch| chop_get(&store, n, ch)) * tu.mul
+                    } else {
+                        0.0
+                    };
+                    // Wrap periodic uniforms (rotation: mod=2pi) in f64 before the
+                    // f32 cast, so a large angle keeps full float precision.
+                    names.push(name);
+                    sig.push(match tu.modulo { Some(m) if m != 0.0 => v % m, _ => v });
+                }
+                let inputs_dirty = st.inputs.iter().any(|i| *dirty.get(i).unwrap_or(&true));
+                let changed = self.step_sig.get(&st.id).map_or(true, |prev| prev != &sig);
+                let must_draw = first || inputs_dirty || changed;
+                dirty.insert(st.id.clone(), must_draw);
+                if must_draw {
                 let ts = Instant::now();
                 unsafe {
                     gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo[&st.id]));
@@ -975,30 +1034,9 @@ impl<'a> Renderer<'a> {
                             }
                         }
                     }
-                    for (name, tu) in &st.time_uniforms {
+                    for (name, v) in names.iter().zip(sig.iter()) {
                         if let Some(l) = gl.get_uniform_location(p, name) {
-                            let v = if let (Some(func), Some(lib)) = (&tu.func, &self.exprs) {
-                                let args: Vec<f64> = tu.inputs.iter().map(|n| match n.as_str() {
-                                    "t" => t,
-                                    "frame" => (t * 60.0).floor(),
-                                    other => chop_value(&self.store, other),
-                                }).collect();
-                                call_expr(lib, func, &args) * tu.mul
-                            } else if let Some(prog) = self.uniform_progs.get(&(si, name.clone())) {
-                                // Interpreted expr (op('name')[i], absTime, math) via fasteval.
-                                let store = self.store.clone();
-                                let frame = (t * 60.0).floor();
-                                prog.eval(t, frame, &|n, ch| chop_get(&store, n, ch)) * tu.mul
-                            } else {
-                                0.0
-                            };
-                            // Wrap periodic uniforms (rotation: mod=2pi) in f64 before
-                            // the f32 cast, so a large angle keeps full float precision.
-                            let v = match tu.modulo {
-                                Some(m) if m != 0.0 => v % m,
-                                _ => v,
-                            };
-                            gl.uniform_1_f32(Some(&l), v as f32);
+                            gl.uniform_1_f32(Some(&l), *v as f32);
                         }
                     }
                     if self.gles2 {
@@ -1018,6 +1056,8 @@ impl<'a> Renderer<'a> {
                     }
                 }
                 prof_add(&self.prof, &format!("top:{}", st.id), ts.elapsed().as_secs_f64());
+                self.step_sig.insert(st.id.clone(), sig);
+                }
             }
         }
 
@@ -1041,6 +1081,8 @@ impl<'a> Renderer<'a> {
             }
             prof_add(&self.prof, "feedback:capture", tf.elapsed().as_secs_f64());
         }
+        self.last_dirty = dirty;
+        self.cooked_once = true;
     }
 
     // GPU->CPU readback of the final output (for MJPEG / the CPU sink / snapshots).
