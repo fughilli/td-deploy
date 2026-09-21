@@ -45,10 +45,6 @@
           "type": "float",
           "value": 1.0
         },
-        "uHarmonics": {
-          "type": "float",
-          "value": 0.0
-        },
         "uSpread": {
           "type": "float",
           "value": 2.0
@@ -56,10 +52,6 @@
         "uRough": {
           "type": "float",
           "value": 0.5
-        },
-        "uMono": {
-          "type": "float",
-          "value": 1.0
         },
         "uAspect": {
           "type": "float",
@@ -91,7 +83,7 @@
           "mul": 1.0
         },
         "uAmp": {
-          "fn": "expr0",
+          "fn": "expr1",
           "inputs": [],
           "mul": 1.0
         },
@@ -101,7 +93,7 @@
           "mul": 1.0
         },
         "uT": {
-          "fn": "expr1",
+          "fn": "expr2",
           "inputs": [],
           "mul": 1.0
         }
@@ -141,24 +133,24 @@
           "mod": 6.283185307179586
         },
         "uTranslateX": {
-          "fn": "expr1",
+          "fn": "expr2",
           "inputs": [],
           "mul": 1.0
         },
         "uTranslateY": {
-          "fn": "expr1",
+          "fn": "expr2",
           "inputs": [],
           "mul": 1.0
         },
         "uScaleX": {
-          "fn": "expr2",
+          "fn": "expr3",
           "inputs": [
             "chop_midiin1_ch1ctrl2"
           ],
           "mul": 1.0
         },
         "uScaleY": {
-          "fn": "expr2",
+          "fn": "expr3",
           "inputs": [
             "chop_midiin1_ch1ctrl2"
           ],
@@ -257,13 +249,48 @@
       ]
     },
     {
+      "id": "project1/glsl1",
+      "op": "glsl_top",
+      "kind": "shader",
+      "w": 512,
+      "h": 512,
+      "inputs": [
+        "project1/ascii/out2"
+      ],
+      "vert": "shaders/project1_glsl1.vert",
+      "frag": "shaders/project1_glsl1.frag",
+      "sampler_array": "sTD2DInputs",
+      "uniforms": {
+        "uTD2DInfos[0].res": {
+          "type": "vec4",
+          "value": [
+            0.001953125,
+            0.001953125,
+            512.0,
+            512.0
+          ]
+        }
+      },
+      "time_uniforms": {}
+    },
+    {
+      "id": "project1/null2",
+      "op": "passthrough",
+      "kind": "passthrough",
+      "w": 512,
+      "h": 512,
+      "inputs": [
+        "project1/glsl1"
+      ]
+    },
+    {
       "id": "project1/feedback1",
       "op": "feedback",
       "kind": "feedback",
       "w": 512,
       "h": 512,
       "inputs": [
-        "project1/ascii/out2"
+        "project1/null2"
       ],
       "feedback_from": "project1/add1"
     },
@@ -282,17 +309,17 @@
       "uniforms": {},
       "time_uniforms": {
         "uPreOff": {
-          "fn": "expr1",
+          "fn": "expr2",
           "inputs": [],
           "mul": 1.0
         },
         "uGain": {
-          "fn": "expr3",
+          "fn": "expr4",
           "inputs": [],
           "mul": 1.0
         },
         "uPostOff": {
-          "fn": "expr1",
+          "fn": "expr2",
           "inputs": [],
           "mul": 1.0
         }
@@ -306,7 +333,7 @@
       "h": 512,
       "inputs": [
         "project1/math1",
-        "project1/ascii/out2"
+        "project1/null2"
       ],
       "vert": "shaders/project1_add1.vert",
       "frag": "shaders/project1_add1.frag",

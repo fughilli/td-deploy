@@ -2,120 +2,88 @@
 precision mediump float;
 precision highp int;
 
-uniform highp float uHarmonics;
-uniform highp float uSpread;
-uniform highp float uRough;
 uniform highp float uAspect;
 uniform highp float uPeriod;
 uniform highp vec4 uScale;
 uniform highp vec4 uTranslate;
 uniform highp float uT;
-uniform highp float uExp;
+uniform highp float uSpread;
+uniform highp float uRough;
 uniform highp float uOffset;
 uniform highp float uAmp;
 uniform highp float uSeed;
-uniform highp float uMono;
+uniform highp float uExp;
 
 varying highp vec2 vUV;
 
-highp float perm289(highp float x)
+highp vec3 cellGradient(highp vec3 cell)
 {
-    return mod(((x * 34.0) + 1.0) * x, 289.0);
+    highp vec3 p = fract(cell * vec3(0.103100001811981201171875, 0.10300000011920928955078125, 0.097300000488758087158203125));
+    p += vec3(dot(p, p.yxz + vec3(19.1900005340576171875)));
+    p = (fract((p.xxy + p.yzz) * p.zyx) * 2.0) - vec3(1.0);
+    return p * inversesqrt(max(dot(p, p), 9.9999999747524270787835121154785e-07));
 }
 
-highp float cellHash(highp vec3 cell, highp float salt)
-{
-    highp float param = mod(cell.x, 289.0) + salt;
-    highp float h = perm289(param);
-    highp float param_1 = h + mod(cell.y, 289.0);
-    h = perm289(param_1);
-    highp float param_2 = h + mod(cell.z, 289.0);
-    h = perm289(param_2);
-    return h;
-}
-
-highp vec3 cellGradient(highp vec3 cell, highp float salt)
-{
-    highp vec3 param = cell;
-    highp float param_1 = salt;
-    highp float h = cellHash(param, param_1);
-    highp float a = h * 0.0217411257326602935791015625;
-    highp float param_2 = h + 7.0;
-    highp float b = perm289(param_2) * 0.0217411257326602935791015625;
-    return vec3(cos(a) * sin(b), sin(a) * sin(b), cos(b));
-}
-
-highp float gradNoise(highp vec3 p, highp float salt)
+highp float gradNoise(highp vec3 p)
 {
     highp vec3 i = floor(p);
     highp vec3 f = p - i;
     highp vec3 w = ((f * f) * f) * ((f * ((f * 6.0) - vec3(15.0))) + vec3(10.0));
-    highp float n = 0.0;
-    for (int cz = 0; cz <= 1; cz++)
-    {
-        for (int cy = 0; cy <= 1; cy++)
-        {
-            for (int cx = 0; cx <= 1; cx++)
-            {
-                highp vec3 c = vec3(float(cx), float(cy), float(cz));
-                highp vec3 d = f - c;
-                highp vec3 param = i + c;
-                highp float param_1 = salt;
-                highp float g = dot(cellGradient(param, param_1), d);
-                highp vec3 bl = mix(vec3(1.0) - w, w, c);
-                n += (((g * bl.x) * bl.y) * bl.z);
-            }
-        }
-    }
-    return n;
+    i = mod(i, vec3(289.0));
+    highp vec3 i1 = mod(i + vec3(1.0), vec3(289.0));
+    highp vec3 param = vec3(i.x, i.y, i.z);
+    highp float n000 = dot(cellGradient(param), f - vec3(0.0));
+    highp vec3 param_1 = vec3(i1.x, i.y, i.z);
+    highp float n100 = dot(cellGradient(param_1), f - vec3(1.0, 0.0, 0.0));
+    highp vec3 param_2 = vec3(i.x, i1.y, i.z);
+    highp float n010 = dot(cellGradient(param_2), f - vec3(0.0, 1.0, 0.0));
+    highp vec3 param_3 = vec3(i1.x, i1.y, i.z);
+    highp float n110 = dot(cellGradient(param_3), f - vec3(1.0, 1.0, 0.0));
+    highp vec3 param_4 = vec3(i.x, i.y, i1.z);
+    highp float n001 = dot(cellGradient(param_4), f - vec3(0.0, 0.0, 1.0));
+    highp vec3 param_5 = vec3(i1.x, i.y, i1.z);
+    highp float n101 = dot(cellGradient(param_5), f - vec3(1.0, 0.0, 1.0));
+    highp vec3 param_6 = vec3(i.x, i1.y, i1.z);
+    highp float n011 = dot(cellGradient(param_6), f - vec3(0.0, 1.0, 1.0));
+    highp vec3 param_7 = vec3(i1.x, i1.y, i1.z);
+    highp float n111 = dot(cellGradient(param_7), f - vec3(1.0));
+    return mix(mix(mix(n000, n100, w.x), mix(n010, n110, w.x), w.y), mix(mix(n001, n101, w.x), mix(n011, n111, w.x), w.y), w.z);
 }
 
-highp float fbm(highp vec3 p, highp float salt)
-{
-    highp float sum = 0.0;
-    highp float amp = 1.0;
-    highp float norm = 0.0;
-    highp float freq = 1.0;
-    int oct = int(clamp(uHarmonics, 0.0, 6.0)) + 1;
-    for (int o = 0; o < 7; o++)
-    {
-        if (o >= oct)
-        {
-            break;
-        }
-        highp vec3 param = p * freq;
-        highp float param_1 = salt;
-        sum += (amp * gradNoise(param, param_1));
-        norm += amp;
-        freq *= max(uSpread, 1.0);
-        amp *= clamp(uRough, 0.0, 1.0);
-    }
-    highp float _267;
-    if (norm > 0.0)
-    {
-        _267 = sum / norm;
-    }
-    else
-    {
-        _267 = 0.0;
-    }
-    return _267;
-}
-
-highp float channel(highp float salt)
+highp float channel(highp float seed)
 {
     highp vec2 uv = vUV - vec2(0.5);
     uv.x *= uAspect;
     highp vec3 p = vec3(uv, 0.0) / vec3(max(uPeriod, 9.9999997473787516355514526367188e-05));
-    p = (p * uScale.xyz) + uTranslate.xyz;
+    p = ((p * uScale.xyz) + uTranslate.xyz) + vec3(seed);
     p.z += uT;
-    highp vec3 param = p;
-    highp float param_1 = salt;
-    highp float n = fbm(param, param_1);
-    if (uExp != 1.0)
+    highp float sum = 0.0;
+    highp float amp = 1.0;
+    highp float norm = 0.0;
+    highp vec3 q = p;
+    highp vec3 param = q;
+    sum += (amp * gradNoise(param));
+    norm += amp;
+    q *= max(uSpread, 1.0);
+    amp *= clamp(uRough, 0.0, 1.0);
+    highp vec3 param_1 = q;
+    sum += (amp * gradNoise(param_1));
+    norm += amp;
+    q *= max(uSpread, 1.0);
+    amp *= clamp(uRough, 0.0, 1.0);
+    highp vec3 param_2 = q;
+    sum += (amp * gradNoise(param_2));
+    norm += amp;
+    highp float _351;
+    if (norm > 0.0)
     {
-        n = sign(n) * pow(abs(n), max(uExp, 9.9999997473787516355514526367188e-05));
+        _351 = sum / norm;
     }
+    else
+    {
+        _351 = 0.0;
+    }
+    highp float n = _351;
     return uOffset + (uAmp * n);
 }
 
@@ -123,18 +91,6 @@ void main()
 {
     highp float param = uSeed;
     highp float r = channel(param);
-    highp vec3 _357;
-    if (uMono > 0.5)
-    {
-        _357 = vec3(r);
-    }
-    else
-    {
-        highp float param_1 = uSeed + 31.0;
-        highp float param_2 = uSeed + 67.0;
-        _357 = vec3(r, channel(param_1), channel(param_2));
-    }
-    highp vec3 rgb = _357;
-    gl_FragData[0] = vec4(rgb, 1.0);
+    gl_FragData[0] = vec4(vec3(r), 1.0);
 }
 
