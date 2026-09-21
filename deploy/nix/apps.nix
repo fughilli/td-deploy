@@ -119,4 +119,25 @@ in
       CapabilityBoundingSet = [ "CAP_SYS_ADMIN" ];
     };
   };
+
+  # Make a closure switch actually take effect.
+  #
+  # The runtime plays /var/lib/tdplayer/current and only falls back to the baked
+  # artifact when that symlink is absent. A live `deploy_live`/app push points it
+  # at its own staging dir — which is what you want while iterating — but it then
+  # SHADOWS every future image deploy: you switch to a new closure carrying a new
+  # artifact, the switch reports success, and the board keeps playing the old
+  # pushed one with nothing to say so.
+  #
+  # Repoint `current` when the BAKED artifact path changes, recording it in a
+  # marker. A new closure therefore wins, while a plain reboot (same system, same
+  # marker) leaves a later dev push intact.
+  system.activationScripts.toxcArtifact = ''
+    mkdir -p /var/lib/tdplayer
+    if [ "$(cat /var/lib/tdplayer/.baked-artifact 2>/dev/null)" != "${artifact}" ]; then
+      ln -sfn ${artifact} /var/lib/tdplayer/current
+      printf '%s' "${artifact}" > /var/lib/tdplayer/.baked-artifact
+      echo "tdplayer: artifact updated -> ${artifact}"
+    fi
+  '';
 }
