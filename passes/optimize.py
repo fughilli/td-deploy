@@ -66,6 +66,12 @@ def infer_format(g: Graph, report: list[str], out_res: int = 256) -> None:
             else:
                 w = h = out_res
             n.out_type = {"w": w, "h": h, "fmt": fmt}
+        elif n.op == "render3d":
+            # A Render TOP is a generator: it draws a scene, it does not filter an
+            # input. Its size is its own TD output resolution.
+            w = _tok(n.params.get("resolutionw"), out_res)
+            h = _tok(n.params.get("resolutionh"), out_res)
+            n.out_type = {"w": w, "h": h, "fmt": "rgba8"}
         elif n.op == "noise":
             # A generator — nothing to inherit from. Honor its own TD output
             # resolution when set, else the project default.

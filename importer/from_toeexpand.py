@@ -112,7 +112,23 @@ def _parse_parm(text: str) -> dict:
             continue
         toks = ln.split()
         if len(toks) >= 3:
-            params[toks[0]] = " ".join(toks[2:])
+            # toks[1] is TD's parameter mode. Bit 0 set means the EXPRESSION IS
+            # ACTIVE; otherwise the parameter is pinned to its constant and any
+            # trailing expression text is stale — TouchDesigner keeps the text
+            # around when you switch a parameter back to constant, and compiling
+            # it in would animate something the user deliberately pinned.
+            try:
+                flags = int(toks[1])
+            except ValueError:
+                flags = 0
+            rest = toks[2:]
+            if not (flags & 1) and len(rest) > 1:
+                try:
+                    float(rest[0])  # only numeric params carry `<value> <expr>`;
+                    rest = rest[:1]  # a path with spaces must survive intact
+                except ValueError:
+                    pass
+            params[toks[0]] = " ".join(rest)
         elif len(toks) == 2:
             params[toks[0]] = toks[1]
     return params
@@ -365,7 +381,7 @@ def _render_scene(ops: dict, path: str, op: "RawOp", coverage: list[str]) -> dic
 
     lit = _ref_param(op.params, "lights", parent)
     if lit and lit in ops:
-        for k in ("tx", "ty", "tz"):
+        for k in ("tx", "ty", "tz", "dimmer"):
             v = ops[lit].params.get(k)
             if v is not None:
                 out[f"_light_{k}"] = v
@@ -378,6 +394,19 @@ def _render_scene(ops: dict, path: str, op: "RawOp", coverage: list[str]) -> dic
         v = ops[geo].params.get(k)
         if v is not None:
             out[f"_geo_{k}"] = v
+
+    # Material texture: geometry -> material MAT -> its colour map TOP -> file.
+    mat = _ref_param(ops[geo].params, "material", geo.rsplit("/", 1)[0])
+    if mat and mat in ops:
+        cmap = _ref_param(ops[mat].params, "colormap", mat.rsplit("/", 1)[0])
+        if cmap and cmap in ops:
+            raw = (ops[cmap].params.get("file") or "").split()
+            if raw:
+                out["_texture_path"] = raw[0].strip('"')
+            else:
+                coverage.append(f"{path}: material colour map {cmap} has no file")
+        elif cmap:
+            coverage.append(f"{path}: material colour map {cmap!r} unresolved")
 
     # The mesh itself. TouchDesigner does not expand procedural SOPs — a Torus SOP
     # is just `torus1.n` plus parameters, with no vertices on disk — so the only

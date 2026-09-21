@@ -82,7 +82,13 @@ def value_or_expr(raw: str, default: float) -> object:
     toks = s.split()
     tok = toks[0] if toks else ""
     try:
-        return float(tok)
+        val = float(tok)
     except Exception:
         # not numeric and not TD-quoted -> treat the whole string as an expression
         return s if s else default
+    # `<value> <expression>` where the expression is UNQUOTED: TouchDesigner only
+    # quotes an expression that contains spaces, so a space-free one like
+    # op('spin1')['rx'] arrives bare and would otherwise read as the literal 0.
+    if len(toks) > 1:
+        return " ".join(toks[1:])
+    return val
