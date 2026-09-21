@@ -5,7 +5,7 @@ bit-parity gate is compiler/test_chop_lower.py (needs the MLIR nix shell).
 
 import unittest
 
-from chop_lower import lower
+from chop_lower import Unsupported, lower
 from chop_ref import ChopEval
 
 ASCII = [
@@ -118,3 +118,74 @@ class MultiChannelTest(unittest.TestCase):
         # Every CHOP in the chain is as wide as the Constant that originated it.
         for nm in ("rate1", "spin1", "out1"):
             self.assertEqual(sum(1 for n, _c in (tuple(x) for x in abi["outputs"]) if n == nm), 3)
+
+
+class LiveSourceInputTest(unittest.TestCase):
+    """A CHOP wired straight off a MIDI/OSC service.
+
+    The importer keeps the service in the consumer's `inputs` but leaves it out
+    of the DAG, so `inputs[0]` names something the DAG never defines. The width
+    of a live service is not knowable at compile time, and its channels are
+    NAMED rather than indexed — so the lowering declines and the interpreted
+    path, which can see the real channel set, carries it.
+    """
+
+    SRC_FED = [
+        {"name": "null1", "type": "null", "inputs": ["midiin1"], "channels": []},
+    ]
+    CHAINED = SRC_FED + [
+        {"name": "null2", "type": "null", "inputs": ["null1"], "channels": []},
+    ]
+    SPEED_FED = [
+        {"name": "spin1", "type": "speed", "inputs": ["midiin1"], "channels": []},
+    ]
+    MIDI = {"midiin1": {"ch1ctrl1": 0.25, "ch1ctrl2": 0.75}}
+
+    def test_lowering_declines_with_a_diagnosis(self):
+        # It used to die with `TypeError: sequence item 0: expected str
+        # instance, NoneType found`, which emit_artifact then filed in the
+        # coverage log as if it were an ordinary unsupported operator.
+        with self.assertRaises(Unsupported) as cm:
+            lower(self.SRC_FED)
+        msg = str(cm.exception)
+        self.assertIn("null1", msg)
+        self.assertIn("midiin1", msg)
+
+    def test_lowering_declines_a_speed_too(self):
+        # The speed branch was worse than a crash: it substituted 0.0 for the
+        # unresolved input and integrated nothing, forever, reporting success.
+        with self.assertRaises(Unsupported):
+            lower(self.SPEED_FED)
+
+    def test_reference_carries_named_channels(self):
+        st = ChopEval(self.SRC_FED).step(0.0, self.MIDI)
+        self.assertEqual(st.channels("null1"), ["ch1ctrl1", "ch1ctrl2"])
+        self.assertAlmostEqual(st.get("null1", "ch1ctrl1"), 0.25)
+        self.assertAlmostEqual(st.get("null1", "ch1ctrl2"), 0.75)
+
+    def test_reference_does_not_invent_channel_zero(self):
+        # The old failure mode: width defaulted to 1, so it read index "0",
+        # which a name-keyed source never sets, and published a silent 0.0.
+        st = ChopEval(self.SRC_FED).step(0.0, self.MIDI)
+        self.assertNotIn("0", st.channels("null1"))
+
+    def test_the_property_is_contagious(self):
+        ev = ChopEval(self.CHAINED)
+        st = ev.step(0.0, self.MIDI)
+        self.assertEqual(ev.dynamic, {"null1", "null2"})
+        self.assertEqual(st.channels("null2"), ["ch1ctrl1", "ch1ctrl2"])
+
+    def test_reference_integrates_each_named_channel(self):
+        ev = ChopEval(self.SPEED_FED)
+        ev.step(0.0, self.MIDI)
+        st = ev.step(1.0, self.MIDI)
+        self.assertAlmostEqual(st.get("spin1", "ch1ctrl1"), 0.25, places=6)
+        self.assertAlmostEqual(st.get("spin1", "ch1ctrl2"), 0.75, places=6)
+
+    def test_numeric_channels_sort_numerically(self):
+        # Ordering has to be stable and not lexicographic, or channel 10 lands
+        # between 1 and 2 and the ABI silently permutes.
+        st = ChopEval(self.SRC_FED).step(
+            0.0, {"midiin1": {str(i): float(i) for i in (0, 1, 2, 10, 11)}}
+        )
+        self.assertEqual(st.channels("null1"), ["0", "1", "2", "10", "11"])

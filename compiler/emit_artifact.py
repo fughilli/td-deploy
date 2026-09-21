@@ -211,16 +211,28 @@ def emit(plan, graph, outdir: str) -> dict:
     chops_lib = None
     chops_abi = None
     if chops:
-        try:
-            from chop_lower import lower as _chop_lower
+        from chop_lower import Unsupported as _ChopUnsupported
+        from chop_lower import lower as _chop_lower
 
+        try:
             mlir, abi = _chop_lower(chops)
             with open(os.path.join(outdir, "chops.mlir"), "w") as f:
                 f.write("module {\n" + mlir + "}\n")
             chops_lib = "chops/libchops.so"
             chops_abi = abi
-        except Exception as e:  # noqa: BLE001 (parity fallback)
+        except _ChopUnsupported as e:
+            # A DAG this compiler knowingly does not fuse. Expected; the
+            # interpreted path covers it.
             coverage["chop_lower_fallback"] = str(e)
+        except Exception as e:  # noqa: BLE001
+            # Anything else is a bug in the lowering, not a coverage gap. Still
+            # fall back rather than failing someone's build, but record it under
+            # its own key and say so — catching both alike is how an opaque
+            # `TypeError: ... expected str instance, NoneType found` sat in the
+            # coverage log looking like an ordinary unsupported operator.
+            coverage["chop_lower_bug"] = f"{type(e).__name__}: {e}"
+            print(f"[chops] BUG: lowering raised {type(e).__name__}: {e}")
+            print("[chops] falling back to interpreted evaluation; please report this")
 
     schedule = {
         "output": plan.output_id,
