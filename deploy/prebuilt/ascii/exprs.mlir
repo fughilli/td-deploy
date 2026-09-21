@@ -42,3 +42,13 @@ func.func @expr7(%arg_chop_midiin1_ch1ctrl6: f64) -> f64 {
     return %v1 : f64
 }
 
+func.func @expr8(%arg_chop_in_sat_sat: f64) -> f64 {
+    
+    return %arg_chop_in_sat_sat : f64
+}
+
+func.func @expr9(%arg_t: f64) -> f64 {
+    
+    return %arg_t : f64
+}
+

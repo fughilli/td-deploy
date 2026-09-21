@@ -295,7 +295,33 @@
           ]
         }
       },
-      "time_uniforms": {}
+      "time_uniforms": {},
+      "vec_uniforms": {
+        "uSat": [
+          {
+            "fn": "expr8",
+            "inputs": [
+              "chop_in_sat_sat"
+            ],
+            "mul": 1.0
+          },
+          {
+            "fn": "expr2",
+            "inputs": [],
+            "mul": 1.0
+          },
+          {
+            "fn": "expr2",
+            "inputs": [],
+            "mul": 1.0
+          },
+          {
+            "fn": "expr2",
+            "inputs": [],
+            "mul": 1.0
+          }
+        ]
+      }
     },
     {
       "id": "project1/ascii/out2",
@@ -350,7 +376,33 @@
           ]
         }
       },
-      "time_uniforms": {}
+      "time_uniforms": {},
+      "vec_uniforms": {
+        "time": [
+          {
+            "fn": "expr9",
+            "inputs": [
+              "t"
+            ],
+            "mul": 1.0
+          },
+          {
+            "fn": "expr2",
+            "inputs": [],
+            "mul": 1.0
+          },
+          {
+            "fn": "expr2",
+            "inputs": [],
+            "mul": 1.0
+          },
+          {
+            "fn": "expr2",
+            "inputs": [],
+            "mul": 1.0
+          }
+        ]
+      }
     },
     {
       "id": "project1/old_crt/out1",

@@ -441,12 +441,26 @@ mod midi_tests {
     }
 }
 
+/// Resolve a compiled expression's `chop_<name>_<channel>` argument.
+///
+/// That encoding is AMBIGUOUS as soon as the CHOP's own name contains an
+/// underscore: `chop_in_sat_sat` is (in_sat, sat) but splitting at the first
+/// separator reads it as (in, sat_sat), which matches nothing and silently
+/// evaluates to 0 — a knob wired through a COMP inlet named `in_sat` simply
+/// stopped working with no error anywhere. Try every split, longest CHOP name
+/// first so the most specific match wins, and take the one the store actually
+/// holds.
 fn chop_value(store: &Chops, input: &str) -> f64 {
-    if let Some(rest) = input.strip_prefix("chop_") {
-        let mut it = rest.splitn(2, '_');
-        let op = it.next().unwrap_or("");
-        let ch = it.next().unwrap_or("");
-        return store.lock().unwrap().get(op).and_then(|m| m.get(ch)).copied().unwrap_or(0.0);
+    let rest = match input.strip_prefix("chop_") {
+        Some(r) => r,
+        None => return 0.0,
+    };
+    let g = store.lock().unwrap();
+    let cuts: Vec<usize> = rest.match_indices('_').map(|(i, _)| i).collect();
+    for i in cuts.iter().rev() {
+        if let Some(v) = g.get(&rest[..*i]).and_then(|m| m.get(&rest[i + 1..])) {
+            return *v;
+        }
     }
     0.0
 }
