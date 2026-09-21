@@ -117,6 +117,22 @@ struct Step {
     /// kind == "feedback": the step whose PREVIOUS frame this buffer holds.
     #[serde(default)]
     feedback_from: Option<String>,
+    /// kind == "render3d": baked geometry and its material texture.
+    #[serde(default)]
+    mesh: Option<MeshRef>,
+    #[serde(default)]
+    texture: Option<String>,
+}
+
+/// Interleaved vertex buffer (pos3, nrm3, uv2 -> 32-byte stride) plus indices.
+#[derive(Deserialize)]
+struct MeshRef {
+    vtx: String,
+    idx: String,
+    indices: i32,
+    stride: i32,
+    #[serde(default)]
+    index_type: String,
 }
 #[derive(Deserialize)]
 struct Source {
@@ -608,6 +624,11 @@ struct Renderer<'a> {
     // for each step, `last_dirty` which steps actually redrew on the previous
     // frame. A step whose inputs and uniforms are unchanged still holds last
     // frame's pixels in its own FBO, so the draw can simply be skipped.
+    // Mesh passes: geometry buffers, a depth attachment and the material texture,
+    // none of which a full-screen fragment pass ever needs.
+    vbo: HashMap<String, glow::Buffer>,
+    ebo: HashMap<String, glow::Buffer>,
+    mesh_tex: HashMap<String, glow::Texture>,
     step_sig: HashMap<String, Vec<f64>>,
     last_dirty: HashMap<String, bool>,
     cooked_once: bool,
@@ -776,6 +797,7 @@ impl<'a> Renderer<'a> {
             tex: HashMap::new(), fbo: HashMap::new(), prog: HashMap::new(), size: HashMap::new(),
             gles2, quad: None, blit_prog: None,
             capture_fbo: None, fb_seeded: HashSet::new(),
+            vbo: HashMap::new(), ebo: HashMap::new(), mesh_tex: HashMap::new(),
             step_sig: HashMap::new(), last_dirty: HashMap::new(), cooked_once: false,
             chop_progs, chops_lib, chops_abi, chop_state, chop_state_idx, uniform_progs,
             speed_state: RefCell::new(HashMap::new()), last_t: Cell::new(0.0),
@@ -930,6 +952,58 @@ impl<'a> Renderer<'a> {
                     self.fbo.insert(st.id.clone(), f);
                     self.size.insert(st.id.clone(), (st.w, st.h));
                 }
+            } else if st.kind == "render3d" {
+                let vs = compile(gl, glow::VERTEX_SHADER,
+                    &std::fs::read_to_string(resolve_shader(&dir, gles2, st.vert.as_ref().unwrap())).unwrap());
+                let fs = compile(gl, glow::FRAGMENT_SHADER,
+                    &std::fs::read_to_string(resolve_shader(&dir, gles2, st.frag.as_ref().unwrap())).unwrap());
+                unsafe {
+                    let p = gl.create_program().unwrap();
+                    gl.attach_shader(p, vs);
+                    gl.attach_shader(p, fs);
+                    gl.link_program(p);
+                    assert!(gl.get_program_link_status(p), "link: {}", gl.get_program_info_log(p));
+                    let ot = make_tex(gl, st.w, st.h, None, gles2);
+                    let f = gl.create_framebuffer().unwrap();
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f));
+                    gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0,
+                        glow::TEXTURE_2D, Some(ot), 0);
+                    // Unlike a full-screen pass, a mesh needs depth or far
+                    // triangles paint over near ones.
+                    let rb = gl.create_renderbuffer().unwrap();
+                    gl.bind_renderbuffer(glow::RENDERBUFFER, Some(rb));
+                    gl.renderbuffer_storage(glow::RENDERBUFFER, glow::DEPTH_COMPONENT16, st.w, st.h);
+                    gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT,
+                        glow::RENDERBUFFER, Some(rb));
+                    self.prog.insert(st.id.clone(), p);
+                    self.tex.insert(st.id.clone(), ot);
+                    self.fbo.insert(st.id.clone(), f);
+                    self.size.insert(st.id.clone(), (st.w, st.h));
+
+                    if let Some(m) = &st.mesh {
+                        let vdata = std::fs::read(format!("{}/{}", dir, m.vtx)).unwrap();
+                        let idata = std::fs::read(format!("{}/{}", dir, m.idx)).unwrap();
+                        let vb = gl.create_buffer().unwrap();
+                        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vb));
+                        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &vdata, glow::STATIC_DRAW);
+                        let ib = gl.create_buffer().unwrap();
+                        gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ib));
+                        gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, &idata, glow::STATIC_DRAW);
+                        self.vbo.insert(st.id.clone(), vb);
+                        self.ebo.insert(st.id.clone(), ib);
+                        println!("[mesh] {} {} indices ({} bytes vtx)", st.id, m.indices, vdata.len());
+                    } else {
+                        eprintln!("[mesh] {} has no geometry — nothing to draw", st.id);
+                    }
+                    if let Some(tp) = &st.texture {
+                        let im = image::open(format!("{}/{}", dir, tp)).unwrap().to_rgba8();
+                        let (tw, th) = (im.width() as usize, im.height() as usize);
+                        let data = im.into_raw();
+                        let t = make_tex(gl, tw as i32, th as i32,
+                                         Some(&flip_vert(&data, tw, th)), gles2);
+                        self.mesh_tex.insert(st.id.clone(), t);
+                    }
+                }
             } else if st.kind == "feedback" {
                 // A Feedback TOP owns a texture that PERSISTS between frames; it
                 // has no shader. Start it cleared so frame 0 has no garbage.
@@ -992,6 +1066,92 @@ impl<'a> Renderer<'a> {
                     .map(|f| *self.last_dirty.get(f).unwrap_or(&true))
                     .unwrap_or(false);
                 dirty.insert(st.id.clone(), first || tgt_moved);
+            } else if st.kind == "render3d" {
+                // Same signature gate as a shader pass: a scene whose transform
+                // expressions are unchanged does not need redrawing.
+                let frame = (t * 60.0).floor();
+                let mut names: Vec<&String> = Vec::with_capacity(st.time_uniforms.len());
+                let mut sig: Vec<f64> = Vec::with_capacity(st.time_uniforms.len());
+                for (name, tu) in &st.time_uniforms {
+                    let v = if let (Some(func), Some(lib)) = (&tu.func, &self.exprs) {
+                        let args: Vec<f64> = tu.inputs.iter().map(|n| match n.as_str() {
+                            "t" => t,
+                            "frame" => frame,
+                            other => chop_value(&self.store, other),
+                        }).collect();
+                        (unsafe { call_expr(lib, func, &args) }) * tu.mul
+                    } else if let Some(prog) = self.uniform_progs.get(&(si, name.clone())) {
+                        let store = self.store.clone();
+                        prog.eval(t, frame, &|n, ch| chop_get(&store, n, ch)) * tu.mul
+                    } else {
+                        0.0
+                    };
+                    names.push(name);
+                    sig.push(match tu.modulo { Some(m) if m != 0.0 => v % m, _ => v });
+                }
+                let changed = self.step_sig.get(&st.id).map_or(true, |prev| prev != &sig);
+                let must_draw = first || changed;
+                dirty.insert(st.id.clone(), must_draw);
+                if must_draw {
+                    let ts = Instant::now();
+                    unsafe {
+                        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo[&st.id]));
+                        gl.viewport(0, 0, st.w, st.h);
+                        gl.enable(glow::DEPTH_TEST);
+                        gl.depth_func(glow::LESS);
+                        gl.clear_color(0.0, 0.0, 0.0, 0.0);
+                        gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+                        let p = self.prog[&st.id];
+                        gl.use_program(Some(p));
+                        for (name, u) in &st.uniforms {
+                            if let Some(l) = gl.get_uniform_location(p, name) {
+                                if u.ty == "float" {
+                                    gl.uniform_1_f32(Some(&l), u.value.as_f64().unwrap() as f32);
+                                }
+                            }
+                        }
+                        for (name, v) in names.iter().zip(sig.iter()) {
+                            if let Some(l) = gl.get_uniform_location(p, name) {
+                                gl.uniform_1_f32(Some(&l), *v as f32);
+                            }
+                        }
+                        if let Some(mt) = self.mesh_tex.get(&st.id) {
+                            gl.active_texture(glow::TEXTURE0);
+                            gl.bind_texture(glow::TEXTURE_2D, Some(*mt));
+                            if let Some(l) = gl.get_uniform_location(p, "tex0") {
+                                gl.uniform_1_i32(Some(&l), 0);
+                            }
+                        }
+                        if let (Some(m), Some(vb), Some(ib)) =
+                            (&st.mesh, self.vbo.get(&st.id), self.ebo.get(&st.id))
+                        {
+                            gl.bind_buffer(glow::ARRAY_BUFFER, Some(*vb));
+                            gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(*ib));
+                            // pos3 | nrm3 | uv2, tightly interleaved.
+                            for (attr, comps, off) in
+                                [("aPos", 3, 0i32), ("aNrm", 3, 12), ("aUV", 2, 24)]
+                            {
+                                if let Some(loc) = gl.get_attrib_location(p, attr) {
+                                    gl.enable_vertex_attrib_array(loc);
+                                    gl.vertex_attrib_pointer_f32(
+                                        loc, comps, glow::FLOAT, false, m.stride, off);
+                                }
+                            }
+                            let ity = if m.index_type == "u32" {
+                                glow::UNSIGNED_INT
+                            } else {
+                                glow::UNSIGNED_SHORT
+                            };
+                            gl.draw_elements(glow::TRIANGLES, m.indices, ity, 0);
+                        }
+                        gl.disable(glow::DEPTH_TEST);
+                        if self.profile_gpu {
+                            gl.finish();
+                        }
+                    }
+                    prof_add(&self.prof, &format!("top:{}", st.id), ts.elapsed().as_secs_f64());
+                    self.step_sig.insert(st.id.clone(), sig);
+                }
             } else if st.kind == "passthrough" {
                 if let Some(src) = st.inputs.first() {
                     let (a, b) = (self.tex[src], self.size[src]);

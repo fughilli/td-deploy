@@ -52,6 +52,9 @@ def inject_locations(src: str) -> str:
     `uniform TDInfo uTD2DInfos[2]` followed by any other uniform used to fail."""
     structs = struct_locations(src)
     out, loc, binding = [], 0, 0
+    # `in` and `out` are separate location namespaces, but a vertex stage has
+    # SEVERAL ins (position, normal, uv) which must not all land on 0.
+    loc_in, loc_out = 0, 0
     for line in src.splitlines():
         s = line.strip()
         if s.startswith("#version"):
@@ -59,7 +62,12 @@ def inject_locations(src: str) -> str:
             continue
         m = re.match(r"^(in|out)\s+(vec\d)\s+(\w+);", s)
         if m:
-            out.append(f"layout(location=0) {s}")
+            if m.group(1) == "in":
+                out.append(f"layout(location={loc_in}) {s}")
+                loc_in += 1
+            else:
+                out.append(f"layout(location={loc_out}) {s}")
+                loc_out += 1
             continue
         m = re.match(r"^uniform\s+sampler\w+\s+(\w+)(?:\[(\d+)\])?;", s)
         if m:
@@ -158,6 +166,29 @@ def es2_vertex(vec3: bool) -> str:
     )
 
 
+def translate_stage(path: str, ext: str) -> str:
+    """Translate one GLSL stage down to ES 1.00 via SPIR-V.
+
+    glslangValidator picks the stage from the file extension, so the temp file
+    has to carry the right one."""
+    src = inject_locations(open(path).read())
+    with tempfile.TemporaryDirectory() as td:
+        stage = os.path.join(td, f"in.{ext}")
+        spv = os.path.join(td, "out.spv")
+        with open(stage, "w") as f:
+            f.write(src)
+        subprocess.run(
+            ["glslangValidator", "-G", stage, "-o", spv], check=True, capture_output=True
+        )
+        es = subprocess.run(
+            ["spirv-cross", spv, "--es", "--version", "100"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    return legalize_modulo(es)
+
+
 def translate_frag(path: str) -> str:
     src = inject_locations(open(path).read())
     # Use a real temp dir so this works off Unix too (the bundled Windows app runs
@@ -184,6 +215,14 @@ def main(art=None):
     os.makedirs(outdir, exist_ok=True)
     n = 0
     for st in sched["steps"]:
+        if st["kind"] == "render3d":
+            # A mesh pass needs its REAL vertex shader — the fullscreen-quad
+            # substitution below exists only for full-screen fragment passes.
+            sid = st["id"].replace("/", "_")
+            open(f"{outdir}/{sid}.vert", "w").write(translate_stage(f"{art}/{st['vert']}", "vert"))
+            open(f"{outdir}/{sid}.frag", "w").write(translate_stage(f"{art}/{st['frag']}", "frag"))
+            n += 1
+            continue
         if st["kind"] != "shader":
             continue
         sid = st["id"].replace("/", "_")
