@@ -77,7 +77,7 @@ struct ChopAbi {
 }
 // A control-rate node the importer pulled in because an expr reads it.
 // constant: `channels` are per-channel exprs. speed: integrates its input over
-// time. null/select/math: passthrough of channel 0 (extend as needed).
+// time. null/select/math: passthrough of every channel of its input.
 #[derive(Deserialize, Clone)]
 struct ChopDef {
     name: String,
@@ -896,7 +896,7 @@ impl<'a> Renderer<'a> {
 
     // Evaluate the control-rate CHOP DAG (dependency order) into the store, so
     // interpreted uniforms like op('speed1')[0] resolve. Constant = its expr;
-    // speed = time-integral of its input; others pass channel 0 through.
+    // speed = time-integral of its input, per channel; others pass every channel.
     fn eval_chops(&self, t: f64) {
         // Preferred path: the whole DAG fused + compiled to one native kernel.
         if let (Some(lib), Some(abi)) = (&self.chops_lib, &self.chops_abi) {
