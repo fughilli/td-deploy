@@ -20,7 +20,7 @@
       <span id="toe-path" class="path muted">No project selected</span>
     </div>
     <div class="row">
-      <label class="grow">Pi host <input id="pi" type="text" value="tdplayer.local" /></label>
+      <label class="grow" title="A Raspberry Pi or an x86_64 player — deploy detects which and builds for it.">Player host <input id="pi" type="text" value="tdplayer.local" /></label>
     </div>
     <div class="row">
       <label class="toggle">
@@ -29,7 +29,7 @@
       <button id="deploy" class="primary" disabled>Deploy now</button>
     </div>
     <div class="row">
-      <button id="flash">Flash SD card…</button>
+      <button id="flash">Flash a player…</button>
     </div>
   </section>
 
@@ -95,9 +95,10 @@
         <div class="row">
           <label>Target
             <select id="target">
-              <option value="gles2" selected>gles2 (Pi VC4)</option>
+              <option value="auto" selected>auto (detect the player)</option>
+              <option value="gles2">gles2 (Pi VC4)</option>
               <option value="gles">gles (Pi4/5)</option>
-              <option value="desktop_gl">desktop_gl</option>
+              <option value="desktop_gl">desktop_gl (x86_64 player)</option>
             </select>
           </label>
         </div>
@@ -171,8 +172,17 @@
 
   <div id="flash-modal" class="modal hidden">
     <div class="modal-box">
-      <h2>Flash SD card</h2>
+      <h2>Flash a player</h2>
       <p class="warn">This <b>erases</b> the selected disk. Only removable disks are shown.</p>
+      <div class="row">
+        <label class="grow">Player
+          <select id="flash-kind">
+            <option value="pi3">Raspberry Pi 3 — SD card</option>
+            <option value="amd64">x86_64 mini PC — USB installer</option>
+          </select>
+        </label>
+      </div>
+      <p id="flash-kind-help" class="settings-help"></p>
       <div class="row">
         <label class="grow">Base image version
           <select id="flash-tag">

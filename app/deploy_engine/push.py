@@ -1,6 +1,7 @@
-"""Push a finished artifact to a running Pi and make it live: rsync to a staging
-dir, atomically repoint the `current` symlink, restart the runtime service, prune
-old staging dirs. The deploy key logs in as root, so no on-Pi sudo is needed.
+"""Push a finished artifact to a running player (Pi or x86_64) and make it live:
+rsync to a staging dir, (optionally prepare it,) atomically repoint the `current`
+symlink, restart the runtime service, prune old staging dirs. The deploy key logs
+in as root, so no on-device sudo is needed.
 
   /var/lib/tdplayer/staging-<ts>/   <- rsync target
   /var/lib/tdplayer/current         -> staging-<ts>   (atomic ln -sfn)
@@ -57,6 +58,7 @@ def push(
     key: str | None = None,
     service: str = DEFAULT_SERVICE,
     keep: int = 3,
+    pre_restart: str | None = None,
     progress: Progress = Progress(),
 ) -> str:
     key = key or default_key()
@@ -105,8 +107,12 @@ def push(
     progress.phase("restart", 0.0, service)
     # world-readable (the service runs as the tdplayer user), atomic swap, restart,
     # prune all but the newest `keep` staging dirs.
+    # `pre_restart`: a remote command run on the new staging dir before it goes
+    # live — `tdplayer-prepare` builds a Python-host artifact's venv (x86 image).
+    prep = f"{pre_restart} {shlex.quote(staging)} && " if pre_restart else ""
     remote = (
         f"chmod -R a+rX {staging} && "
+        f"{prep}"
         f"ln -sfn {staging} {REMOTE_BASE}/current && "
         f"systemctl restart {service} && "
         f"ls -1dt {REMOTE_BASE}/staging-* 2>/dev/null | tail -n +{keep + 1} | xargs -r rm -rf"

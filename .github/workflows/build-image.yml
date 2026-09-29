@@ -1,12 +1,17 @@
-# Build the Raspberry Pi base image and publish it to a GitHub Release.
+# Build the player images and publish them to a GitHub Release:
+#   * tdplayer-pi3.img.zst   — Raspberry Pi 3 SD image (native arm64 runner, so
+#                              the aarch64 NixOS sdImage builds without QEMU/cross)
+#   * tdplayer-amd64.iso.zst — x86_64 mini-PC install USB (sbc-deploy's amd64
+#                              family; native x86_64 runner)
 #
-# The desktop app never builds the image — it downloads the .img published here
-# (deploy_engine/download.py resolves it by release tag). Runs on a native arm64
-# Linux runner so the aarch64 NixOS sdImage builds without QEMU/cross.
+# The desktop app never builds an image — it downloads the one published here
+# for the kind of player being flashed (deploy_engine/download.py resolves it by
+# release tag + kind), verifies it against the attached .sha256, decompresses it
+# and writes it raw to the SD card / USB stick.
 #
-# The sbc-deploy image target emits a COMPRESSED .img.zst; the app's flasher writes
-# a raw .img, so we decompress before publishing and attach a .sha256 the app
-# verifies against.
+# GitHub caps a release asset at 2 GiB. An image that compresses above that is
+# published in ordered pieces (<name>.part00, .part01, ...) that the app
+# concatenates; the .sha256 is always over the whole .zst.
 name: build-image
 
 on:
@@ -23,9 +28,30 @@ permissions:
 
 jobs:
   image:
-    runs-on: ubuntu-24.04-arm # native aarch64 -> no cross/QEMU
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: tdplayer-pi3
+            runner: ubuntu-24.04-arm # native aarch64 -> no cross/QEMU
+            target: //deploy:tdplayer_pi3.image_sd
+            ext: img
+          - name: tdplayer-amd64
+            runner: ubuntu-24.04 # native x86_64
+            target: //deploy:tdplayer_amd64.image_installer
+            ext: iso
+    name: image (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
     environment: CI # provides CACHIX_AUTH_TOKEN
     steps:
+      # The x86 installer carries a full desktop-GPU Mesa + linux-firmware +
+      # Python closure, twice (store + squashfs): make room on the runner.
+      - name: Free disk space
+        if: matrix.ext == 'iso'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - uses: actions/checkout@v4
         with: { submodules: recursive }
 
@@ -49,12 +75,13 @@ jobs:
         uses: bazel-contrib/setup-bazel@0.9.0
         with: { bazelisk-cache: true, disk-cache: true, repository-cache: true }
 
-      - name: Build SD image (no flash)
+      - name: Build image (no flash)
         id: build
         run: |
           set -euo pipefail
-          # image_sd --no-write builds the image and prints "==> Built image: <path>".
-          bazel run //deploy:tdplayer_pi3.image_sd -- --no-write 2>&1 | tee build.log
+          # image_sd / image_installer --no-write builds the image and prints
+          # "==> Built image: <path>".
+          bazel run ${{ matrix.target }} -- --no-write 2>&1 | tee build.log
           IMG="$(grep -oE '==> Built image: .*' build.log | tail -n1 | sed 's/==> Built image: //')"
           test -n "$IMG"
           echo "img=$IMG" >> "$GITHUB_OUTPUT"
@@ -96,16 +123,20 @@ jobs:
           set -euo pipefail
           mkdir -p out
           IMG="${{ steps.build.outputs.img }}"
-          NAME="tdplayer-pi3.img.zst"
-          # Publish the COMPRESSED image: the raw .img is >2 GiB, over GitHub's
+          NAME="${{ matrix.name }}.${{ matrix.ext }}.zst"
+          # Publish the COMPRESSED image: the raw image is >2 GiB, over GitHub's
           # release-asset limit. The app decompresses it before flashing
-          # (deploy_engine/download.py). Checksum is over the .zst we upload.
+          # (deploy_engine/download.py). Checksum is over the whole .zst.
           if [[ "$IMG" == *.zst ]]; then
             cp "$IMG" "out/$NAME"
           else
             nix run nixpkgs#zstd -- -T0 -19 -c "$IMG" > "out/$NAME"
           fi
           ( cd out && sha256sum "$NAME" | tee "$NAME.sha256" )
+          # Still over the asset cap (the x86 installer can be): publish pieces.
+          if [ "$(stat -c %s "out/$NAME")" -gt $((1900 * 1024 * 1024)) ]; then
+            ( cd out && split -b 1900M -d -a 2 "$NAME" "$NAME.part" && rm "$NAME" )
+          fi
           ls -l out
 
       - name: Resolve tag
@@ -121,7 +152,7 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          for f in out/tdplayer-pi3.img.zst out/tdplayer-pi3.img.zst.sha256; do
+          for f in out/${{ matrix.name }}.*; do
             for attempt in 1 2 3 4 5; do
               echo "uploading $(basename "$f") (attempt $attempt)"
               if gh release upload "$TAG" "$f" --clobber; then

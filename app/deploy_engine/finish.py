@@ -1,12 +1,14 @@
-"""Finish an OPTIMIZED artifact into a Pi-ready one, ON THE HOST: compile the
-transpiled MLIR to aarch64 shared libs and translate the shaders to GLSL ES.
+"""Finish an OPTIMIZED artifact into a player-ready one, ON THE HOST: compile the
+transpiled MLIR to shared libs for the player's arch (the toolchain's triple:
+aarch64 for a Pi, x86_64 for a mini PC) and, for gles2, translate the shaders to
+GLSL ES.
 
   exprs.mlir -> exprs/libexprs.so    (compiled param-expr kernels)
   chops.mlir -> chops/libchops.so    (fused CHOP-DAG kernel)
   shaders/*  -> shaders_gles/*       (GLSL ES 1.00, for gles2/VC4)
 
 Same command sequence as compiler/build_exprs.sh + the in-image runCommand, but
-driven by a Toolchain (native in dev, aarch64-cross in the shipped app).
+driven by a Toolchain (Nix in dev, the bundled cross clang in the shipped app).
 """
 
 from __future__ import annotations
@@ -45,7 +47,8 @@ def _build_so(tc: Toolchain, art: str, name: str, progress: Progress) -> bool:
 
 def finish(art_dir: str, target: str, tc: Toolchain, progress: Progress = Progress()) -> None:
     """Codegen the .so's + (for gles2) translate the shaders, in place."""
-    progress.phase("finish", 0.0, "aarch64 codegen")
+    triple = getattr(tc, "triple", "aarch64-unknown-linux-gnu")
+    progress.phase("finish", 0.0, f"{triple.split('-')[0]} codegen")
     built = []
     if _build_so(tc, art_dir, "exprs", progress):
         built.append("libexprs.so")

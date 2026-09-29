@@ -14,6 +14,7 @@
 pub struct Scanout {
     pub dw: u32,
     pub dh: u32,
+    pub desktop_gl: bool,
 }
 #[cfg(not(target_os = "linux"))]
 impl Scanout {
@@ -177,6 +178,9 @@ mod linux {
         started: bool,
         probe_ctr: u32, // hotplug re-probe throttle
         gl: Option<GlState>, // EGL bound to `surf` (set by init_gl; swapped on hotplug)
+        /// Desktop GL 3.3 core instead of GLES 2 (x86 Mesa targets running
+        /// desktop_gl artifacts); set before init_gl.
+        pub desktop_gl: bool,
     }
 
     // Force-probe connectors for a connected display with a usable mode + crtc.
@@ -300,6 +304,7 @@ mod linux {
                 fbs: HashMap::new(),
                 started: false,
                 probe_ctr: 0,
+                desktop_gl: false,
                 gl: None,
             })
         }
@@ -328,14 +333,20 @@ mod linux {
             }
             .expect("gbm platform display");
             egl.initialize(dpy).expect("egl init");
-            egl.bind_api(egl::OPENGL_ES_API).expect("bind es");
+            const EGL_OPENGL_BIT: egl::Int = 0x0008;
+            let desktop = self.desktop_gl;
+            if desktop {
+                egl.bind_api(egl::OPENGL_API).expect("bind gl");
+            } else {
+                egl.bind_api(egl::OPENGL_ES_API).expect("bind es");
+            }
             // Pick a window-capable ES2 config whose native visual matches XR24, so
             // eglCreateWindowSurface accepts the gbm surface.
             let attrs = [
                 egl::SURFACE_TYPE,
                 egl::WINDOW_BIT,
                 egl::RENDERABLE_TYPE,
-                EGL_OPENGL_ES2_BIT,
+                if desktop { EGL_OPENGL_BIT } else { EGL_OPENGL_ES2_BIT },
                 egl::RED_SIZE,
                 8,
                 egl::GREEN_SIZE,
@@ -369,7 +380,15 @@ mod linux {
                     dpy,
                     cfg,
                     None,
-                    &[egl::CONTEXT_MAJOR_VERSION, 2, egl::NONE],
+                    &if desktop {
+                        vec![
+                            egl::CONTEXT_MAJOR_VERSION, 3, egl::CONTEXT_MINOR_VERSION, 3,
+                            0x30FD, 0x0000_0001, // PROFILE_MASK = CORE
+                            egl::NONE,
+                        ]
+                    } else {
+                        vec![egl::CONTEXT_MAJOR_VERSION, 2, egl::NONE]
+                    },
                 )
                 .expect("create ctx");
             let surface = unsafe {

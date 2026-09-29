@@ -19,6 +19,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 mod expr;
+mod host;
+mod hostgraph;
 mod sink;
 mod scanout;
 
@@ -1451,11 +1453,6 @@ impl<'a> Renderer<'a> {
         (flip_vert(&raw, ow as usize, oh as usize), ow, oh)
     }
 
-    fn render(&mut self, t: f64) -> (Vec<u8>, i32, i32) {
-        self.cook(t);
-        self.readback()
-    }
-
     // GBM scanout present: draw the final texture into the display surface
     // (aspect-fit, centered, black bars) on the GPU. No readback. The caller then
     // eglSwapBuffers + page-flips.
@@ -1492,14 +1489,160 @@ impl<'a> Renderer<'a> {
     }
 }
 
+// ---------------- engines ----------------
+// The classic compiled-TOP renderer and the Python-host renderer
+// (hostgraph.rs, "toxc-host/1" artifacts) behind one interface, so the sinks
+// (PNG, MJPEG, GBM scanout, DRM dumb buffer) serve either.
+trait Engine {
+    fn cook(&mut self, t: f64);
+    fn readback(&self) -> (Vec<u8>, i32, i32);
+    fn present_scanout(&self, dw: i32, dh: i32);
+    fn prof(&self) -> Prof;
+    fn store(&self) -> Chops;
+    fn gl(&self) -> &glow::Context;
+    fn quit_requested(&self) -> bool {
+        false
+    }
+    fn save_node(&self, _id: &str, _path: &str) -> bool {
+        false
+    }
+    fn shutdown(&mut self) {}
+}
+
+impl<'a> Engine for Renderer<'a> {
+    fn cook(&mut self, t: f64) {
+        Renderer::cook(self, t)
+    }
+    fn readback(&self) -> (Vec<u8>, i32, i32) {
+        Renderer::readback(self)
+    }
+    fn present_scanout(&self, dw: i32, dh: i32) {
+        Renderer::present_scanout(self, dw, dh)
+    }
+    fn prof(&self) -> Prof {
+        Renderer::prof(self)
+    }
+    fn store(&self) -> Chops {
+        self.store.clone()
+    }
+    fn gl(&self) -> &glow::Context {
+        self.gl
+    }
+}
+
+impl<'a> Engine for hostgraph::HostRenderer<'a> {
+    fn cook(&mut self, t: f64) {
+        hostgraph::HostRenderer::cook(self, t)
+    }
+    fn readback(&self) -> (Vec<u8>, i32, i32) {
+        hostgraph::HostRenderer::readback(self)
+    }
+    fn present_scanout(&self, dw: i32, dh: i32) {
+        hostgraph::HostRenderer::present_scanout(self, dw, dh)
+    }
+    fn prof(&self) -> Prof {
+        hostgraph::HostRenderer::prof(self)
+    }
+    fn store(&self) -> Chops {
+        hostgraph::HostRenderer::store(self)
+    }
+    fn gl(&self) -> &glow::Context {
+        self.gl
+    }
+    fn quit_requested(&self) -> bool {
+        self.quit
+    }
+    fn save_node(&self, id: &str, path: &str) -> bool {
+        hostgraph::HostRenderer::save_node(self, id, path)
+    }
+    fn shutdown(&mut self) {
+        hostgraph::HostRenderer::shutdown(self)
+    }
+}
+
+/// Is this a Python-host artifact (compiler/host_compile.py)?
+fn is_host_artifact(dir: &str) -> bool {
+    std::fs::read_to_string(format!("{dir}/schedule.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .map(|v| v["format"].as_str() == Some("toxc-host/1"))
+        .unwrap_or(false)
+}
+
+/// Displays the host reports as TD's `monitors`: $TOXC_MONITORS ("WxH,WxH"),
+/// else the scanout mode when there is one, else a single 1920x1080.
+fn monitors_json(scanout_size: Option<(u32, u32)>) -> serde_json::Value {
+    if let Ok(s) = std::env::var("TOXC_MONITORS") {
+        let v: Vec<serde_json::Value> = s
+            .split(',')
+            .filter_map(|m| {
+                let (w, h) = m.trim().split_once('x')?;
+                Some(serde_json::json!({"width": w.parse::<u32>().ok()?, "height": h.parse::<u32>().ok()?}))
+            })
+            .collect();
+        if !v.is_empty() {
+            return serde_json::Value::Array(v);
+        }
+    }
+    let (w, h) = scanout_size.unwrap_or((1920, 1080));
+    serde_json::json!([{"width": w, "height": h}])
+}
+
+fn make_engine<'a>(gl: &'a glow::Context, dir: &str, scanout_size: Option<(u32, u32)>) -> Box<dyn Engine + 'a> {
+    if is_host_artifact(dir) {
+        let prof: Prof = Arc::new(Mutex::new(Default::default()));
+        let store: Chops = Arc::new(Mutex::new(HashMap::new()));
+        Box::new(hostgraph::HostRenderer::new(gl, dir, prof, store, monitors_json(scanout_size)))
+    } else {
+        Box::new(Renderer::new(gl, dir))
+    }
+}
+
+/// Render `n` frames at `fps` (simulated time) and save every `every`-th
+/// frame's output as <prefix>_NNNN.png — a deterministic way to exercise a
+/// stateful (Python-host) project headless. TOXC_SAVE_NODES="id1,id2" also
+/// saves those nodes' outputs.
+fn run_seq(gl: &glow::Context, dir: &str, prefix: &str, n: usize, fps: f64, every: usize) {
+    let mut r = make_engine(gl, dir, None);
+    let extra: Vec<String> = std::env::var("TOXC_SAVE_NODES")
+        .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+        .unwrap_or_default();
+    let t0 = Instant::now();
+    // TOXC_T0: absolute time of the first frame (so an animated, time-driven
+    // project can be compared against TouchDesigner at a known absTime)
+    let tstart: f64 = std::env::var("TOXC_T0").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    for i in 0..n {
+        let t = tstart + i as f64 / fps;
+        r.cook(t);
+        if r.quit_requested() {
+            break;
+        }
+        if every > 0 && (i + 1) % every == 0 || i + 1 == n {
+            let (buf, w, h) = r.readback();
+            let out = format!("{prefix}_{:04}.png", i + 1);
+            image::save_buffer(&out, &buf, w as u32, h as u32, image::ExtendedColorType::Rgba8).unwrap();
+            for (k, id) in extra.iter().enumerate() {
+                r.save_node(id, &format!("{prefix}_{:04}_n{k}.png", i + 1));
+            }
+            println!("[rust] frame {} t={t:.3} -> {out}", i + 1);
+        }
+    }
+    let el = t0.elapsed().as_secs_f64();
+    println!("[rust] {n} frames in {el:.2}s ({:.1} ms/frame)", el * 1000.0 / n.max(1) as f64);
+    println!("{}", prof_summary(&r.prof()));
+    r.shutdown();
+}
+
 fn run(gl: &glow::Context, dir: &str, out: &str, t: f64, wait_ms: u64) {
-    let mut r = Renderer::new(gl, dir);
+    let mut r = make_engine(gl, dir, None);
     if wait_ms > 0 {
         thread::sleep(Duration::from_millis(wait_ms));
     }
-    let (buf, w, h) = r.render(t);
+    r.cook(t);
+    let (buf, w, h) = r.readback();
     image::save_buffer(out, &buf, w as u32, h as u32, image::ExtendedColorType::Rgba8).unwrap();
-    println!("[rust] rendered {} @ t={t} -> {out}", r.sched.output);
+    println!("[rust] rendered @ t={t} -> {out}");
+    r.shutdown();
 }
 
 const PAGE: &[u8] = b"<!doctype html><html><body style='margin:0;background:#111;display:flex;\
@@ -1627,6 +1770,7 @@ fn stream(dir: &str, port: u16, fps: f64, target: &str) {
     let mut drm = None;
     match sc.as_mut() {
         Some(s) => {
+            s.desktop_gl = target == "desktop_gl";
             gl = s.init_gl(); // scanout owns its EGL (so it can recreate on hotplug)
         }
         None => {
@@ -1642,8 +1786,12 @@ fn stream(dir: &str, port: u16, fps: f64, target: &str) {
     }
     let _ = &fallback_egl; // keep-alive only
     let hdmi = sc.is_some() || drm.is_some();
+    // A Python-host project keeps running without a viewer (its scripts, sidecars
+    // and state advance every frame, as in TouchDesigner).
+    let host_art = is_host_artifact(dir);
 
-    let mut r = Renderer::new(&gl, dir);
+    let ssize = sc.as_ref().map(|s| (s.dw, s.dh));
+    let mut r = make_engine(&gl, dir, ssize);
     let prof = r.prof();
     let latest: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let clients: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
@@ -1651,7 +1799,7 @@ fn stream(dir: &str, port: u16, fps: f64, target: &str) {
         let latest = latest.clone();
         let clients = clients.clone();
         let prof = prof.clone();
-        let store = r.store.clone();
+        let store = r.store();
         thread::spawn(move || serve_http(port, latest, clients, prof, store));
     }
     let start = Instant::now();
@@ -1660,7 +1808,7 @@ fn stream(dir: &str, port: u16, fps: f64, target: &str) {
     loop {
         let has_client = clients.load(Ordering::Relaxed) > 0;
         // Render when the HDMI display is attached OR a web client is watching.
-        if !hdmi && !has_client {
+        if !hdmi && !has_client && !host_art {
             thread::sleep(Duration::from_millis(100));
             continue;
         }
@@ -1672,6 +1820,11 @@ fn stream(dir: &str, port: u16, fps: f64, target: &str) {
         let t = start.elapsed().as_secs_f64();
         let tf = Instant::now();
         r.cook(t); // graph passes into FBOs (no readback)
+        if r.quit_requested() {
+            println!("[stream] project requested quit");
+            r.shutdown();
+            return;
+        }
 
         // HDMI, zero-copy: GPU-blit the final texture into the scanout surface.
         if let Some(s) = sc.as_mut() {
@@ -1685,7 +1838,7 @@ fn stream(dir: &str, port: u16, fps: f64, target: &str) {
             // lumps both together (a large "present:flip" then can't tell GPU-bound
             // from vsync-bound). No net cost: the flip fences on render completion
             // anyway; this just moves the wait somewhere we can time it.
-            unsafe { r.gl.finish() };
+            unsafe { r.gl().finish() };
             let tg = Instant::now();
             prof_add(&prof, "gpu", (tg - tb).as_secs_f64());
             s.flip(); // page-flip: now a pure vblank wait (GPU already drained)
@@ -1749,6 +1902,16 @@ fn main() {
             let wait_ms = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
             let (_egl, _dpy, gl) = make_gl(&artifact_target(dir));
             run(&gl, dir, out, t, wait_ms);
+        }
+        Some("runseq") => {
+            // runseq <dir> <prefix> [frames] [fps] [save-every]
+            let dir = &args[2];
+            let prefix = args.get(3).map(|s| s.as_str()).unwrap_or("out/frame");
+            let n = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(60);
+            let fps = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(30.0);
+            let every = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(0);
+            let (_egl, _dpy, gl) = make_gl(&artifact_target(dir));
+            run_seq(&gl, dir, prefix, n, fps, every);
         }
         Some("stream") => {
             let dir = &args[2];

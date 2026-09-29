@@ -1,8 +1,12 @@
-# toxc runtime application unit for the sbc-deploy Pi image.
+# toxc runtime application unit for the sbc-deploy player images (Raspberry Pi
+# SD image and x86_64 installer USB — the same module; the image's arch picks
+# the few per-family knobs below).
 #
 # Consumes two Bazel-built inputs via sbc-deploy's `build_data` (keyed by
 # basename in `sbcBuildData`):
-#   * "toxc_runtime"  — the dynamic aarch64 Rust runtime (//runtime_rs).
+#   * "toxc_runtime"  — the dynamic Rust runtime (//runtime_rs), cross-built for
+#                       the image's arch (//runtime_rs/cross:toxc_runtime_linux
+#                       for aarch64, :toxc_runtime_linux_x86_64 for x86_64).
 #   * "toxc_artifact" — the PORTABLE, arch-independent compiled artifact
 #                       (//deploy:toxc_artifact): schedule.json + shaders/ +
 #                       assets/ + exprs.mlir + services.json.
@@ -19,9 +23,12 @@ let
     "toxc_artifact missing from build_data — add //deploy:toxc_artifact "
   + "to sbc_application(build_data=…).");
 
-  # Baked output config for this image.
+  isX86 = pkgs.stdenv.hostPlatform.isx86_64;
+
+  # Baked output config for this image. An x86 iGPU comfortably holds 60 fps
+  # (and a projector wants it); the Pi's VC4/V3D gets 30.
   port = 8788;
-  fps = 30;
+  fps = if isX86 then 60 else 30;
   # GL backend. With a `target=gles2` artifact (shaders translated to GLSL ES 1.00
   # by compiler/translate_gles.py → shaders_gles/), the Pi 3's VC4 GPU CAN run the
   # graph in HARDWARE — that's the point of the GLESv2 transpiler backend. Keep
@@ -117,7 +124,15 @@ in
     extraServiceConfig = {
       AmbientCapabilities = [ "CAP_SYS_ADMIN" ];
       CapabilityBoundingSet = [ "CAP_SYS_ADMIN" ];
+    } // lib.optionalAttrs isX86 {
+      # Python-host artifacts (python-host.nix) run project code under the same
+      # unit: give it a writable private /tmp (shared-memory frame files) —
+      # ProtectSystem=strict leaves / read-only otherwise.
+      PrivateTmp = true;
     };
+    # The project folder (inside the pushed artifact) is the project's working
+    # directory: logs, caches and the like land there.
+    readWritePaths = lib.optionals isX86 [ "/var/lib/tdplayer" ];
   };
 
   # Make a closure switch actually take effect.

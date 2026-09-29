@@ -1,9 +1,11 @@
-"""The runtime cross-built for the Pi (aarch64-unknown-linux-gnu), fed to the
-image as build_data. A host-targeted rust_binary ships a Mach-O from a macOS
-deploy host; this pins the target + links with nixpkgs' cross clang wrapper.
+"""The runtime cross-built for the players, fed to the images as build_data: the
+Pi (aarch64-unknown-linux-gnu, :toxc_runtime_linux) and an x86_64 mini PC
+(x86_64-unknown-linux-gnu, :toxc_runtime_linux_x86_64). A host-targeted
+rust_binary ships a Mach-O from a macOS deploy host; this pins the target +
+links with nixpkgs' cross clang wrapper.
 
-The `:cross` constraint scopes the clang cc toolchain to THIS build only (the
-transition sets `:aarch64_linux`, which carries `:cross`), so it never hijacks
+The `:cross` constraint scopes the clang cc toolchains to THIS build only (the
+transition sets `:aarch64_linux` / `:x86_64_linux`, which carry `:cross`), so it never hijacks
 host C++ — the same pattern as splanc//pi/player_rs/musl's `:musl`.
 """
 
@@ -26,6 +28,15 @@ platform(
     name = "aarch64_linux",
     constraint_values = [
         "@platforms//cpu:aarch64",
+        "@platforms//os:linux",
+        ":cross",
+    ],
+)
+
+platform(
+    name = "x86_64_linux",
+    constraint_values = [
+        "@platforms//cpu:x86_64",
         "@platforms//os:linux",
         ":cross",
     ],
@@ -61,7 +72,45 @@ toolchain(
     toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
 )
 
+# --- x86_64 (mini-PC player): the same, linked by @x86_64_cc -----------------
+
+cc_toolchain_config(
+    name = "cross_cc_config_x86_64",
+    linker = "@x86_64_cc//:cc",
+    target_cpu = "k8",
+    triple = "x86_64-unknown-linux-gnu",
+)
+
+cc_toolchain(
+    name = "cross_cc_x86_64",
+    all_files = "@x86_64_cc//:all",
+    ar_files = "@x86_64_cc//:all",
+    compiler_files = "@x86_64_cc//:all",
+    dwp_files = "@x86_64_cc//:all",
+    linker_files = "@x86_64_cc//:all",
+    objcopy_files = "@x86_64_cc//:all",
+    strip_files = "@x86_64_cc//:all",
+    toolchain_config = ":cross_cc_config_x86_64",
+)
+
+toolchain(
+    name = "cross_cc_toolchain_x86_64",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+        ":cross",
+    ],
+    toolchain = ":cross_cc_x86_64",
+    toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+)
+
 linux_binary(
     name = "toxc_runtime_linux",
     src = "//runtime_rs:toxc_runtime",
+)
+
+linux_binary(
+    name = "toxc_runtime_linux_x86_64",
+    src = "//runtime_rs:toxc_runtime",
+    platform = ":x86_64_linux",
 )

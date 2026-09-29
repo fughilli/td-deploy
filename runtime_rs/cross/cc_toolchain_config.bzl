@@ -1,5 +1,6 @@
-"""A MINIMAL cc toolchain that LINKS the (pure-Rust) runtime for
-aarch64-unknown-linux-gnu using nixpkgs' cross clang wrapper (@aarch64_cc//:cc).
+"""A MINIMAL cc toolchain that LINKS the (pure-Rust) runtime for a Linux player
+(aarch64-unknown-linux-gnu for the Pi via @aarch64_cc//:cc, x86_64-unknown-linux-gnu
+for a mini PC via @x86_64_cc//:cc) using nixpkgs' cross clang wrapper.
 
 The wrapper is clang (LLVM) with the pkgsCross aarch64 glibc sysroot +
 gcc-toolchain (crt/libgcc) baked into its flags, so this toolchain only has to
@@ -46,10 +47,10 @@ def _impl(ctx):
 
     return cc_common.create_cc_toolchain_config_info(
         ctx = ctx,
-        toolchain_identifier = "aarch64-linux-gnu-clang",
+        toolchain_identifier = ctx.attr.triple + "-clang",
         host_system_name = "local",
-        target_system_name = "aarch64-unknown-linux-gnu",
-        target_cpu = "aarch64",
+        target_system_name = ctx.attr.triple,
+        target_cpu = ctx.attr.target_cpu,
         target_libc = "glibc",
         compiler = "clang",
         abi_version = "unknown",
@@ -62,6 +63,8 @@ cc_toolchain_config = rule(
     implementation = _impl,
     attrs = {
         "linker": attr.label(allow_single_file = True, mandatory = True),
+        "target_cpu": attr.string(default = "aarch64"),
+        "triple": attr.string(default = "aarch64-unknown-linux-gnu"),
     },
     provides = [CcToolchainConfigInfo],
 )

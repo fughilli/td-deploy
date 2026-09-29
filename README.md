@@ -36,26 +36,36 @@ Download the latest build from the [**Releases page**](https://github.com/fughil
   signed and notarized, so it opens normally.
 - **Windows** — run `td-deploy Studio Setup *.exe`.
 
-## 2. Prepare an SD card
+## 2. Prepare a player
 
-Insert an SD card (8 GB or larger), then in the app click **Flash SD card…**, pick your
-card from the list of removable disks, and hit **Erase & Flash**.
+A player is either a **Raspberry Pi** (booting from an SD card) or an **x86_64 mini PC**
+with Intel/AMD graphics (installed from a USB stick) — the mini PC also runs projects
+that use Python (Execute DATs, Script operators).
+
+Insert an SD card or USB stick (8 GB or larger), then in the app click **Flash a
+player…**, choose the **Player**, pick your disk from the list of removable disks, and
+hit **Erase & Flash**.
 
 <p align="center">
   <img src="docs/img/studio-flash.png" width="620"
-       alt="Flash SD card dialog — choose a removable disk and flash the Pi image" />
+       alt="Flash a player dialog — choose Pi SD card or x86_64 install USB, and a disk" />
 </p>
 
 > ⚠️ Flashing **permanently erases** the selected disk. The app lists only removable
 > disks to help you avoid picking the wrong one, but **always double-check the device
 > name and size before you flash** — you are responsible for choosing the right disk.
 
-Put the card in the Pi, connect HDMI + power, and it boots into the player.
+- **Raspberry Pi:** put the card in the Pi, connect HDMI + power, and it boots into the
+  player.
+- **Mini PC:** boot it from the USB stick (the UEFI boot menu — often F7, F11 or F12),
+  pick the internal disk and confirm; it installs the player (erasing that disk) and
+  reboots into it. Remove the stick when it says so.
 
 ## 3. Deploy your project
 
 1. Click **Choose .toe…** and pick your TouchDesigner project.
-2. Set **Pi host** — the default `tdplayer.local` works out of the box.
+2. Set **Player host** — the default `tdplayer.local` works out of the box. The app
+   checks which kind of player it is on each deploy and builds for it.
 3. Click **Deploy now**.
 
 Turn on **Watch — auto-deploy on save** and the app redeploys automatically every time

@@ -49,6 +49,7 @@ function saveSettings() {
     assetRoots, assetMap, wifiNetworks: nets,
     // Per-card hostname prefill for the flash modal (not durable config).
     flashHostname: (fm.hostname && fm.hostname.value) || '',
+    flashKind: (fm.kind && fm.kind.value) || 'pi3',
   };
   localStorage.setItem(STORE, JSON.stringify(s));
   return s;
@@ -484,6 +485,7 @@ window.td.onEvent((evt) => {
       // on. That happens on first launch AND every dev hot-restart (watchSidecarDev
       // respawns it on any engine edit), so re-push the renderer's state or Watch
       // silently stops firing while its checkbox still reads "on".
+      renderPlayerKinds(evt.players);
       pushSettings();
       if (state.toe) window.td.send({ cmd: 'pick_toe', toe: state.toe });
       if (els.watch.checked) window.td.send({ cmd: 'watch', enable: true, toe: state.toe });
@@ -511,7 +513,7 @@ window.td.onEvent((evt) => {
       setBusy(false);
       els.phase.textContent = 'Live ✓';
       els.bar.style.width = '100%';
-      log('live: ' + evt.staging, 'ok');
+      log('live: ' + evt.staging + (evt.player ? ` (${playerOf(evt.player).label || evt.player})` : ''), 'ok');
       break;
     case 'error':
       setBusy(false);
@@ -547,13 +549,16 @@ window.td.onEvent((evt) => {
       log('flash ' + evt.disk.name + ' <- ' + evt.tag);
       break;
     case 'flash_progress':
-      fm.phase.textContent = (evt.stage === 'download' ? 'Downloading image' : 'Writing SD')
+      fm.phase.textContent = (evt.stage === 'download' ? 'Downloading image'
+        : `Writing ${playerOf(fm.kind.value).media || 'disk'}`)
         + (evt.message ? ' — ' + evt.message : '');
       fm.fill.style.width = Math.round(evt.frac * 100) + '%';
       break;
     case 'flash_done':
       flashing = false;
-      fm.phase.textContent = 'Done ✓ — you can remove the card';
+      fm.phase.textContent = fm.kind.value === 'amd64'
+        ? 'Done ✓ — boot the mini PC from this USB (UEFI boot menu) to install the player'
+        : 'Done ✓ — you can remove the card';
       fm.fill.style.width = '100%';
       // Turn the primary "Erase & Flash" button into a "Done" button that closes
       // the modal; the flash is finished, so Cancel is redundant — hide it.
@@ -577,6 +582,7 @@ window.td.onEvent((evt) => {
 // --- SD flashing modal ---
 const fm = {
   modal: $('flash-modal'), tag: $('flash-tag'), refresh: $('flash-refresh'),
+  kind: $('flash-kind'), kindHelp: $('flash-kind-help'),
   list: $('disk-list'), go: $('flash-go'), cancel: $('flash-cancel'),
   progress: $('flash-progress'), phase: $('flash-phase'), fill: $('flash-fill'),
   hostname: $('flash-hostname'), ssid: $('flash-ssid'), psk: $('flash-psk'),
@@ -589,6 +595,35 @@ function validHostname(name) {
 }
 let selectedDisk = null;
 let flashing = false;
+// Player kinds (deploy_engine/players.py), from the sidecar's 'ready' event; the
+// <select> ships with the same two as a fallback.
+let playerKinds = [];
+let lastReleases = [];
+function playerOf(kind) {
+  return playerKinds.find((p) => p.kind === kind)
+    || { kind, media: kind === 'amd64' ? 'USB installer' : 'SD card' };
+}
+function renderPlayerKinds(list) {
+  if (!Array.isArray(list) || !list.length) return;
+  playerKinds = list;
+  const prev = fm.kind.value;
+  fm.kind.innerHTML = '';
+  for (const p of list) {
+    const o = document.createElement('option');
+    o.value = p.kind;
+    o.textContent = `${p.label} — ${p.media}`;
+    fm.kind.appendChild(o);
+  }
+  if (list.some((p) => p.kind === prev)) fm.kind.value = prev;
+  updateKindHelp();
+}
+function updateKindHelp() {
+  fm.kindHelp.textContent = fm.kind.value === 'amd64'
+    ? 'Writes an install USB. Boot the mini PC from it: it installs the player onto the internal disk (erasing it) and reboots. Hostname, Wi-Fi and deploy keys carry over.'
+    : 'Writes the SD card the Pi boots from.';
+  // Only releases that carry this player's image are selectable.
+  renderReleases(lastReleases);
+}
 // The CI-stamped default (or 'latest') to select once the releases list arrives.
 // Set from the sidecar 'ready' settings; kept in sync into the <select>.
 let defaultTag = 'latest';
@@ -597,6 +632,9 @@ let defaultTag = 'latest';
 // prereleases and (re)selecting the stamped default. Always keep at least the
 // default option so the picker works even if the network request failed.
 function renderReleases(releases) {
+  lastReleases = releases || [];
+  const kind = fm.kind.value;
+  releases = lastReleases.filter((r) => !Array.isArray(r.kinds) || r.kinds.includes(kind));
   const prev = fm.tag.value;
   fm.tag.innerHTML = '';
   const seen = new Set();
@@ -661,7 +699,7 @@ function closeFlash() { if (!flashing) fm.modal.classList.add('hidden'); }
 function renderDisks(disks) {
   fm.list.innerHTML = '';
   if (!disks.length) {
-    fm.list.innerHTML = '<li class="muted">No removable disks found. Insert an SD card and Refresh.</li>';
+    fm.list.innerHTML = '<li class="muted">No removable disks found. Insert an SD card or USB drive and Refresh.</li>';
     return;
   }
   for (const d of disks) {
@@ -696,6 +734,7 @@ fm.refresh.onclick = () => {
 };
 // Persist the flash-time hostname prefill as it's edited.
 fm.hostname.onchange = pushSettings;
+fm.kind.onchange = () => { updateKindHelp(); pushSettings(); };
 
 fm.go.onclick = () => {
   if (fm.go.dataset.mode === 'done') { closeFlash(); return; }  // finished -> close
@@ -722,7 +761,7 @@ fm.go.onclick = () => {
   fm.phase.textContent = 'Starting…';
   window.td.send({
     cmd: 'flash', disk_id: selectedDisk.id, tag: fm.tag.value || 'latest',
-    hostname: hostname || 'tdplayer', networks,
+    kind: fm.kind.value || 'pi3', hostname: hostname || 'tdplayer', networks,
   });
 };
 
@@ -743,6 +782,8 @@ fm.go.onclick = () => {
   renderWifiSaved();
   // Prefill the flash modal's hostname (per-card, not durable config).
   if (s.flashHostname) fm.hostname.value = s.flashHostname;
+  if (s.flashKind) fm.kind.value = s.flashKind;
+  updateKindHelp();
   if (s.toe) setToe(s.toe);
   // configDir is now known: push it and (re)load the key list from that dir. Safe
   // if 'ready' already fired with the default dir — this re-syncs to userData.

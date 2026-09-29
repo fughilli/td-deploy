@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """CLI harness for the td-deploy engine (Phase-1 verification).
 
-    python app/toxc_deploy_cli.py project.toe --pi tdplayer.local --target gles2 \
+    python app/toxc_deploy_cli.py project.toe --pi tdplayer.local [--target auto] \
         [--set-file project1/moviefilein1=/path/Banana.tif] [--bridge host.docker.internal:8770] \
         [--skip-unsupported] [--magic-chop] \
         [--asset-root /media/library] [--asset-map Banana.tif=/path/other.png]
 
-Compiles the .toe, finishes it for aarch64 on THIS host, and live-updates the Pi.
+    python app/toxc_deploy_cli.py project.toe --pi showbox.local   # an x86_64 player, same flags
+
+Asks the player what it is (ssh `uname -m`), compiles the .toe for it — GLSL ES +
+aarch64 native code for a Pi; desktop GL + x86_64 native code for a mini PC, or a
+Python-host artifact when the project runs Python — and live-updates it.
 In the dev container (no local toeexpand) pass --bridge to expand via the Mac host
 bridge; on a machine with TouchDesigner it's found automatically.
 """
@@ -23,10 +27,22 @@ from deploy_engine import cli_progress, deploy  # noqa: E402
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Compile a .toe and live-deploy it to the Pi")
+    ap = argparse.ArgumentParser(description="Compile a .toe and live-deploy it to a player")
     ap.add_argument("toe", help="project .toe/.tox (or a toxc IR .json)")
-    ap.add_argument("--pi", required=True, help="Pi host (e.g. tdplayer.local)")
-    ap.add_argument("--target", choices=["desktop_gl", "gles", "gles2"], default="gles2")
+    ap.add_argument(
+        "--pi", required=True, help="player host (e.g. tdplayer.local): a Pi or an x86_64 box"
+    )
+    ap.add_argument(
+        "--target",
+        choices=["auto", "desktop_gl", "gles", "gles2"],
+        default="auto",
+        help="GL target (auto: the detected player's own)",
+    )
+    ap.add_argument(
+        "--arch",
+        choices=["aarch64", "x86_64"],
+        help="the player's architecture, skipping the ssh probe",
+    )
     ap.add_argument("--res", type=int, default=256)
     ap.add_argument("--set-file", action="append", default=[], metavar="NODE=PATH")
     ap.add_argument(
@@ -78,6 +94,7 @@ def main() -> int:
         args.toe,
         args.pi,
         target=args.target,
+        arch=args.arch,
         res=args.res,
         set_file=args.set_file,
         bridge=args.bridge,

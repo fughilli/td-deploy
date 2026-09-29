@@ -12,9 +12,11 @@ import shlex
 import sys
 
 
-def worker_argv(image: str, device: str, progress_file: str) -> list[str]:
+def worker_argv(
+    image: str, device: str, progress_file: str, patch_file: str | None = None
+) -> list[str]:
     """Unprivileged form of the worker command (before elevation wrapping)."""
-    args = [image, device, progress_file]
+    args = [image, device, progress_file] + ([patch_file] if patch_file else [])
     if getattr(sys, "frozen", False):
         return [sys.executable, "--raw-write", *args]
     rawwrite = os.path.join(os.path.dirname(__file__), "rawwrite.py")

@@ -68,7 +68,33 @@ class ParseReleasesTest(unittest.TestCase):
         out = releases.parse_releases(SAMPLE)
         self.assertTrue(out)
         for r in out:
-            self.assertEqual(set(r.keys()), {"tag_name", "name", "published_at", "prerelease"})
+            self.assertEqual(
+                set(r.keys()), {"tag_name", "name", "published_at", "prerelease", "kinds"}
+            )
+
+    def test_player_kinds_from_assets(self):
+        data = [
+            {
+                "tag_name": "v2",
+                "published_at": "2026-09-01T00:00:00Z",
+                "assets": [
+                    {"name": "tdplayer-pi3.img.zst"},
+                    {"name": "tdplayer-pi3.img.zst.sha256"},
+                    {"name": "tdplayer-amd64.iso.zst.part00"},
+                    {"name": "tdplayer-amd64.iso.zst.part01"},
+                    {"name": "tdplayer-amd64.iso.zst.sha256"},
+                ],
+            },
+            # before the x86 player: one unprefixed Pi image
+            {
+                "tag_name": "v1",
+                "published_at": "2026-01-01T00:00:00Z",
+                "assets": [{"name": "tdplayer.img.zst"}],
+            },
+            {"tag_name": "v0", "published_at": "2025-01-01T00:00:00Z", "assets": []},
+        ]
+        by_tag = {r["tag_name"]: r["kinds"] for r in releases.parse_releases(data)}
+        self.assertEqual(by_tag, {"v2": ["pi3", "amd64"], "v1": ["pi3"], "v0": []})
 
     def test_newest_first(self):
         tags = [r["tag_name"] for r in releases.parse_releases(SAMPLE)]

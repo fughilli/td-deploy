@@ -2,6 +2,33 @@
 
 Newest first. See `docs/design/tox-to-pi.md` for the full design.
 
+## 2026-09-28 — x86_64 players (sbc-deploy amd64) + Python-host projects (branch feat/trickster-support)
+
+**Goal (user):** deploy "the trickster" (a Python-heavy TD installation: pose
+estimation sidecar, Execute DATs, Script TOP/SOP/CHOP, FBX rig) to an x86_64
+Linux show box, installed from sbc-deploy's amd64 installer USB and deployed
+through the same Nix machinery; CI builds the installer; the app flashes it and
+detects the player's architecture per deploy.
+
+- **Python host** (`pyhost/tdhost`, `compiler/host_compile.py`,
+  `runtime_rs/src/host{,graph}.rs`): the project's Python runs in a co-process
+  against a TD API emulation; the runtime renders a schedule of GPU passes bound
+  to host-evaluated values. Parity vs TD on a held frame: comp 30.3 dB PSNR.
+- **x86_64 player** (`deploy/nix/x86.nix`, `python-host.nix`): sbc-deploy main
+  (amd64 family), KMS on the iGPU (framework `nomodeset` undone), Mesa
+  iris/radeonsi + Intel OpenCL, Python + `tdplayer-prepare` (on-box venv keyed by
+  requirements), flash-time config imported from the installer's EFI FAT during
+  `nixos-install`. Nix-evaluated here (both families) against local mirrors.
+- **Bazel/CI:** `//deploy:tdplayer_amd64` + `//runtime_rs/cross:toxc_runtime_linux_x86_64`;
+  `build-image` is a Pi/x86 matrix publishing `tdplayer-amd64.iso.zst` (split
+  into `.partNN` over the 2 GiB asset cap).
+- **App:** `deploy_engine.players` + `detect` (ssh `uname -m` → target/triple/
+  Python host), kind-aware image download, installer-USB config as in-stream FAT
+  patches (`flasher/isoconfig.py`; fsck- and mtools-clean on mkfs.vfat volumes),
+  "Flash a player" UI.
+- **Pending hardware:** building the ISO for real (CI), booting a mini PC, iGPU
+  scanout, OpenVINO GPU inference on the box.
+
 ## 2026-09-15 — Pi image size reduction (IN PROGRESS, branch tbd)
 
 **Goal (user):** get the Pi SD image as small as possible — both the raw `.img`

@@ -103,18 +103,56 @@ dev loop, packaging, and macOS signing/notarization are documented in
 bazel run //app:dev      # interactive GUI with live-reload (renderer + main + sidecar)
 ```
 
-## Deploy targets (Pi)
+## Deploy targets (players)
+
+Two kinds of player, one flake (`deploy/nix`, an
+[sbc-deploy](https://github.com/fughilli/sbc-deploy) consumer):
 
 ```sh
-bazel run //deploy:tdplayer_pi3.image_sd -- --device /dev/sdX   # write a Pi 3 SD card
-bazel run //deploy:tdplayer.image_sd     -- --device /dev/sdX   # Pi 5
-bazel run //deploy:tdplayer_pi3.deploy_live -- <host>           # push to a running Pi
+bazel run //deploy:tdplayer_pi3.image_sd -- --device /dev/sdX            # write a Pi 3 SD card
+bazel run //deploy:tdplayer.image_sd     -- --device /dev/sdX            # Pi 5
+bazel run //deploy:tdplayer_amd64.image_installer -- --device /dev/sdX   # x86_64 install USB
+bazel run //deploy:tdplayer_pi3.deploy_live   -- <host>                  # push a system to a Pi
+bazel run //deploy:tdplayer_amd64.deploy_live -- <host>                  # ... to a mini PC
 ```
 
-The player image is a lean, headless NixOS build (VC4/V3D hardware GL, no LLVM/llvmpipe)
-that boots straight into the runtime, with optional tailnet membership. Sizing,
-mesa-lean flags, and the on-device diagnostics live in
+- **Raspberry Pi** — a lean, headless NixOS SD image (VC4/V3D hardware GL, no
+  LLVM/llvmpipe) that boots straight into the runtime.
+- **x86_64 mini PC** (Intel/AMD iGPU) — sbc-deploy's amd64 family: a bootable
+  install USB that installs the same system onto the box's internal disk
+  (UEFI/systemd-boot), with KMS + Mesa iris/radeonsi and Python for
+  [Python-host projects](#python-host-projects-x86_64-players).
+
+Both come up as `tdplayer.local` with optional tailnet membership. The app and
+`app/toxc_deploy_cli.py` ask the box which it is (`uname -m`) on every deploy and
+build for it. Sizing, mesa-lean flags, and the on-device diagnostics live in
 **[`deploy/README.md`](deploy/README.md)**.
+
+## Python-host projects (x86_64 players)
+
+A project whose visuals are driven by Python TouchDesigner can't compile away —
+Execute DATs, Script TOPs/CHOPs/SOPs, Python expressions over `fetch()` or
+`op(...).module` — compiles (`compiler/host_compile.py`) to a `toxc-host/1`
+artifact instead: the network (`host/network.json`), the TD Python API emulation
+(`pyhost/tdhost`, shipped in `host/`), a render schedule of GPU passes bound to
+host-evaluated values, and the project's own files. On the player the runtime
+spawns `python -m tdhost.serve` from the project's venv and exchanges one framed
+message per frame (`runtime_rs/src/host.rs`, `hostgraph.rs`).
+
+A `td-deploy.json` beside the `.toe` lists what else ships and the Python deps:
+
+```json
+{
+  "files": ["scripts/*.py", "models/*.onnx"],
+  "python": { "requirements": "requirements-linux.txt" }
+}
+```
+
+The player builds that venv before the artifact goes live (`tdplayer-prepare`,
+baked into the x86 image), keyed by the requirements, so only a changed set
+reinstalls. Wheels come from PyPI, or offline from a `wheels/` folder you list in
+`files`. `TOXC_SET="/project1/rig:Mode=in"` pins parameters at startup (the unit's
+environment) — handy for tests and on-site overrides.
 
 ## The host bridge
 
@@ -133,12 +171,12 @@ endpoints (fixed commands, no arbitrary exec).
 
 Four GitHub Actions workflows (`.github/workflows/`):
 
-| Workflow          | What it does                                          |
-| ----------------- | ----------------------------------------------------- |
-| `test`            | Presubmit: `prek` lints + the Bazel test suite        |
-| `build-image`     | Builds the Pi `.img.zst` and attaches it to a Release |
-| `build-toolchain` | Builds the per-OS cross toolchain the app bundles     |
-| `build-app`       | Builds the signed `.dmg` / `.exe` and attaches them   |
+| Workflow          | What it does                                                                           |
+| ----------------- | -------------------------------------------------------------------------------------- |
+| `test`            | Presubmit: `prek` lints + the Bazel test suite                                         |
+| `build-image`     | Builds the Pi `.img.zst` + the x86_64 installer `.iso.zst`, attaches them to a Release |
+| `build-toolchain` | Builds the per-OS cross toolchain the app bundles                                      |
+| `build-app`       | Builds the signed `.dmg` / `.exe` and attaches them                                    |
 
 **One release tag drives all three build workflows.** Push a `vX.Y.Z` tag; the image,
 toolchain, and app builds attach their artifacts to that Release. macOS signing +
@@ -191,6 +229,65 @@ Parameter expressions on any operator may also reference other CHOPs (e.g. `cons
 math/`absTime` expressions); these are transpiled rather than mapped as named operators.
 
 <!-- END GENERATED: supported-operators -->
+
+## Supported operators (Python host, x86_64 players)
+
+<!-- BEGIN GENERATED: python-host-operators -->
+
+_Generated by tools/gen_supported_ops.py from compiler/host_compile.py. Do not edit by hand; run the
+script to refresh._
+
+A project that runs Python TouchDesigner can't compile away (Execute DATs, Script operators, Python
+expressions over storage/modules) deploys to an x86_64 player as a Python-host artifact: the
+project's Python runs against pyhost's TouchDesigner API emulation and the runtime renders what it
+binds. Anything else is passed through and reported in the coverage log.
+
+### TOPs
+
+| TouchDesigner TOP | Notes                                                                      |
+| ----------------- | -------------------------------------------------------------------------- |
+| `null`            | Pass through.                                                              |
+| `out`             | Pass through (COMP output).                                                |
+| `in`              | COMP input (blank when unwired).                                           |
+| `select`          | Another TOP by reference.                                                  |
+| `renderselect`    | One colour buffer of a Render TOP (MRT).                                   |
+| `depth`           | A Render TOP's depth.                                                      |
+| `script`          | numpy frames from a Script TOP's onCook, uploaded each frame.              |
+| `moviefilein`     | A still image file, as a texture.                                          |
+| `importselect`    | A texture referenced by an FBX COMP.                                       |
+| `glsl`            | Custom GLSL (TD's GLSL TOP prelude, uniforms, MRT, extra inputs).          |
+| `render`          | Scenes: Geometry COMPs, cameras, lights; Phong (skinned, instanced, maps). |
+| `blur`            | Gaussian blur.                                                             |
+| `fit`             | Fit/fill/stretch into a resolution.                                        |
+| `flip`            | Flip X/Y, flop.                                                            |
+| `resolution`      | Resample.                                                                  |
+| `composite`       | Multi-input composite (over, add, multiply, ...).                          |
+| `level`           | Brightness / gamma / contrast / opacity.                                   |
+| `feedback`        | The previous frame of a TOP.                                               |
+
+### SOPs (render geometry)
+
+| TouchDesigner SOP | Notes                                                                  |
+| ----------------- | ---------------------------------------------------------------------- |
+| `null`            | Pass through.                                                          |
+| `bonegroup`       | Pass through (skinning comes from the FBX clusters).                   |
+| `out`             | Pass through.                                                          |
+| `in`              | Pass through.                                                          |
+| `select`          | Another SOP by reference.                                              |
+| `transform`       | Static transform, folded into the mesh.                                |
+| `importselect`    | A mesh inside an FBX COMP (skinned: the bones follow their COMPs).     |
+| `script`          | Points/polys from a Script SOP's onCook, re-uploaded when they change. |
+
+### Other families
+
+| Family | Operators                                                                      | Notes                                                                                                                                           |
+| ------ | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| COMP   | `geometry`, `camera`, `light`, `ambientlight`, `null`, `fbx`, `base`, `window` | Object transforms (incl. parenting), instancing from CHOPs, the Window COMP's output.                                                           |
+| MAT    | `phong`                                                                        | Diffuse/normal/colour/alpha maps, alpha test, point colour.                                                                                     |
+| CHOP   | `script`                                                                       | Script CHOP channels (instancing, expressions).                                                                                                 |
+| DAT    | `execute`, `parexec`, `text`, `table`                                          | Execute / Parameter Execute callbacks run as in TD; Text DATs are modules (`op(...).module`, `mod`), file-synced ones re-read from the project. |
+
+<!-- END GENERATED: python-host-operators -->
 
 ## Contributing
 

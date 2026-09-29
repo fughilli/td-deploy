@@ -12,14 +12,15 @@ from typing import Callable
 
 # Ordered phases of a full deploy, with a rough weight for an overall bar.
 PHASES: list[tuple[str, float]] = [
+    ("detect", 0.02),  # ssh: which kind of player (CPU arch) is at the host
     ("expand", 0.10),  # toeexpand the .toe
     ("import", 0.05),  # tree -> IR
     ("optimize", 0.05),  # graph passes
     ("lower", 0.05),  # IR -> plan (shaders)
     ("emit", 0.10),  # write artifact (schedule/shaders/assets/mlir)
-    ("finish", 0.35),  # host codegen: mlir->.so (aarch64) + gles translate
-    ("push", 0.20),  # rsync artifact to the Pi
-    ("restart", 0.10),  # swap + restart service
+    ("finish", 0.35),  # host codegen: mlir->.so (player arch) + gles translate
+    ("push", 0.20),  # rsync artifact to the player
+    ("restart", 0.10),  # (venv prepare,) swap + restart service
 ]
 _PHASE_ORDER = {name: i for i, (name, _) in enumerate(PHASES)}
 

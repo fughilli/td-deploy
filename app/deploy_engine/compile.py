@@ -78,6 +78,7 @@ def compile_toe(
     magic_chop: bool = False,
     asset_roots: list[str] | None = None,
     asset_map: dict[str, str] | None = None,
+    host_mode: str = "auto",
     progress: Progress = Progress(),
 ) -> dict:
     """Expand + import + optimize + lower + emit into `outdir`. Returns emit info,
@@ -109,6 +110,8 @@ def compile_toe(
     else:
         progress.phase("expand", 0.0, os.path.basename(toe_path))
         dirroot = expand(toe_path, workdir, bridge=bridge, progress=progress)
+        if _use_python_host(dirroot, target, host_mode, progress):
+            return _compile_python_host(toe_path, dirroot, outdir, asset_roots, progress)
         progress.phase("import", 0.0, os.path.basename(dirroot))
         from importer.from_toeexpand import import_dir
 
@@ -190,3 +193,54 @@ def compile_toe(
         info["missing_assets"] = missing_assets
     progress.log(f"artifact: {info}")
     return info
+
+
+def _use_python_host(dirroot: str, target: str, host_mode: str, progress: Progress) -> bool:
+    """Python-host compile (compiler/host_compile.py) for projects whose visuals
+    are driven by Python — Execute DATs, Script operators, Python expressions over
+    storage. It needs an x86_64 player (desktop GL, and Python in the image: the
+    runtime runs the project's Python in a co-process); on a Pi those parts are
+    skipped."""
+    if host_mode == "off":
+        return False
+    from host_compile import needs_python_host  # from compiler/ (on path)
+
+    wants = host_mode == "on" or needs_python_host(dirroot)
+    if wants and target != "desktop_gl":
+        progress.log(
+            "WARNING: this project runs Python (Execute DATs / Script operators / Python "
+            f"expressions); a {target} player cannot run it — deploy to an x86_64 player "
+            "to run it with its Python, or it will render without those parts"
+        )
+        return False
+    return wants
+
+
+def _compile_python_host(toe_path, dirroot, outdir, asset_roots, progress) -> dict:
+    from host_compile import compile_host  # from compiler/ (on path)
+
+    progress.phase("import", 0.0, "python-host project")
+    proj = os.path.dirname(os.path.abspath(toe_path.rstrip("/")))
+    name = os.path.basename(toe_path.rstrip("/")).split(".")[0]
+    # the project folder as the .toe knows it (absolute paths baked in on the
+    # authoring machine) — overridable when compiling a copied/expanded tree
+    authored = os.environ.get("TOXC_PROJECT_ORIGIN", proj)
+    res = compile_host(
+        dirroot,
+        outdir,
+        project_dir=proj,
+        project_name=name,
+        path_map={authored: proj},
+        asset_roots=list(asset_roots or []),
+        log=progress.log,
+    )
+    progress.phase("emit", 1.0, outdir)
+    return {
+        "steps": len(res["schedule"]["nodes"]),
+        "python_host": True,
+        "unsupported": res["unsupported"],
+        "unsupported_chops": [],
+        "magic_chops": [],
+        "missing_assets": [],
+        "coverage": res["coverage"],
+    }

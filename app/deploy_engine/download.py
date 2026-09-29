@@ -1,7 +1,8 @@
-"""Fetch the Pi base image from GitHub Releases and verify it.
+"""Fetch a player base image from GitHub Releases and verify it.
 
-The desktop app never builds the base image (that's CI's job); it downloads the
-published `.img` by release tag and flashes it. Assets are resolved via the GitHub
+The desktop app never builds a base image (that's CI's job); it downloads the one
+published for the kind of player being flashed (players.py: the Pi SD `.img`, or
+the x86_64 install-USB `.iso`) by release tag, and flashes it. Assets are resolved via the GitHub
 releases API so we don't hard-code asset filenames, and the download is verified
 against the accompanying `.sha256` (or an asset digest) before it is ever written
 to a disk.
@@ -15,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import ssl
 import urllib.request
 from dataclasses import dataclass
@@ -170,31 +172,74 @@ def _decompress_zst(src: str, dest: str, on_progress: OnProgress) -> None:
     os.replace(tmp, dest)
 
 
+def select_image(rel: Release, kind: str = "pi3") -> list[Asset]:
+    """The asset(s) holding `kind`'s image in `rel`: one `<image>.zst` (or raw
+    `<image>`), or its ordered `.zst.partNN` pieces. Releases from before the x86
+    player carry one unprefixed Pi image, which `pi3` still finds."""
+    from . import players
+
+    p = players.get(kind)
+    by_name = {a.name: a for a in rel.assets}
+    for name in (p.image + ".zst", p.image):
+        if name in by_name:
+            return [by_name[name]]
+    parts = sorted(
+        (a for a in rel.assets if a.name.startswith(p.image + ".zst.part")),
+        key=lambda a: a.name,
+    )
+    if parts:
+        return parts
+    if kind == "pi3":
+        legacy = rel.find(".img.zst", ".img", ".img.raw")
+        if legacy:
+            return [legacy]
+    raise FileNotFoundError(f"release {rel.tag!r} has no {p.label} image ({p.image})")
+
+
+def _whole_name(assets: list[Asset]) -> str:
+    """The logical image file name (`x.iso.zst` for `x.iso.zst.part00`...)."""
+    name = assets[0].name
+    if len(assets) > 1 or ".zst.part" in name:
+        name = name[: name.index(".zst.part") + len(".zst")]
+    return name
+
+
+def _expected_whole_sha(rel: Release, assets: list[Asset]) -> Optional[str]:
+    if len(assets) == 1:
+        return _expected_sha(rel, assets[0])
+    whole = _whole_name(assets)
+    sidecar = rel.find(whole + ".sha256")
+    if sidecar:
+        text = _get(sidecar.url, accept="application/octet-stream").decode("utf-8", "replace")
+        return text.strip().split()[0] if text.strip() else None
+    return None
+
+
 def fetch_base_image(
     tag: str = "latest",
     *,
+    kind: str = "pi3",
     repo: str = REPO,
     cache_dir: Optional[str] = None,
     on_progress: OnProgress = _noop,
     verify: bool = True,
 ) -> str:
-    """Download (+ verify + decompress) the base image for `tag`; return the raw
-    `.img` path ready for flashing.
+    """Download (+ verify + decompress) the `kind` player's base image for `tag`;
+    return the raw image path (`.img` / `.iso`) ready for flashing.
 
-    The release ships a compressed `.img.zst` (the raw image exceeds GitHub's 2 GiB
-    asset limit); we verify the .zst's sha256, then decompress to a raw .img in the
-    cache. A cached image whose checksum already matches is reused without
-    re-downloading. Raises on checksum mismatch (the bad file is removed).
+    The release ships a compressed `.zst` (the raw image exceeds GitHub's 2 GiB
+    asset limit) — possibly in `.partNN` pieces, concatenated here; we verify the
+    whole .zst's sha256, then decompress to a raw image in the cache. A cached
+    image whose checksum already matches is reused without re-downloading.
+    Raises on checksum mismatch (the bad file is removed).
     """
     rel = get_release(tag, repo)
-    img = rel.find(".img.zst", ".img", ".img.raw", ".iso")
-    if img is None:
-        raise FileNotFoundError(f"release {rel.tag!r} has no image asset")
+    assets = select_image(rel, kind)
     cache = cache_dir or default_cache_dir()
     os.makedirs(cache, exist_ok=True)
-    dest = os.path.join(cache, f"{rel.tag}-{img.name}")  # the downloaded asset
-    raw = dest[: -len(".zst")] if dest.endswith(".zst") else dest  # flashable .img
-    expected = _expected_sha(rel, img) if verify else None
+    dest = os.path.join(cache, f"{rel.tag}-{_whole_name(assets)}")  # the downloaded .zst
+    raw = dest[: -len(".zst")] if dest.endswith(".zst") else dest  # flashable image
+    expected = _expected_whole_sha(rel, assets) if verify else None
 
     def _ensure_raw() -> str:
         if dest.endswith(".zst"):
@@ -212,13 +257,27 @@ def fetch_base_image(
     elif os.path.exists(dest) and not expected:
         return _ensure_raw()
 
-    on_progress(0.0, f"downloading {img.name}")
-    _download(img, dest, on_progress)
+    if len(assets) == 1:
+        on_progress(0.0, f"downloading {assets[0].name}")
+        _download(assets[0], dest, on_progress)
+    else:
+        tmp = dest + ".cat"
+        with open(tmp, "wb") as out:
+            for i, a in enumerate(assets):
+                piece = dest + f".piece{i}"
+                on_progress(0.0, f"downloading {a.name} ({i + 1}/{len(assets)})")
+                _download(a, piece, on_progress)
+                with open(piece, "rb") as fh:
+                    shutil.copyfileobj(fh, out, 1 << 20)
+                os.remove(piece)
+        os.replace(tmp, dest)
     if expected:
         got = _sha256(dest, on_progress)
         if got.lower() != expected.lower():
             os.remove(dest)
             raise ValueError(f"sha256 mismatch: got {got}, expected {expected}")
+    if os.path.exists(raw) and raw != dest:
+        os.remove(raw)  # a stale decompression of an older download
     result = _ensure_raw()
     on_progress(1.0, "ready")
     return result

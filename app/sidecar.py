@@ -5,17 +5,20 @@ Protocol: newline-delimited JSON. Electron writes one command object per line on
 stdin; the sidecar writes event objects on stdout.
 
 Commands (stdin):
-  {"cmd":"set_settings","settings":{"pi":"tdplayer.local","target":"gles2",
+  {"cmd":"set_settings","settings":{"pi":"tdplayer.local","target":"auto",
       "key":null,"set_file":[...],"bridge":null}}
   {"cmd":"pick_toe","toe":"/path/project.toe"}        # set the current project
   {"cmd":"deploy"}                                     # deploy the current .toe now
   {"cmd":"watch","enable":true}                        # auto-deploy on save
   {"cmd":"list_disks"}                                 # enumerate removable disks
   {"cmd":"list_releases"}                               # enumerate base-image releases
-  {"cmd":"flash","disk_id":"...","tag":"latest",       # download base img + flash SD
+  {"cmd":"flash","disk_id":"...","tag":"latest",       # download base img + flash it
+      "kind":"pi3|amd64",                              # which player (deploy_engine/players.py):
+                                                       #   Pi SD card | x86_64 install USB
       "hostname":"tdplayer","networks":[{"ssid":..,"psk":..}]}  # optional per-card config
-      # every ACTIVE deploy key's public line is added automatically -> the card's
-      # /boot/firmware/authorized_keys, so the flashed Pi trusts them at first boot.
+      # every ACTIVE deploy key's public line is added automatically (the card's
+      # /boot/firmware/authorized_keys, or the install USB's TDCONFIG.JSN), so the
+      # flashed player trusts them at first boot.
   {"cmd":"cancel_flash"}                                # abort an in-flight flash (before write)
   {"cmd":"add_deploy_key","name":"...","path":null}    # generate (path null) or source a key
   {"cmd":"list_deploy_keys"}                            # [{name,kind,path,dir,active,login,fp}]
@@ -25,7 +28,9 @@ Commands (stdin):
   {"cmd":"ping"}
 
 Events (stdout):
-  {"type":"ready"} {"type":"settings",...} {"type":"start","toe":...}
+  {"type":"ready","settings":..,"players":[{kind,label,media,arch,...}]}
+  {"type":"settings",...} {"type":"start","toe":...}
+  {"type":"done","ok":true,"staging":..,"player":"pi3|amd64"}
   {"type":"deploy_keys","keys":[{name,kind,path,dir,active,login,fingerprint}],"active":[..],"login":..}
   {"type":"deploy_key_generated","name":..,"fingerprint":..,"pub":..}
   {"type":"progress","phase":...,"frac":..,"overall":..,"message":...}
@@ -35,7 +40,7 @@ Events (stdout):
   {"type":"assets","missing":[{"path":...,"node":...,"searched":[...]}]} {"type":"pong"}
   {"type":"disks","disks":[{"id":..,"name":..,"size_gb":..,"bus":..}]}
   {"type":"releases","releases":[{"tag_name":..,"name":..,"published_at":..,"prerelease":bool}]}
-  {"type":"flash_start","disk":..,"tag":..}
+  {"type":"flash_start","disk":..,"tag":..,"kind":..}
   {"type":"flash_progress","stage":"download|write","frac":..,"message":..}
   {"type":"flash_done","disk":..} {"type":"flash_error","message":..}
 
@@ -168,7 +173,7 @@ class Sidecar:
     def __init__(self) -> None:
         self.settings = {
             "pi": "tdplayer.local",
-            "target": "gles2",
+            "target": "auto",  # auto: the detected player's own (gles2 Pi, desktop_gl x86)
             "key": None,
             "set_file": [],
             "bridge": os.environ.get("TOXC_HOST"),
@@ -229,7 +234,14 @@ class Sidecar:
                     asset_map=s.get("asset_map") or {},
                     progress=self._progress(),
                 )
-                emit({"type": "done", "ok": True, "staging": res["staging"]})
+                emit(
+                    {
+                        "type": "done",
+                        "ok": True,
+                        "staging": res["staging"],
+                        "player": res.get("player"),
+                    }
+                )
                 info = res.get("info") or {}
                 missing = info.get("missing_assets") or []
                 if missing:
@@ -316,14 +328,16 @@ class Sidecar:
         hostname: str | None = None,
         networks: list | None = None,
         authorized_keys: list | None = None,
+        kind: str = "pi3",
     ) -> None:
-        from deploy_engine import download, flasher
+        from deploy_engine import download, flasher, players
 
         try:
+            player = players.get(kind)
             disk = flasher.require_removable(disk_id)  # confirm before any work
-            emit({"type": "flash_start", "disk": disk.to_dict(), "tag": tag})
+            emit({"type": "flash_start", "disk": disk.to_dict(), "tag": tag, "kind": player.kind})
             if not image:
-                emit({"type": "log", "line": f"fetching base image {tag}"})
+                emit({"type": "log", "line": f"fetching {player.label} image {tag}"})
                 # Move the UI off "Starting…" immediately — resolving the release +
                 # opening the connection has no byte-progress of its own, so without
                 # this the phase looks frozen for the whole lookup/first chunk.
@@ -337,6 +351,7 @@ class Sidecar:
                 )
                 image = download.fetch_base_image(
                     tag,
+                    kind=player.kind,
                     on_progress=lambda f, m: emit(
                         {"type": "flash_progress", "stage": "download", "frac": f, "message": m}
                     ),
@@ -360,7 +375,7 @@ class Sidecar:
             )
             emit({"type": "flash_done", "disk": disk.to_dict()})
         except Exception as e:  # noqa: BLE001 - surface to UI
-            emit(_error_event("flash_error", e, action="flashing an SD card"))
+            emit(_error_event("flash_error", e, action="flashing a player image"))
 
     def start_flash(
         self,
@@ -369,9 +384,11 @@ class Sidecar:
         image: str | None,
         hostname: str | None = None,
         networks: list | None = None,
+        kind: str | None = None,
     ) -> None:
-        # Include EVERY active deploy key's public line so the flashed card's
-        # /boot/firmware/authorized_keys trusts them all at first boot (image half).
+        # Include EVERY active deploy key's public line so the flashed player trusts
+        # them all at first boot (the card's /boot/firmware/authorized_keys, or the
+        # install USB's TDCONFIG.JSN — the image half).
         authorized_keys = None
         try:
             lines = self._keystore_for().active_public_lines()
@@ -382,7 +399,7 @@ class Sidecar:
         self._flash_cancel.clear()  # fresh run; a prior cancel must not carry over
         threading.Thread(
             target=self._flash_worker,
-            args=(disk_id, tag, image, hostname, networks, authorized_keys),
+            args=(disk_id, tag, image, hostname, networks, authorized_keys, kind or "pi3"),
             daemon=True,
         ).start()
 
@@ -536,6 +553,7 @@ class Sidecar:
                 msg.get("image"),
                 msg.get("hostname"),
                 msg.get("networks"),
+                msg.get("kind"),
             )
         elif cmd == "cancel_flash":
             # Best-effort: the worker checks this before the raw write, so a flash
@@ -573,7 +591,15 @@ def main() -> int:
         return rawwrite.main(sys.argv[2:])
 
     sc = Sidecar()
-    emit({"type": "ready", "settings": sc.settings})
+    from deploy_engine import players
+
+    emit(
+        {
+            "type": "ready",
+            "settings": sc.settings,
+            "players": [p.to_dict() for p in players.PLAYERS.values()],
+        }
+    )
     for line in sys.stdin:
         line = line.strip()
         if not line:

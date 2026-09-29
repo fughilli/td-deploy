@@ -1,22 +1,28 @@
-"""//deploy — Raspberry Pi SD-image / live-deploy targets (via sbc-deploy).
+"""//deploy — player images + live-deploy targets (via sbc-deploy).
 
   bazel run //deploy:toxc_artifact                 # compile the demo IR -> artifact
   bazel run //deploy:tdplayer_pi3.image_sd  -- --device /dev/sdX   # flash a Pi 3 SD
   bazel run //deploy:tdplayer.image_sd      -- --device /dev/sdX   # flash a Pi 5 SD
-  bazel run //deploy:tdplayer_pi3.deploy_live -- tdplayer.local    # push app to a running Pi
+  bazel run //deploy:tdplayer_amd64.image_installer -- --device /dev/sdX  # x86_64 install USB
+  bazel run //deploy:tdplayer_pi3.deploy_live -- tdplayer.local    # push to a running Pi
+  bazel run //deploy:tdplayer_amd64.deploy_live -- tdplayer.local  # push to a mini PC
   bazel run //deploy:tdplayer_pi3.ssh       -- tdplayer.local
   bazel run //deploy:tdplayer_pi3.keys      -- init
 
-The image bundles two Bazel-built inputs (build_data): the portable artifact
-(:toxc_artifact) and the dynamic aarch64 Rust runtime (//runtime_rs). The flake
-(deploy/nix) finishes the aarch64 native lowering + autoPatchelfs the runtime.
-On macOS, start the aarch64 builder first: `bazel run @sbc_deploy//:linux_builder`.
+Each image bundles two Bazel-built inputs (build_data): the portable artifact
+(:toxc_artifact) and the dynamic Rust runtime cross-built for the image's arch
+(//runtime_rs/cross). The flake (deploy/nix) finishes the native lowering for
+that arch + autoPatchelfs the runtime. On macOS, sbc-deploy manages the
+aarch64 / x86_64 Linux builder VMs.
 """
 
 load("@sbc_deploy//deploy:defs.bzl", "sbc_application")
 load(":artifact.bzl", "toxc_artifact")
 
 package(default_visibility = ["//visibility:public"])
+
+# The x86 image's venv step, unit-tested by //:tdplayer_prepare_test.
+exports_files(["nix/tdplayer-prepare.py"])
 
 # The compiled artifact baked into the image. Keep the target named
 # `toxc_artifact` (deploy/nix/apps.nix reads that basename).
@@ -41,7 +47,7 @@ toxc_artifact(
     prebuilt_strip = "deploy/prebuilt/ascii/",
 )
 
-_BUILD_DATA = [
+_BUILD_DATA_AARCH64 = [
     ":toxc_artifact",
     # The runtime cross-built for the Pi (aarch64-linux-gnu) — NOT the host
     # //runtime_rs:toxc_runtime, which on a macOS deploy host is a Mach-O binary
@@ -55,7 +61,7 @@ _BUILD_DATA = [
 # wanted on a headless appliance. Flows to the flake via $SBC_LEAN.
 sbc_application(
     name = "tdplayer",
-    build_data = _BUILD_DATA,
+    build_data = _BUILD_DATA_AARCH64,
     flake = "deploy/nix",
     hostname = "tdplayer",
     lean = True,
@@ -65,7 +71,27 @@ sbc_application(
 sbc_application(
     name = "tdplayer_pi3",
     board = "@sbc_deploy//deploy/boards:raspberry-pi-3",
-    build_data = _BUILD_DATA,
+    build_data = _BUILD_DATA_AARCH64,
+    flake = "deploy/nix",
+    hostname = "tdplayer",
+    lean = True,
+)
+
+# x86_64 mini PC (Intel/AMD iGPU) — the same flake + config under sbc-deploy's
+# amd64 family: `image_installer` builds a bootable install USB carrying the
+# whole system (offline install onto the internal disk, UEFI/systemd-boot), and
+# `deploy_live` pushes new generations to the installed box. The flake adds the
+# x86 modules (KMS on the iGPU, Mesa iris/radeonsi, Python for Python-host
+# artifacts) off $SBC_BOARD_FAMILY.
+_BUILD_DATA_X86_64 = [
+    ":toxc_artifact",
+    "//runtime_rs/cross:toxc_runtime_linux_x86_64",
+]
+
+sbc_application(
+    name = "tdplayer_amd64",
+    board = "@sbc_deploy//deploy/boards:amd64-generic",
+    build_data = _BUILD_DATA_X86_64,
     flake = "deploy/nix",
     hostname = "tdplayer",
     lean = True,

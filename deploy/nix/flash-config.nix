@@ -20,23 +20,73 @@
 # with the right name and networks. Absent files → no-op, so a default flash (no
 # customization) behaves exactly as before. Every step is guarded so a malformed
 # drop-in can never fail the boot.
+#
+# x86_64 (installer USB): the USB is an ISO — read-only, and pulled once the
+# system is installed — so the app instead writes the same settings as one JSON
+# file, TDCONFIG.JSN, into the installer's FAT EFI partition (label EFIBOOT;
+# deploy_engine/flasher/isoconfig.py). `nixos-install` runs this system's
+# activation (nixos-enter) with the USB still attached, and the activation step
+# below imports that file into /var/lib/td-flash-config/ on the INSTALLED disk,
+# in the /boot/firmware layout above; it re-imports on any later boot the USB is
+# plugged into (reflash the stick to change the settings). The same oneshot then
+# applies them from there, every boot.
 { config, lib, pkgs, ... }:
+let
+  isX86 = pkgs.stdenv.hostPlatform.isx86_64;
+  # Where the flash-time settings live: the Pi's FAT boot partition, or on x86
+  # the state dir the installer-USB import fills.
+  src = if isX86 then "/var/lib/td-flash-config" else "/boot/firmware";
+
+  # x86: TDCONFIG.JSN on the installer USB's EFI partition -> ${src}. mtools
+  # reads the FAT without mounting (works inside the nixos-install chroot).
+  importScript = pkgs.writeShellScript "td-flash-config-import" ''
+    set -u
+    PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.gnugrep pkgs.jq pkgs.mtools ]}
+    dev=/dev/disk/by-label/EFIBOOT
+    [ -e "$dev" ] || exit 0
+    json="$(MTOOLS_SKIP_CHECK=1 mtype -i "$dev" ::/TDCONFIG.JSN 2>/dev/null)" || exit 0
+    [ -n "$json" ] || exit 0
+    printf '%s' "$json" | jq -e 'type == "object"' >/dev/null 2>&1 || {
+      echo "td-flash-config: ignoring malformed TDCONFIG.JSN"; exit 0; }
+    echo "td-flash-config: importing installer-USB settings into ${src}"
+    tmp="$(mktemp -d ${src}.XXXXXX)" || exit 0
+    chmod 0700 "$tmp"
+    printf '%s' "$json" | jq -r '.hostname // empty' > "$tmp/td-hostname"
+    printf '%s' "$json" | jq -r '(.authorized_keys // [])[]' > "$tmp/authorized_keys"
+    mkdir -p "$tmp/system-connections"
+    for name in $(printf '%s' "$json" | jq -r '(.connections // {}) | keys[]'); do
+      printf '%s' "$name" | grep -Eq '^[A-Za-z0-9._-]+\.nmconnection$' || continue
+      printf '%s' "$json" | jq -r --arg n "$name" '.connections[$n]' \
+        > "$tmp/system-connections/$name"
+    done
+    rm -rf ${src}
+    mv "$tmp" ${src}
+  '';
+in
 {
+  # Import during nixos-install (activation runs in the install chroot while the
+  # USB is attached) and on every later activation; a no-op without the USB.
+  system.activationScripts.tdFlashConfigImport = lib.mkIf isX86
+    (lib.stringAfter [ "var" ] "${importScript} || true");
+
   systemd.services.td-flash-config = {
-    description = "Apply flash-time hostname + WiFi + deploy key from /boot/firmware";
+    description = "Apply flash-time hostname + WiFi + deploy key from ${src}";
     wantedBy = [ "multi-user.target" ];
     # The boot FAT partition must be mounted; come up before the network stack so
     # the hostname/networks are in place when NetworkManager and Tailscale start.
-    unitConfig.RequiresMountsFor = [ "/boot/firmware" ];
+    unitConfig.RequiresMountsFor = [ (if isX86 then "/var/lib" else "/boot/firmware") ];
     before = [ "NetworkManager.service" "tailscaled-autoconnect.service" "tailscale-hostname.service" ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
+    } // lib.optionalAttrs isX86 {
+      # Pick up a (re)flashed installer USB plugged into an installed box.
+      ExecStartPre = "-${importScript}";
     };
     path = [ pkgs.coreutils pkgs.gnugrep pkgs.inetutils ]; # grep, `hostname`
     script = ''
       set -u
-      firmware=/boot/firmware
+      firmware=${src}
 
       # --- hostname ---------------------------------------------------------
       hn="$firmware/td-hostname"

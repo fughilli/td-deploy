@@ -35,6 +35,20 @@ py_library(
 )
 
 # CHOP DAG -> tox dialect MLIR (P0) + lowering to a compiled kernel (P1).
+# Python-host compile (a project that runs Python TD can't compile away): the
+# .toe network -> a toxc-host/1 schedule + the pyhost package + project files.
+py_library(
+    name = "host_compile",
+    srcs = ["host_compile.py"],
+    imports = ["."],
+    deps = [
+        "//:importer",
+        "//:lowering",
+        "//:pyhost",
+        requirement("numpy"),
+    ],
+)
+
 py_library(
     name = "chop_to_tox",
     srcs = ["chop_to_tox.py"],

@@ -61,7 +61,12 @@ rust.toolchain(
     # the Pi image as build_data and MUST be a Linux ELF regardless of the deploy
     # host — on macOS a host-targeted rust_binary produces a Mach-O the Pi can't
     # exec. //runtime_rs/cross transitions the build to this triple.
-    extra_target_triples = ["aarch64-unknown-linux-gnu"],
+    # x86_64-unknown-linux-gnu: the mini-PC player (//runtime_rs/cross
+    # :toxc_runtime_linux_x86_64), cross-built the same way.
+    extra_target_triples = [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+    ],
     # The `image` crate stack uses slice::as_chunks_mut (stable since 1.88), so
     # the runtime needs >= 1.88 (toxc has no firmware rustc pin like splanc's).
     versions = ["1.88.0"],
@@ -75,7 +80,10 @@ use_repo(rust, "rust_toolchains")
 # constrained to //runtime_rs/cross:cross (see BUILD) so it binds ONLY the
 # transitioned runtime build and never hijacks host C++ (this container is itself
 # aarch64-linux). The runtime is pure Rust, so cc only runs the final link.
-register_toolchains("//runtime_rs/cross:cross_cc_toolchain")
+register_toolchains(
+    "//runtime_rs/cross:cross_cc_toolchain",
+    "//runtime_rs/cross:cross_cc_toolchain_x86_64",
+)
 
 register_toolchains("@rust_toolchains//:all")
 
@@ -165,6 +173,33 @@ in
 )
 use_repo(nix_pkg, "aarch64_cc")
 
+# The same for the x86_64-linux-gnu mini-PC runtime. pkgsCross.gnu64 is native
+# (plain `cc`, cached) on an x86_64-linux host — the CI image job — and the
+# cross clang on Darwin/aarch64 hosts.
+nix_pkg.expr(
+    name = "x86_64_cc",
+    attr = "x86_64_cc",
+    build_file_content = """\
+package(default_visibility = ["//visibility:public"])
+filegroup(name = "all", srcs = glob(["**"]))
+filegroup(name = "cc", srcs = ["bin/cc"])
+""",
+    expr = """
+let
+  pkgs = import <nixpkgs> { };
+  cc = pkgs.pkgsCross.gnu64.clangStdenv.cc;
+in
+{
+  x86_64_cc = pkgs.runCommand "x86_64-cross-cc" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
+    mkdir -p "$out/bin"
+    makeWrapper "${cc}/bin/${cc.targetPrefix}cc" "$out/bin/cc"
+  '';
+}
+""",
+    repo = "@nixpkgs",
+)
+use_repo(nix_pkg, "x86_64_cc")
+
 # The MLIR/LLVM 18 + glslang/spirv-cross native-lowering toolchains are pinned
 # (compiler/nix/mlir.nix) and driven two ways, both hermetic-via-nix:
 #   * host dev: //compiler:build_exprs / :build_shaders_gles (pinned `nix shell`).
@@ -182,10 +217,10 @@ use_repo(nix_pkg, "aarch64_cc")
 bazel_dep(name = "sbc_deploy", version = "0.0.0")
 git_override(
     module_name = "sbc_deploy",
-    # build-data branch (matches deploy/nix/flake.lock — keep the two in sync).
-    # Adds the `.seed_wifi` target; includes build_data + the deploy brick-guard,
-    # the hermetic flake-source staging + macOS builder fix, the lean git drop
-    # (PR #20), and moving .sbc-build out of the workspace into the cache dir.
-    commit = "13e2927c67becddca531c633ac7dee47a6cdd6de",
+    # main (matches deploy/nix/flake.lock — keep the two in sync). Has the amd64
+    # family (bootable installer USB + the amd64-generic board, #16), build_data
+    # with storePath closures (#19), the family-aware deploy guard (#18), the
+    # .seed_wifi target and the lean git drop.
+    commit = "23c03bdcefa0cd4b90ea1ec611456984d91a389a",
     remote = "https://github.com/fughilli/sbc-deploy.git",
 )

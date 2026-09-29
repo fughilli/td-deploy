@@ -76,6 +76,15 @@ py_library(
 # The reference runtime: numpy CPU backend + EGL/Mesa GL backend + MJPEG stream.
 # The GL path additionally needs Mesa at RUNTIME (LD_LIBRARY_PATH); see the
 # //:toxc_nixgl fallback and deploy/README for the headless-EGL env.
+# The Python host (pyhost/tdhost): the TouchDesigner Python API emulation a
+# Python-host artifact runs on the player (see compiler/host_compile.py).
+py_library(
+    name = "pyhost",
+    srcs = glob(["pyhost/tdhost/*.py"]),
+    imports = ["pyhost"],
+    deps = [requirement("numpy")],
+)
+
 py_library(
     name = "runtime",
     srcs = glob(["runtime/*.py"]),
@@ -227,7 +236,10 @@ py_test(
 py_test(
     name = "releases_test",
     srcs = ["tests/releases_test.py"],
-    data = ["//app:deploy_engine/releases.py"],
+    data = [
+        "//app:deploy_engine/players.py",
+        "//app:deploy_engine/releases.py",
+    ],
     imports = ["."],
 )
 
@@ -253,5 +265,56 @@ py_test(
     name = "deploy_keys_test",
     srcs = ["tests/deploy_keys_test.py"],
     data = ["//app:deploy_engine/deploy_keys.py"],
+    imports = ["."],
+)
+
+# Python host: toeexpand tree parsing, tdu math, Par/OP semantics, storage,
+# transforms (pinned to real TouchDesigner bone matrices), the frame protocol.
+py_test(
+    name = "pyhost_test",
+    srcs = [
+        "tests/pyhost_test.py",
+        "tests/toetree.py",
+    ],
+    imports = ["."],
+    deps = [
+        ":pyhost",
+        requirement("numpy"),
+    ],
+)
+
+# The binary FBX reader behind FBX COMP support (a synthetic skinned quad).
+py_test(
+    name = "fbx_test",
+    srcs = ["tests/fbx_test.py"],
+    imports = ["."],
+    deps = [
+        ":importer",
+        requirement("numpy"),
+    ],
+)
+
+# Python-host compile end to end: schedule shape, bindings, project files, and a
+# serve.py protocol round trip on the emitted artifact.
+py_test(
+    name = "host_compile_test",
+    srcs = [
+        "tests/host_compile_test.py",
+        "tests/toetree.py",
+    ],
+    imports = ["."],
+    deps = [
+        ":pyhost",
+        "//compiler:host_compile",
+        requirement("numpy"),
+    ],
+)
+
+# The x86 player's on-box venv step (deploy/nix/tdplayer-prepare.py): offline
+# install from a shipped wheelhouse, reuse by requirements hash, no half venvs.
+py_test(
+    name = "tdplayer_prepare_test",
+    srcs = ["tests/tdplayer_prepare_test.py"],
+    data = ["//deploy:nix/tdplayer-prepare.py"],
     imports = ["."],
 )

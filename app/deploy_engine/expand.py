@@ -117,6 +117,10 @@ def expand(
 ) -> str:
     """Return the path to the expanded `*.dir`. Prefers local toeexpand; falls back
     to the bridge when no local toeexpand and `bridge` is given."""
+    if os.path.isdir(toe_path) and toe_path.rstrip("/").endswith(".dir"):
+        # already expanded (toeexpand output tree): CI and headless builds
+        progress.log(f"using expanded tree {toe_path}")
+        return toe_path
     workdir = workdir or tempfile.mkdtemp(prefix="toxc_expand_")
     os.makedirs(workdir, exist_ok=True)
     exe = discover_toeexpand()

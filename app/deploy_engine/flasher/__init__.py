@@ -264,12 +264,18 @@ def flash(
 ) -> Disk:
     """Write `image` to removable `disk_id` (raw), elevating for the byte-copy.
 
-    After a successful raw write, best-effort mounts the card's FAT boot partition
-    and drops the flash-time hostname + WiFi keyfiles + `authorized_keys` (the active
-    deploy key's public line) onto it (see flash_config).
-    That step is NON-FATAL: if the mount/write fails it emits a warning via
-    `on_warn` and still returns success — a good raw write is never bricked by a
-    failed customization drop.
+    The flash-time hostname + WiFi keyfiles + `authorized_keys` (the active deploy
+    keys' public lines) ride along, depending on the image kind:
+
+    * a Pi SD image (`.img`): after the raw write, best-effort mounts the card's
+      FAT boot partition and drops them onto it (see flash_config);
+    * an x86 installer (`.iso`): they're written into the ISO's EFI FAT partition
+      as TDCONFIG.JSN *during* the raw write, as block patches computed here from
+      the image (see isoconfig) — nothing to mount.
+
+    Either step is NON-FATAL: on failure it emits a warning via `on_warn` and the
+    flash still succeeds — a good raw write is never bricked by a failed
+    customization drop.
 
     Returns the Disk that was written. Raises if the target is not a currently
     removable disk, if elevation is cancelled, or on any raw-write error.
@@ -277,25 +283,72 @@ def flash(
     if not os.path.exists(image):
         raise FileNotFoundError(image)
     disk = require_removable(disk_id)  # hard guard, re-checked live
+    warn = on_warn or (lambda _m: None)
+    if disk.size and os.path.getsize(image) > disk.size:
+        raise ValueError(
+            f"{disk.name} ({disk.size_gb:.1f} GB) is smaller than the image "
+            f"({os.path.getsize(image) / 1e9:.1f} GB)"
+        )
     on_progress(0.0, f"preparing {disk.name} ({disk.size_gb:.1f} GB)")
+
+    installer = is_installer_image(image)
+    patch_file = None
+    if installer:
+        patch_file = _installer_patch_file(image, hostname, networks, authorized_keys, warn)
 
     pfd, progress_file = tempfile.mkstemp(prefix="tdflash_", suffix=".progress")
     os.close(pfd)
     open(progress_file, "w").close()
     try:
-        argv = worker_argv(image, disk.id, progress_file)
+        argv = worker_argv(image, disk.id, progress_file, patch_file)
         cmd = elevated_command(argv, _device_hint(disk))
         proc = subprocess.Popen(cmd, stdout=sys.stderr, stderr=sys.stderr)
         _tail_progress(progress_file, proc, on_progress)
     finally:
-        try:
-            os.remove(progress_file)
-        except OSError:
-            pass
+        for f in (progress_file, patch_file):
+            if f:
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
 
     # Raw write succeeded — now apply per-card config (best-effort, non-fatal).
-    _apply_boot_config(disk, hostname, networks, on_warn or (lambda _m: None), authorized_keys)
+    if not installer:
+        _apply_boot_config(disk, hostname, networks, warn, authorized_keys)
     return disk
 
 
-__all__ = ["Disk", "list_disks", "find_disk", "require_removable", "flash"]
+def is_installer_image(image: str) -> bool:
+    """An x86 install-USB image (a hybrid ISO) rather than a Pi SD image."""
+    name = image.lower()
+    if name.endswith(".iso"):
+        return True
+    try:
+        with open(image, "rb") as fh:
+            fh.seek(0x8001)
+            return fh.read(5) == b"CD001"  # ISO 9660 primary volume descriptor
+    except OSError:
+        return False
+
+
+def _installer_patch_file(image, hostname, networks, authorized_keys, on_warn) -> Optional[str]:
+    """Render the flash-time config into block patches for the raw writer; None
+    (with a warning) when there is nothing to write or it can't be placed."""
+    from . import isoconfig
+
+    try:
+        payload = isoconfig.render_payload(hostname, networks, authorized_keys)
+        if payload is None:
+            return None
+        patches = isoconfig.config_patches(image, payload)
+        fd, path = tempfile.mkstemp(prefix="tdflash_", suffix=".patch")
+        os.close(fd)
+        isoconfig.write_patch_file(path, patches)
+        os.chmod(path, 0o600)  # carries the WiFi PSK; root reads it regardless
+        return path
+    except Exception as e:  # noqa: BLE001 - best-effort, never fatal
+        on_warn(f"could not add hostname/WiFi/deploy key to the installer USB: {e}")
+        return None
+
+
+__all__ = ["Disk", "list_disks", "find_disk", "require_removable", "flash", "is_installer_image"]

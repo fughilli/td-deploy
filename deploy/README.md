@@ -1,7 +1,8 @@
-# td-deploy — Raspberry Pi deployment (Bazel + sbc-deploy)
+# td-deploy — player deployment (Bazel + sbc-deploy)
 
 End-to-end: a TouchDesigner `.tox` → compiled artifact → native Rust runtime on
-a Pi, imaged onto an SD card and live-deployable. **Bazel is the driver** — the
+a player — a Raspberry Pi (imaged onto an SD card) or an x86_64 mini PC
+(installed from a USB stick) — and live-deployable. **Bazel is the driver** — the
 image and live-deploy targets come from the [sbc-deploy](https://github.com/fughilli/sbc-deploy)
 framework via the `sbc_application` macro (`//deploy:BUILD.bazel`).
 
@@ -17,6 +18,9 @@ bazel build //deploy:toxc_artifact          # or point a new toxc_artifact() at 
 # 3. image an SD card (bundles the artifact + Rust runtime):
 bazel run //deploy:tdplayer_pi3.image_sd -- --device /dev/sdX      # Raspberry Pi 3
 bazel run //deploy:tdplayer.image_sd     -- --device /dev/sdX      # Raspberry Pi 5
+
+# ... or build an x86_64 install USB (Intel/AMD mini PC):
+bazel run //deploy:tdplayer_amd64.image_installer -- --device /dev/sdX
 
 # base image only (networking, no app):
 bazel run //deploy:tdplayer_pi3.image_sd_base -- --device /dev/sdX
@@ -47,16 +51,62 @@ set `wifi_config_file = "wifi.yaml"` on the `sbc_application` in `BUILD.bazel`.
 Boot the Pi and view the live render at `http://<pi>:8788/` (MJPEG). On macOS,
 start the aarch64 builder first: `bazel run @sbc_deploy//:linux_builder`.
 
+## x86_64 players (mini PC + installer USB)
+
+`tdplayer_amd64` builds the same flake under sbc-deploy's **amd64 family**
+(`board = @sbc_deploy//deploy/boards:amd64-generic`): instead of an SD image,
+`image_installer` produces a bootable install USB carrying the whole system.
+Boot the mini PC from it (UEFI boot menu), pick the internal disk, confirm the
+erase, and it installs offline (UEFI + systemd-boot) and reboots into the player.
+CI publishes the same thing as `tdplayer-amd64.iso.zst`, which the desktop app
+downloads and writes to a USB stick ("Flash a player… → x86_64 mini PC").
+
+What the x86 image adds (`deploy/nix/x86.nix`, `python-host.nix`):
+
+- **KMS on the iGPU.** sbc-deploy's x86 target boots with `nomodeset` (a garbled
+  console on some AMD boxes); the player needs the GPU's KMS driver for GBM
+  scanout and hardware GL, so `x86.nix` restates the kernel params without it.
+- **Mesa iris/radeonsi** system-wide (`hardware.graphics`) + Intel's OpenCL
+  runtime, which OpenVINO's GPU plugin uses for on-box inference.
+- **Python for Python-host artifacts:** `python3`, the libraries manylinux wheels
+  expect (on the runtime unit's `LD_LIBRARY_PATH`), and `tdplayer-prepare`, which
+  the app runs before a new artifact goes live to build its venv under
+  `/var/lib/tdplayer/venvs` (see DEVELOPERS.md).
+- **Flash-time config from the USB.** The app writes the hostname / Wi-Fi / deploy
+  keys chosen at flash time as `TDCONFIG.JSN` into the installer's EFI partition
+  (`EFIBOOT`). `nixos-install` runs the new system's activation with the stick
+  attached, which imports it into `/var/lib/td-flash-config`; the same
+  `td-flash-config` oneshot as the Pi's then applies it every boot
+  (`flash-config.nix`). Reflash the stick and boot the box with it plugged in to
+  change them.
+
+The runtime is cross-built for x86_64 (`//runtime_rs/cross:toxc_runtime_linux_x86_64`,
+linked by nixpkgs' `pkgsCross.gnu64` clang) and runs at 60 fps. On macOS,
+sbc-deploy manages an x86_64 builder VM the same way it does the aarch64 one.
+
+## Which player is at the host?
+
+Pis and mini PCs both come up as `tdplayer.local`, and a box can be reflashed from
+one to the other, so the desktop app (and `app/toxc_deploy_cli.py`) asks on every
+deploy — `uname -m` over the deploy ssh — and builds for what answers:
+
+| `uname -m` | Player       | Artifact                                                     |
+| ---------- | ------------ | ------------------------------------------------------------ |
+| `aarch64`  | Raspberry Pi | `gles2` (or `gles`) + aarch64 native code                    |
+| `x86_64`   | mini PC      | `desktop_gl` + x86_64 native code, or a Python-host artifact |
+
+The table lives in `app/deploy_engine/players.py`; `--arch` on the CLI skips the probe.
+
 ## How it fits together
 
-`sbc_application` (Pi 5 `tdplayer`, Pi 3 `tdplayer_pi3`) bundles two Bazel
-outputs as `build_data` and hands them to the Nix flake (`deploy/nix`) through
+`sbc_application` (Pi 5 `tdplayer`, Pi 3 `tdplayer_pi3`, x86_64 `tdplayer_amd64`)
+bundles two Bazel outputs as `build_data` and hands them to the Nix flake (`deploy/nix`) through
 sbc-deploy's `sbcBuildData` (keyed by basename):
 
-| Bazel target                | key             | role                                                                                                            |
-| --------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
-| `//deploy:toxc_artifact`    | `toxc_artifact` | portable artifact: `schedule.json` + `shaders/` + `assets/` + `exprs.mlir` + `services.json` (arch-independent) |
-| `//runtime_rs:toxc_runtime` | `toxc_runtime`  | the dynamic aarch64 Rust runtime                                                                                |
+| Bazel target                                     | key             | role                                                                                                            |
+| ------------------------------------------------ | --------------- | --------------------------------------------------------------------------------------------------------------- |
+| `//deploy:toxc_artifact`                         | `toxc_artifact` | portable artifact: `schedule.json` + `shaders/` + `assets/` + `exprs.mlir` + `services.json` (arch-independent) |
+| `//runtime_rs/cross:toxc_runtime_linux[_x86_64]` | `toxc_runtime`  | the dynamic Rust runtime, cross-built for the image's arch                                                      |
 
 `deploy/nix/apps.nix` then, at image-build time:
 

@@ -3,7 +3,8 @@
 The desktop app's flash modal offers a dropdown of every release of the repo so
 the user can pick which base image to flash. This module fetches the releases list
 from the GitHub API and normalizes it into a small, JSON-serializable shape
-(`{tag_name, name, published_at, prerelease}`), newest-first.
+(`{tag_name, name, published_at, prerelease, kinds}`), newest-first — `kinds`
+being which player images (players.py) the release carries.
 
 stdlib only. Network failure is caught by the caller (the sidecar) so the UI still
 works with the CI-stamped default tag. The JSON->list parsing is split out
@@ -15,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import ssl
+import sys
 import urllib.request
 from typing import Any
 
@@ -64,10 +66,28 @@ def parse_releases(data: Any) -> list[dict]:
                 "name": r.get("name") or tag,
                 "published_at": r.get("published_at") or "",
                 "prerelease": bool(r.get("prerelease")),
+                # which player images (players.py kinds) this release carries
+                "kinds": _kinds([a.get("name", "") for a in r.get("assets") or []]),
             }
         )
     out.sort(key=lambda r: r["published_at"], reverse=True)
     return out
+
+
+def _kinds(asset_names: list) -> list:
+    try:
+        from .players import kinds_in
+    except ImportError:  # loaded by path in tests (no package)
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "players", os.path.join(os.path.dirname(os.path.abspath(__file__)), "players.py")
+        )
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules.setdefault("players", mod)  # dataclasses resolve their module
+        spec.loader.exec_module(mod)
+        kinds_in = mod.kinds_in
+    return kinds_in(asset_names)
 
 
 def _get(url: str) -> bytes:

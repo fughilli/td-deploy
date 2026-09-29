@@ -53,10 +53,13 @@ class NixToolchain(Toolchain):
     # dlopen — "invalid ELF header"). Same flags as BundledToolchain: no sysroot,
     # libm resolved on-device at dlopen. On the aarch64-linux container this is a
     # no-op cross (target == host).
-    clang_flags = ["--target=aarch64-unknown-linux-gnu", "-fuse-ld=lld", "-nostdlib"]
-    link_libs: list[str] = []  # libm resolved at dlopen on the Pi
+    link_libs: list[str] = []  # libm resolved at dlopen on the player
 
-    def __init__(self, repo_root: str | None = None):
+    def __init__(self, repo_root: str | None = None, triple: str = "aarch64-unknown-linux-gnu"):
+        # `triple`: the player's (players.Player.triple) — aarch64 for a Pi,
+        # x86_64 for a mini PC; set per deploy from the detected architecture.
+        self.triple = triple
+        self.clang_flags = [f"--target={triple}", "-fuse-ld=lld", "-nostdlib"]
         self.repo = repo_root or _paths.REPO_ROOT
         self._shell = os.path.join(self.repo, "compiler", "nix", "shell.sh")
         self._env = {
@@ -127,6 +130,7 @@ class BundledToolchain(Toolchain):
 
     def __init__(self, tools_dir: str, triple: str = "aarch64-unknown-linux-gnu"):
         self.tools = tools_dir
+        self.triple = triple
         self.bindir = os.path.join(tools_dir, "bin")
         self.clang_flags = [f"--target={triple}", "-fuse-ld=lld", "-nostdlib"]
         self.link_libs = []  # libm resolved at dlopen on the Pi, not linked here
@@ -163,14 +167,15 @@ class BundledToolchain(Toolchain):
             os.environ["PATH"] = old
 
 
-def default_toolchain() -> Toolchain:
+def default_toolchain(triple: str = "aarch64-unknown-linux-gnu") -> Toolchain:
     """Pick the toolchain for the current runtime: the bundled cross-toolchain when
-    it's present (frozen app, or TOXC_TOOLCHAIN_DIR), else the Nix dev toolchain."""
+    it's present (frozen app, or TOXC_TOOLCHAIN_DIR), else the Nix dev toolchain —
+    cross-targeting `triple` (the player's) either way."""
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         cand = os.path.join(sys._MEIPASS, "toolchain")  # type: ignore[attr-defined]
         if os.path.isdir(cand):
-            return BundledToolchain(cand)
+            return BundledToolchain(cand, triple)
     env = os.environ.get("TOXC_TOOLCHAIN_DIR")
     if env and os.path.isdir(env):
-        return BundledToolchain(env)
-    return NixToolchain()
+        return BundledToolchain(env, triple)
+    return NixToolchain(triple=triple)

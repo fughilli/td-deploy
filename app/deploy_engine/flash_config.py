@@ -79,6 +79,51 @@ def render_nmconnection(ssid: str, psk: Optional[str] = None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _connection_files(networks: Optional[Iterable[dict]]) -> List[tuple]:
+    """[(<slug>.nmconnection, keyfile text)] for each network with an SSID, with
+    distinct filenames for slug collisions."""
+    out = []
+    seen: set[str] = set()
+    for net in networks or []:
+        ssid = (net.get("ssid") or "").strip()
+        if not ssid:
+            continue
+        stem = _slug(ssid)
+        fname = stem
+        n = 1
+        while fname in seen:
+            n += 1
+            fname = f"{stem}-{n}"
+        seen.add(fname)
+        out.append((f"{fname}.nmconnection", render_nmconnection(ssid, net.get("psk") or None)))
+    return out
+
+
+def render_config(
+    hostname: Optional[str] = None,
+    networks: Optional[Iterable[dict]] = None,
+    authorized_keys: Optional[Iterable[str]] = None,
+) -> dict:
+    """The same settings as write_boot_config, as one JSON-able dict — the x86
+    installer USB's TDCONFIG.JSN (flasher/isoconfig.py), which the installed
+    system expands into this very file layout (deploy/nix/flash-config.nix):
+
+        {"hostname": "...", "connections": {"<slug>.nmconnection": "..."},
+         "authorized_keys": ["ssh-ed25519 ..."]}
+
+    Keys with nothing to say are omitted; {} means no customization."""
+    cfg: dict = {}
+    if hostname is not None and valid_hostname(normalize_hostname(hostname)):
+        cfg["hostname"] = normalize_hostname(hostname)
+    conns = dict(_connection_files(networks))
+    if conns:
+        cfg["connections"] = conns
+    keys = [k.strip() for k in (authorized_keys or []) if k and k.strip()]
+    if keys:
+        cfg["authorized_keys"] = keys
+    return cfg
+
+
 def write_boot_config(
     mount_dir: str,
     hostname: Optional[str] = None,
@@ -110,23 +155,10 @@ def write_boot_config(
                 f.write(norm + "\n")
             written.append(path)
 
-    seen: set[str] = set()
-    for net in networks or []:
-        ssid = (net.get("ssid") or "").strip()
-        if not ssid:
-            continue
-        stem = _slug(ssid)
-        fname = stem
-        n = 1
-        while fname in seen:  # distinct filenames for slug collisions
-            n += 1
-            fname = f"{stem}-{n}"
-        seen.add(fname)
-
+    for fname, content in _connection_files(networks):
         conn_dir = os.path.join(mount_dir, "system-connections")
         os.makedirs(conn_dir, exist_ok=True)
-        path = os.path.join(conn_dir, f"{fname}.nmconnection")
-        content = render_nmconnection(ssid, net.get("psk") or None)
+        path = os.path.join(conn_dir, fname)
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         try:
@@ -153,5 +185,6 @@ __all__ = [
     "normalize_hostname",
     "valid_hostname",
     "render_nmconnection",
+    "render_config",
     "write_boot_config",
 ]
