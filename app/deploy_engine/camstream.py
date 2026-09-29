@@ -66,6 +66,23 @@ def open_source(source: str, width: int, height: int, fps: int):
     )
 
 
+def _decoded(container, stream):
+    """Decode `stream` to EOF, riding out EAGAIN from live capture devices.
+
+    AVFoundation (and some V4L2 drivers) are non-blocking: av_read_frame returns
+    EAGAIN whenever the next frame isn't ready yet, which ends PyAV's demux
+    generator with BlockingIOError. Wait briefly and demux again — for a device
+    that just resumes at the next frame.
+    """
+    while True:
+        try:
+            for packet in container.demux(stream):
+                yield from packet.decode()
+            return
+        except BlockingIOError:
+            time.sleep(0.002)
+
+
 def frames(source: str, width: int, height: int, fps: int, loop: bool = True):
     """Yield scaled yuvj420p frames, paced to the source rate for files."""
     while True:
@@ -74,7 +91,7 @@ def frames(source: str, width: int, height: int, fps: int, loop: bool = True):
         stream.thread_type = "AUTO"
         rate = float(stream.average_rate or fps) or fps
         t0, n = time.time(), 0
-        for frame in container.decode(stream):
+        for frame in _decoded(container, stream):
             yield frame.reformat(width=width, height=height, format="yuvj420p")
             n += 1
             if not live:

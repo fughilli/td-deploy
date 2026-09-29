@@ -43,3 +43,33 @@ def test_file_loops_scaled_and_encodes_across_the_loop():
         f.pts, f.time_base = n, enc.time_base
         jpegs += [bytes(p) for p in enc.encode(f)]
     assert len(jpegs) == 15 and all(j[:2] == b"\xff\xd8" for j in jpegs)
+
+
+class _EagainContainer:
+    """A live device that says EAGAIN before each frame (AVFoundation does)."""
+
+    def __init__(self, frames):
+        self.frames, self.calls, self.ready = list(frames), 0, False
+
+    def demux(self, stream):
+        self.calls += 1
+        while self.frames:
+            if not self.ready:  # the read before each frame finds nothing yet
+                self.ready = True
+                raise BlockingIOError(35, "Resource temporarily unavailable")
+            self.ready = False
+            yield _Pkt(self.frames.pop(0))
+
+
+class _Pkt:
+    def __init__(self, f):
+        self.f = f
+
+    def decode(self):
+        return [self.f]
+
+
+def test_decoded_rides_out_eagain():
+    c = _EagainContainer(["a", "b", "c"])
+    assert list(camstream._decoded(c, None)) == ["a", "b", "c"]
+    assert c.calls > 1  # it demuxed again after EAGAIN
