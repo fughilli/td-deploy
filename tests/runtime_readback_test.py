@@ -2,9 +2,10 @@
 
 A GLSL TOP renders a colour a Python parameter drives (it changes every frame);
 an Execute DAT requests its pixels at frame end and logs what arrives at the next
-frame start. The runtime is run for a few frames with the asynchronous
-(pixel-pack buffer) readback and with TOXC_SYNC_READBACK=1: both must deliver
-the previous frame's pixels — the same values, frame for frame.
+frame start. With TOXC_SYNC_READBACK=1 that is exactly the previous frame's
+pixels. The asynchronous (pixel-pack buffer + fence) readback never waits for
+the GPU unless reads pile up, so it delivers a frame rendered one to three
+frames earlier — never garbage, never a frame from the future.
 
 Needs a built runtime ($TOXC_RUNTIME, else runtime_rs/target/release) and an
 EGL/GL driver (Mesa llvmpipe is fine); skipped otherwise.
@@ -114,13 +115,27 @@ class RuntimeReadbackTest(unittest.TestCase):
             for m in re.finditer(r"RB frame=(\d+) red=([-\d.]+)", p.stderr)
         ]
 
-    def test_async_matches_sync_and_is_one_frame_late(self):
-        a, s = self._run(False), self._run(True)
-        self.assertGreaterEqual(len(a), 5, a)
-        self.assertEqual(a, s)
+    @staticmethod
+    def _red(rendered_at):
+        return (rendered_at % 10) * 0.1  # Gain set at that frame's start
+
+    def test_sync_is_exactly_one_frame_late(self):
+        s = self._run(True)
+        self.assertGreaterEqual(len(s), 5, s)
+        for frame, red in s:
+            self.assertAlmostEqual(red, self._red(frame - 1), places=4)
+
+    def test_async_delivers_recent_frames_in_order(self):
+        a = self._run(False)
+        self.assertGreaterEqual(len(a), 4, a)
+        lags = []
         for frame, red in a:
-            # rendered at frame-1 with Gain = ((frame-1) % 10) * 0.1
-            self.assertAlmostEqual(red, ((frame - 1) % 10) * 0.1, places=4)
+            lag = next((k for k in (1, 2, 3) if abs(red - self._red(frame - k)) < 1e-4), None)
+            self.assertIsNotNone(lag, (frame, red, a))
+            lags.append(lag)
+        # delivery never goes back in time
+        rendered = [f - k for (f, _), k in zip(a, lags)]
+        self.assertEqual(rendered, sorted(rendered))
 
 
 if __name__ == "__main__":

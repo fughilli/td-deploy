@@ -292,8 +292,8 @@ pub struct HostRenderer<'a> {
     // stalling on it mid-frame. Delivery is unchanged: numpyArray(delayed=True)
     // gets the previous frame's pixels either way.
     async_readback: bool,
-    pending_reads: Vec<PendingRead>,
-    pending_fence: Option<glow::Fence>,
+    pending_reads: Vec<PendingRead>, // queued this frame, fenced at frame end
+    inflight: std::collections::VecDeque<(Option<glow::Fence>, Vec<PendingRead>)>,
     pbo_pool: Vec<(glow::Buffer, i32)>,
     // TOXC_PROFILE: glFinish after every node so each top:<node> includes its
     // GPU time (otherwise GPU work lands wherever the CPU next waits: "gpu")
@@ -359,7 +359,7 @@ impl<'a> HostRenderer<'a> {
             async_readback: gl.version().major >= 3
                 && std::env::var_os("TOXC_SYNC_READBACK").is_none(),
             pending_reads: vec![],
-            pending_fence: None,
+            inflight: std::collections::VecDeque::new(),
             pbo_pool: vec![],
             profile_gpu: std::env::var_os("TOXC_PROFILE").is_some(),
             frame: 0,
@@ -714,8 +714,8 @@ impl<'a> HostRenderer<'a> {
     pub fn cook(&mut self, t: f64) {
         self.frame += 1;
         let t0 = Instant::now();
-        // last frame's asynchronous readbacks (normally complete by now)
-        if !self.pending_reads.is_empty() {
+        // asynchronous readbacks the GPU has finished (without waiting for it)
+        if !self.inflight.is_empty() {
             let tr = Instant::now();
             self.finish_readbacks();
             prof_add(&self.prof, "host:readback_wait", tr.elapsed().as_secs_f64());
@@ -892,10 +892,11 @@ impl<'a> HostRenderer<'a> {
                 }
             }
             if !self.pending_reads.is_empty() {
+                let batch = std::mem::take(&mut self.pending_reads);
                 unsafe {
-                    self.pending_fence =
-                        self.gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0).ok();
+                    let f = self.gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0).ok();
                     self.gl.flush();
+                    self.inflight.push_back((f, batch));
                 }
             }
             prof_add(&self.prof, "host:readback", tr.elapsed().as_secs_f64());
@@ -978,27 +979,51 @@ impl<'a> HostRenderer<'a> {
         }
     }
 
-    /// Wait for the queued reads and hand their pixels to the next host frame.
+    /// Hand the host the pixels of every read the GPU has completed. Normally
+    /// that is last frame's; with the render pipelined (the GPU still busy with
+    /// the previous frame) a read may arrive a frame later — the host keeps the
+    /// last delivered array meanwhile. Waits only when reads pile up.
     fn finish_readbacks(&mut self) {
+        const MAX_INFLIGHT: usize = 2;
         let gl = self.gl;
-        unsafe {
-            if let Some(f) = self.pending_fence.take() {
-                // flush + wait up to 1 s; the frame's GPU work is normally long done
-                gl.client_wait_sync(f, glow::SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000);
-                gl.delete_sync(f);
+        while let Some((fence, _)) = self.inflight.front() {
+            let ready = match fence {
+                None => true,
+                Some(f) => unsafe {
+                    let must_wait = self.inflight.len() > MAX_INFLIGHT;
+                    let st = gl.client_wait_sync(
+                        *f,
+                        glow::SYNC_FLUSH_COMMANDS_BIT,
+                        if must_wait { 1_000_000_000 } else { 0 },
+                    );
+                    st == glow::ALREADY_SIGNALED || st == glow::CONDITION_SATISFIED
+                },
+            };
+            if !ready {
+                break;
             }
-            for r in std::mem::take(&mut self.pending_reads) {
-                let n = (r.w * r.h * 16) as usize;
-                gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(r.pbo));
-                let ptr =
-                    gl.map_buffer_range(glow::PIXEL_PACK_BUFFER, 0, n as i32, glow::MAP_READ_BIT);
-                if !ptr.is_null() {
-                    let data = std::slice::from_raw_parts(ptr as *const u8, n).to_vec();
-                    gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
-                    self.readback_data.push((r.path, r.w, r.h, data));
+            let (fence, reads) = self.inflight.pop_front().unwrap();
+            unsafe {
+                if let Some(f) = fence {
+                    gl.delete_sync(f);
                 }
-                gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
-                self.pbo_pool.push((r.pbo, r.cap));
+                for r in reads {
+                    let n = (r.w * r.h * 16) as usize;
+                    gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(r.pbo));
+                    let ptr = gl.map_buffer_range(
+                        glow::PIXEL_PACK_BUFFER,
+                        0,
+                        n as i32,
+                        glow::MAP_READ_BIT,
+                    );
+                    if !ptr.is_null() {
+                        let data = std::slice::from_raw_parts(ptr as *const u8, n).to_vec();
+                        gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
+                        self.readback_data.push((r.path, r.w, r.h, data));
+                    }
+                    gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+                    self.pbo_pool.push((r.pbo, r.cap));
+                }
             }
         }
     }

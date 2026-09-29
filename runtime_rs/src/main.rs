@@ -1806,6 +1806,10 @@ fn stream(dir: &str, port: u16, fps: f64, target: &str) {
     let start = Instant::now();
     let period = Duration::from_secs_f64(1.0 / fps.max(1.0));
     let mut last_log = Instant::now();
+    // Overlap CPU and GPU across frames on the HDMI scanout path (see below).
+    // TOXC_PROFILE (per-step GPU attribution) and TOXC_PIPELINE=0 serialize them.
+    let pipelined = std::env::var_os("TOXC_PROFILE").is_none()
+        && std::env::var("TOXC_PIPELINE").map_or(true, |v| v != "0");
     loop {
         let has_client = clients.load(Ordering::Relaxed) > 0;
         // Render when the HDMI display is attached OR a web client is watching.
@@ -1831,20 +1835,36 @@ fn stream(dir: &str, port: u16, fps: f64, target: &str) {
         if let Some(s) = sc.as_mut() {
             let tp = Instant::now();
             r.present_scanout(s.dw as i32, s.dh as i32);
-            s.swap();
-            let tb = Instant::now();
-            prof_add(&prof, "present:blit", (tb - tp).as_secs_f64());
-            // Drain the GPU (glFinish) BEFORE the page-flip so we can attribute the
-            // frame to GPU render vs vblank wait separately — without this the flip
-            // lumps both together (a large "present:flip" then can't tell GPU-bound
-            // from vsync-bound). No net cost: the flip fences on render completion
-            // anyway; this just moves the wait somewhere we can time it.
-            unsafe { r.gl().finish() };
-            let tg = Instant::now();
-            prof_add(&prof, "gpu", (tg - tb).as_secs_f64());
-            s.flip(); // page-flip: now a pure vblank wait (GPU already drained)
-            prof_add(&prof, "present:flip", tg.elapsed().as_secs_f64());
-            prof_add(&prof, "present", tp.elapsed().as_secs_f64());
+            if pipelined {
+                // Pipelined: queue this frame's flip and go straight on to the next
+                // frame's CPU work (the Python host, uniforms, draw submission)
+                // while the GPU renders this one; the kernel flips once rendering
+                // is done. The frame costs max(CPU, GPU) instead of their sum. We
+                // only wait here for the PREVIOUS frame's flip, just before
+                // swapping (at most one flip in flight, so latency grows by at
+                // most a frame).
+                s.wait_flip();
+                let tw = Instant::now();
+                prof_add(&prof, "present:flip_wait", (tw - tp).as_secs_f64());
+                s.swap();
+                s.flip_async();
+                prof_add(&prof, "present", tp.elapsed().as_secs_f64());
+            } else {
+                s.swap();
+                let tb = Instant::now();
+                prof_add(&prof, "present:blit", (tb - tp).as_secs_f64());
+                // Drain the GPU (glFinish) BEFORE the page-flip so we can attribute
+                // the frame to GPU render vs vblank wait separately — without this
+                // the flip lumps both together (a large "present:flip" then can't
+                // tell GPU-bound from vsync-bound). This serializes CPU and GPU, so
+                // it is only done when profiling or with TOXC_PIPELINE=0.
+                unsafe { r.gl().finish() };
+                let tg = Instant::now();
+                prof_add(&prof, "gpu", (tg - tb).as_secs_f64());
+                s.flip(); // page-flip: now a pure vblank wait (GPU already drained)
+                prof_add(&prof, "present:flip", tg.elapsed().as_secs_f64());
+                prof_add(&prof, "present", tp.elapsed().as_secs_f64());
+            }
         }
 
         // Read back only when the dumb-buffer sink or a web client needs pixels.

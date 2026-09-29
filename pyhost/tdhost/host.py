@@ -50,6 +50,7 @@ class Host:
     ):
         self._id = 0
         self._xf_cache = None  # per-snapshot local/world matrix cache (_snapshot)
+        self._resolve_cache: dict = {}  # (path, context) -> normalized path
         self.log = log or (lambda msg: print(f"[tdhost] {msg}", flush=True))
         self.absTime = N._AbsTime()
         start = net.get("start", {})
@@ -121,9 +122,22 @@ class Host:
             return path
         if path is None:
             return None
-        path = str(path).strip()
+        # op('...') runs hundreds of times a frame with the same few paths:
+        # memoize the normalized path (the op table itself is looked up fresh)
+        key = (path, context) if isinstance(path, str) else None
+        full = self._resolve_cache.get(key) if key is not None else None
+        if full is None:
+            full = self._normalize_path(str(path).strip(), context)
+            if key is not None:
+                if len(self._resolve_cache) > 8192:
+                    self._resolve_cache.clear()
+                self._resolve_cache[key] = full
+        return self.ops.get(full) if full else None
+
+    @staticmethod
+    def _normalize_path(path, context):
         if not path:
-            return None
+            return ""
         if path.startswith("/"):
             full = path
         else:
@@ -137,7 +151,7 @@ class Host:
                     parts.pop()
             else:
                 parts.append(seg)
-        return self.ops.get("/" + "/".join(parts))
+        return "/" + "/".join(parts)
 
     def resolve_many(self, pattern, context="/"):
         import fnmatch
@@ -495,9 +509,19 @@ class Host:
     # ------------------------------------------------------------------ transforms
     def _xform(self, o, prefix=""):
         p = o.par
+        pars = object.__getattribute__(p, "_pars")
+        expr = N.ParMode.EXPRESSION
+        tracking = self._deps is not None
 
         def f(n):
-            return float(getattr(p, prefix + n).eval())
+            # Par.eval() without the attribute machinery: constants (almost all
+            # transform parameters) are just their value
+            par = pars.get(prefix + n) or p._get(prefix + n)
+            if par is None:
+                raise AttributeError(prefix + n)
+            if tracking or par._mode == expr:
+                return float(par.eval())
+            return float(par._val)
 
         t = np.array([f("tx"), f("ty"), f("tz")])
         r = (f("rx"), f("ry"), f("rz"))

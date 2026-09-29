@@ -33,6 +33,12 @@ impl Scanout {
     pub fn flip(&mut self) {
         unreachable!("GBM scanout is Linux-only")
     }
+    pub fn flip_async(&mut self) {
+        unreachable!("GBM scanout is Linux-only")
+    }
+    pub fn wait_flip(&mut self) {
+        unreachable!("GBM scanout is Linux-only")
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -174,6 +180,9 @@ mod linux {
         pub dw: u32,
         pub dh: u32,
         prev_bo: *mut GbmBo,
+        // flip_async(): the buffer queued for the next vblank, until wait_flip()
+        pending_bo: *mut GbmBo,
+        flip_pending: bool,
         fbs: HashMap<u32, framebuffer::Handle>, // gem handle -> fb (bo's are recycled)
         started: bool,
         probe_ctr: u32, // hotplug re-probe throttle
@@ -302,6 +311,8 @@ mod linux {
                 dw,
                 dh,
                 prev_bo: std::ptr::null_mut(),
+                pending_bo: std::ptr::null_mut(),
+                flip_pending: false,
                 fbs: HashMap::new(),
                 started: false,
                 probe_ctr: 0,
@@ -476,6 +487,10 @@ mod linux {
         // Tear down the current gbm + EGL window surface and build new ones at
         // (dw,dh), rebinding the GL context. The EGL context/config/display stay.
         fn recreate_surface(&mut self, dw: u32, dh: u32) {
+            if self.gl.is_none() {
+                return;
+            }
+            self.wait_flip();
             let g = match self.gl.as_mut() {
                 Some(g) => g,
                 None => return,
@@ -523,7 +538,18 @@ mod linux {
         /// After the caller has eglSwapBuffers'd, present the freshly rendered
         /// buffer: lock it, page-flip it on the CRTC, block for vblank, release the
         /// previous one. This is the whole "present" cost now (no CPU copy).
+        /// Present the frame just swapped and wait for it to reach the screen.
         pub fn flip(&mut self) {
+            self.flip_async();
+            self.wait_flip();
+        }
+
+        /// Queue the frame just swapped for the next vblank and return at once.
+        /// The kernel waits for the GPU to finish rendering it (implicit fence)
+        /// before scanning it out, so the CPU can go on to the next frame while
+        /// the GPU renders this one. Call wait_flip() before the next swap.
+        pub fn flip_async(&mut self) {
+            self.wait_flip();
             let bo = unsafe { (self.gbm.lock_front)(self.surf) };
             if bo.is_null() {
                 return;
@@ -554,20 +580,39 @@ mod linux {
                     .page_flip(crtc, fb, PageFlipFlags::EVENT, None)
                     .is_ok()
                 {
-                    'wait: loop {
-                        match self.card.receive_events() {
-                            Ok(events) => {
-                                for ev in events {
-                                    if let Event::PageFlip(_) = ev {
-                                        break 'wait;
-                                    }
-                                }
-                            }
-                            Err(_) => break,
-                        }
-                    }
+                    self.pending_bo = bo;
+                    self.flip_pending = true;
+                    return;
                 }
             }
+            self.retire(bo);
+        }
+
+        /// Wait for the flip queued by flip_async() (a no-op when none is).
+        pub fn wait_flip(&mut self) {
+            if !self.flip_pending {
+                return;
+            }
+            self.flip_pending = false;
+            'wait: loop {
+                match self.card.receive_events() {
+                    Ok(events) => {
+                        for ev in events {
+                            if let Event::PageFlip(_) = ev {
+                                break 'wait;
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let bo = std::mem::replace(&mut self.pending_bo, std::ptr::null_mut());
+            self.retire(bo);
+        }
+
+        // `bo` is now on screen (or was dropped): the previous one can go back
+        // to the surface for rendering.
+        fn retire(&mut self, bo: *mut GbmBo) {
             if !self.prev_bo.is_null() {
                 unsafe { (self.gbm.release_buffer)(self.surf, self.prev_bo) };
             }

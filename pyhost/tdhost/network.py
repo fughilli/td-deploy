@@ -317,6 +317,10 @@ class Par:
         self.owner._host._pulse(self)
 
     @property
+    def valid(self):
+        return bool(getattr(self.owner, "valid", True))
+
+    @property
     def isPulse(self):
         return self.style in ("Pulse", "Momentary")
 
