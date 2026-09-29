@@ -243,6 +243,7 @@ class Par:
     @mode.setter
     def mode(self, m):
         self._mode = ParMode.EXPRESSION if m in (ParMode.EXPRESSION, 1) else ParMode.CONSTANT
+        self.owner._pver = getattr(self.owner, "_pver", 0) + 1
 
     @property
     def expr(self):

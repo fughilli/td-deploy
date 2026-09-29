@@ -51,6 +51,9 @@ class Host:
         self._id = 0
         self._xf_cache = None  # per-snapshot local/world matrix cache (_snapshot)
         self._resolve_cache: dict = {}  # (path, context) -> normalized path
+        self._lm_cache: dict = {}  # op path -> (_pver, local matrix), constant xforms
+        self._script_top_src: dict = {}  # Script TOP -> (array given, copy of it sent)
+        self._xf_dynamic = False
         self.log = log or (lambda msg: print(f"[tdhost] {msg}", flush=True))
         self.absTime = N._AbsTime()
         start = net.get("start", {})
@@ -383,6 +386,8 @@ class Host:
                     self._call(pe, "onPulse", par)
 
     def _par_changed(self, par, prev=None):
+        o = par.owner
+        o._pver = getattr(o, "_pver", 0) + 1  # invalidates its cached local matrix
         for pe in self.ops.values():
             if pe.family == "DAT" and pe.type == "parameterexecute":
                 if self._parexec_watches(pe, par):
@@ -437,7 +442,22 @@ class Host:
         elif a.shape[2] == 3:
             alpha = np.full(a.shape[:2] + (1,), 255 if a.dtype == np.uint8 else 1.0, a.dtype)
             a = np.concatenate([a, alpha], axis=2)
-        self._script_top_arrays[o.path] = np.ascontiguousarray(a)
+        a = np.ascontiguousarray(a)
+        # A Script TOP that re-copies the same unchanged array every cook (a camera
+        # frame held until the next one arrives) isn't re-sent: the renderer keeps
+        # the texture it has. Compared by content, so an array modified in place is
+        # still sent.
+        prev = self._script_top_src.get(o.path)
+        if (
+            prev is not None
+            and prev[0] is arr
+            and prev[1].shape == a.shape
+            and prev[1].dtype == a.dtype
+            and np.array_equal(prev[1], a)
+        ):
+            return
+        self._script_top_src[o.path] = (arr, a.copy() if np.shares_memory(a, arr) else a)
+        self._script_top_arrays[o.path] = a
         self._script_top_dirty.add(o.path)
         self._top_sizes[o.path] = (a.shape[1], a.shape[0])
 
@@ -520,6 +540,7 @@ class Host:
             if par is None:
                 raise AttributeError(prefix + n)
             if tracking or par._mode == expr:
+                self._xf_dynamic = True
                 return float(par.eval())
             return float(par._val)
 
@@ -572,11 +593,25 @@ class Host:
             m = cache.get(("l", o.path))
             if m is not None:
                 return m
-        t, r, s, piv, xord, rord = self._xform(o)
-        m = self._compose(t, r, s, piv, xord, rord)
-        pre = self._pre_matrix(o)
-        if pre is not None:
-            m = m @ pre
+        # Across frames: an op whose transform parameters are all constants keeps
+        # its matrix until one of its parameters is written (_pver). Returned
+        # arrays are shared: callers must not modify them in place.
+        ver = getattr(o, "_pver", 0)
+        kept = self._lm_cache.get(o.path)
+        if kept is not None and kept[0] == ver:
+            m = kept[1]
+        else:
+            self._xf_dynamic = False
+            t, r, s, piv, xord, rord = self._xform(o)
+            m = self._compose(t, r, s, piv, xord, rord)
+            pre = self._pre_matrix(o)
+            if pre is not None:
+                m = m @ pre
+            if self._xf_dynamic or self._deps is not None:
+                self._lm_cache.pop(o.path, None)
+            else:
+                m.flags.writeable = False
+                self._lm_cache[o.path] = (ver, m)
         if cache is not None:
             cache[("l", o.path)] = m
         return m
@@ -642,6 +677,7 @@ class Host:
             if nm in pars:
                 pars[nm]._val = v
                 pars[nm]._mode = N.ParMode.CONSTANT
+        o._pver = getattr(o, "_pver", 0) + 1
 
     # ------------------------------------------------------------------ create/copy
     def _create(self, parent, optype, name):

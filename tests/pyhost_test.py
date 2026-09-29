@@ -231,6 +231,40 @@ class HostTest(unittest.TestCase):
         np.testing.assert_allclose(got[1], h.world_matrix(h.ops["/project1/geo1/child"]))
         self.assertAlmostEqual(got[0][1, 3], 7.0)
 
+    def test_unchanged_script_top_array_is_not_resent(self):
+        h = self.host
+        o = h.ops["/project1/top1"]
+        img = np.zeros((4, 8, 4), np.uint8)
+        h._script_top_data(o, img)
+        self.assertIn(o.path, h._script_top_dirty)
+        h._script_top_dirty.clear()
+        h._script_top_data(o, img)  # same array, same pixels: nothing to send
+        self.assertNotIn(o.path, h._script_top_dirty)
+        img[0, 0, 0] = 9  # modified in place: sent
+        h._script_top_data(o, img)
+        self.assertIn(o.path, h._script_top_dirty)
+        h._script_top_dirty.clear()
+        h._script_top_data(o, img.copy())  # a new array: sent
+        self.assertIn(o.path, h._script_top_dirty)
+
+    def test_local_matrix_kept_until_a_parameter_changes(self):
+        h = self.host
+        g = h.ops["/project1/geo1"]
+        m1 = h.local_matrix(g)
+        self.assertIs(h.local_matrix(g), m1)  # constant transform: reused
+        g.par.tx = 5
+        m2 = h.local_matrix(g)
+        self.assertIsNot(m2, m1)
+        self.assertAlmostEqual(m2[0, 3], 5.0)
+        g.setTransform(tdu.Matrix())  # direct writes invalidate too
+        np.testing.assert_allclose(h.local_matrix(g), np.eye(4), atol=1e-12)
+        # an expression-driven transform is never kept
+        g.par.ty.expr = "absTime.seconds"
+        h.absTime.seconds = 1.0
+        self.assertAlmostEqual(h.local_matrix(g)[1, 3], 1.0)
+        h.absTime.seconds = 2.0
+        self.assertAlmostEqual(h.local_matrix(g)[1, 3], 2.0)
+
     def test_matches_touchdesigner_bone_transforms(self):
         # Bone local matrices exactly as TouchDesigner 2025.33070 reported them for
         # these parameter values (srt order, rotate xyz; captured from the FBX
