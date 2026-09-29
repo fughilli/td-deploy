@@ -55,12 +55,26 @@ _BUILD_DATA_AARCH64 = [
     "//runtime_rs/cross:toxc_runtime_linux",
 ]
 
+# Post-build closure push to the self-hosted Attic nix cache (sbc-deploy #25), the
+# same cache led_mapper's rigs use. After a successful image/system build the realised
+# closure is pushed, so the next build (and the players' own substituter,
+# deploy/nix/attic-substituter.nix) pulls the expensive paths — the cross-built
+# runtime, the finished artifact, the x86 installer's squashfs inputs — instead of
+# rebuilding. Best-effort: never fails a build (e.g. off the tailnet, in CI).
+# attic_cache is "<login-name>:<cache>"; the push is tokenless (the cache node's
+# Caddy proxy injects the bearer; the tag:attic tailnet ACL is the boundary).
+_ATTIC_CACHE = "attic:splanc"
+
+_ATTIC_ENDPOINT = "http://attic.tail6b8ad3.ts.net:8080"
+
 # Pi 5 (default board). `lean` = super-lean base image: drop the RPi sd-image
 # rescue toolkit (vim/testdisk/ddrescue/…), all documentation (nixos-manual/man/
 # texinfo), and NixOS's default extra packages (perl/rsync/strace) — none are
 # wanted on a headless appliance. Flows to the flake via $SBC_LEAN.
 sbc_application(
     name = "tdplayer",
+    attic_cache = _ATTIC_CACHE,
+    attic_endpoint = _ATTIC_ENDPOINT,
     build_data = _BUILD_DATA_AARCH64,
     flake = "deploy/nix",
     hostname = "tdplayer",
@@ -70,6 +84,8 @@ sbc_application(
 # Pi 3B/3B+ variant of the SAME flake + config (board overridden via $SBC_BOARD).
 sbc_application(
     name = "tdplayer_pi3",
+    attic_cache = _ATTIC_CACHE,
+    attic_endpoint = _ATTIC_ENDPOINT,
     board = "@sbc_deploy//deploy/boards:raspberry-pi-3",
     build_data = _BUILD_DATA_AARCH64,
     flake = "deploy/nix",
@@ -90,6 +106,8 @@ _BUILD_DATA_X86_64 = [
 
 sbc_application(
     name = "tdplayer_amd64",
+    attic_cache = _ATTIC_CACHE,
+    attic_endpoint = _ATTIC_ENDPOINT,
     board = "@sbc_deploy//deploy/boards:amd64-generic",
     build_data = _BUILD_DATA_X86_64,
     flake = "deploy/nix",

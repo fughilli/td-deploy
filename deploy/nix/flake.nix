@@ -20,6 +20,17 @@
 
   description = "td-deploy — Raspberry Pi + x86_64 player images and live-deploy (sbc-deploy consumer)";
 
+  # Build-time substituter for the machine that BUILDS the closure (the Mac's builder
+  # VMs, CI): the self-hosted Attic cache, so `nix build` pulls what an earlier build
+  # pushed instead of rebuilding it. sbc-deploy passes --accept-flake-config, so this
+  # is honored non-interactively. Off the tailnet (CI) it's unreachable and nix falls
+  # back to the upstream caches. The matching ON-DEVICE substituter is
+  # attic-substituter.nix; the post-build push is in //deploy:BUILD.bazel.
+  nixConfig = {
+    extra-substituters = [ "http://attic.tail6b8ad3.ts.net:8080/splanc" ];
+    extra-trusted-public-keys = [ "splanc:MWmTqIgwyOOGTh2wazhPPnVAsIIAV9pEXqhhorIWdvw=" ];
+  };
+
   inputs.sbc-deploy.url = "github:fughilli/sbc-deploy?dir=nix";
 
   outputs = { self, sbc-deploy, ... }:
@@ -43,6 +54,8 @@
       #                     out of band via deploy/seed_tailscale.sh (adds ~30 MB).
       #   flash-config.nix — apply a per-card/per-USB hostname + WiFi + deploy key
       #                     that the desktop app's flasher dropped at flash time.
+      #   attic-substituter.nix — the self-hosted Attic cache as a trusted substituter
+      #                     (deploy_live's --substitute-on-destination pulls from it).
       # Raspberry Pi only:
       #   image.nix       — skip zstd compression + shrink the oversized firmware
       #                     partition (the raw-image "zero padding"). sdImage.* only
@@ -55,7 +68,7 @@
       #   python-host.nix — Python for Python-host artifacts: the interpreter, the
       #                     venv `tdplayer-prepare` step a deploy runs, and the
       #                     libraries manylinux wheels expect.
-      systemModules = [ ./lean-extra.nix ./tailscale.nix ./flash-config.nix ]
+      systemModules = [ ./lean-extra.nix ./tailscale.nix ./flash-config.nix ./attic-substituter.nix ]
         ++ (if isX86
       then [ ./x86.nix ./python-host.nix ]
       else [ ./image.nix ./mesa-lean.nix ]);
