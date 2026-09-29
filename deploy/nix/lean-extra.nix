@@ -23,8 +23,14 @@
   # drops man-db + groff, which `nixos-option` baked into its PATH.
   system.disableInstallerTools = true;
 
+  # Raspberry Pi only: these overrides change NetworkManager (and stoken ->
+  # openconnect), so nothing from cache.nixos.org matches and they're rebuilt from
+  # source. Cheap on the Pi's aarch64 builder VM (hardware-accelerated); on an x86
+  # player that's the emulated (QEMU TCG) x86 builder on Apple Silicon — hours for
+  # NetworkManager alone — for ~60 MB on a mini PC's disk. So x86 keeps the stock,
+  # cached packages.
   nixpkgs.overlays = [
-    (final: prev: {
+    (final: prev: lib.optionalAttrs prev.stdenv.hostPlatform.isAarch64 {
       # gtk+3 (45 MB) is pulled by NetworkManager's built-in openconnect VPN helper
       # (the NM package embeds a store ref to openconnect via fix-paths.patch) ->
       # openconnect -> stoken -> gtk3. stoken only needs GTK for its GUI; build the
