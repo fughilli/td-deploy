@@ -220,7 +220,8 @@ git_override(
     # main (matches deploy/nix/flake.lock — keep the two in sync). Has the amd64
     # family (bootable installer USB + the amd64-generic board, #16), build_data
     # with storePath closures (#19), the family-aware deploy guard (#18), the
-    # .seed_wifi target and the lean git drop.
-    commit = "23c03bdcefa0cd4b90ea1ec611456984d91a389a",
+    # .seed_wifi target and the lean git drop, and the attic cache push running in
+    # the background so it doesn't hold up the image write (#28).
+    commit = "e1dfe97b07a8a0cd2339604d14e262e0903eca26",
     remote = "https://github.com/fughilli/sbc-deploy.git",
 )
