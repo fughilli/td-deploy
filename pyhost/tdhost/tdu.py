@@ -201,11 +201,30 @@ _AXIS = {"x": _rx, "y": _ry, "z": _rz}
 def euler3(rx, ry, rz, order: str = "xyz") -> np.ndarray:
     """3x3 rotation, angles in degrees. `order` is the ORDER OF APPLICATION (TD's
     rord 'xyz' rotates about x first), so the matrix is R_last @ ... @ R_first."""
-    ang = {"x": math.radians(rx), "y": math.radians(ry), "z": math.radians(rz)}
-    m = np.eye(3)
+    ang = {"x": rx, "y": ry, "z": rz}
+    m = None
     for ax in order:
-        m = _AXIS[ax](ang[ax]) @ m
-    return m
+        a = ang[ax]
+        if not a:
+            continue
+        a = math.radians(a)
+        c, s = math.cos(a), math.sin(a)
+        if ax == "x":
+            r = ((1.0, 0.0, 0.0), (0.0, c, -s), (0.0, s, c))
+        elif ax == "y":
+            r = ((c, 0.0, s), (0.0, 1.0, 0.0), (-s, 0.0, c))
+        else:
+            r = ((c, -s, 0.0), (s, c, 0.0), (0.0, 0.0, 1.0))
+        # small 3x3 products in plain floats: far cheaper than numpy temporaries
+        m = (
+            r
+            if m is None
+            else tuple(
+                tuple(r[i][0] * m[0][j] + r[i][1] * m[1][j] + r[i][2] * m[2][j] for j in range(3))
+                for i in range(3)
+            )
+        )
+    return np.eye(3) if m is None else np.array(m, dtype=float)
 
 
 def euler_matrix(rx, ry, rz, order="xyz") -> np.ndarray:

@@ -254,6 +254,14 @@ const FULLSCREEN_VS: &str = "#version 330 core\nout vec3 vUV;\nvoid main(){ vec2
 const BLIT_FS: &str = "#version 330 core\nin vec3 vUV;\nout vec4 fragColor;\nuniform sampler2D tex;\nuniform vec2 uScale;\nvoid main(){ vec2 uv = (vUV.st-0.5)/uScale+0.5; if(uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0) fragColor=vec4(0,0,0,1); else fragColor=vec4(texture(tex, uv).rgb, 1.0); }\n";
 
 // ---------------------------------------------------------------- renderer
+struct PendingRead {
+    path: String,
+    w: i32,
+    h: i32,
+    pbo: glow::Buffer,
+    cap: i32,
+}
+
 pub struct HostRenderer<'a> {
     pub gl: &'a glow::Context,
     dir: String,
@@ -278,6 +286,18 @@ pub struct HostRenderer<'a> {
     blit: glow::Program,
     readback_req: Vec<String>,
     readback_data: Vec<(String, i32, i32, Vec<u8>)>,
+    // Asynchronous readback (GL 3 / GLES 3): glReadPixels into pixel-pack
+    // buffers at the end of a frame, mapped at the start of the next one — the
+    // GPU finishes the frame (and the page-flip) in between, instead of the CPU
+    // stalling on it mid-frame. Delivery is unchanged: numpyArray(delayed=True)
+    // gets the previous frame's pixels either way.
+    async_readback: bool,
+    pending_reads: Vec<PendingRead>,
+    pending_fence: Option<glow::Fence>,
+    pbo_pool: Vec<(glow::Buffer, i32)>,
+    // TOXC_PROFILE: glFinish after every node so each top:<node> includes its
+    // GPU time (otherwise GPU work lands wherever the CPU next waits: "gpu")
+    profile_gpu: bool,
     frame: u64,
     msaa_samples: i32,
     prof: Prof,
@@ -336,6 +356,12 @@ impl<'a> HostRenderer<'a> {
             blit,
             readback_req: vec![],
             readback_data: vec![],
+            async_readback: gl.version().major >= 3
+                && std::env::var_os("TOXC_SYNC_READBACK").is_none(),
+            pending_reads: vec![],
+            pending_fence: None,
+            pbo_pool: vec![],
+            profile_gpu: std::env::var_os("TOXC_PROFILE").is_some(),
             frame: 0,
             msaa_samples,
             prof,
@@ -688,6 +714,12 @@ impl<'a> HostRenderer<'a> {
     pub fn cook(&mut self, t: f64) {
         self.frame += 1;
         let t0 = Instant::now();
+        // last frame's asynchronous readbacks (normally complete by now)
+        if !self.pending_reads.is_empty() {
+            let tr = Instant::now();
+            self.finish_readbacks();
+            prof_add(&self.prof, "host:readback_wait", tr.elapsed().as_secs_f64());
+        }
         // 1. the host: frame-start callbacks, script cooks, bindings
         let rb = std::mem::take(&mut self.readback_data);
         let specs: Vec<Value> = rb
@@ -804,6 +836,9 @@ impl<'a> HostRenderer<'a> {
             }
             let ts = Instant::now();
             self.cook_node(n);
+            if self.profile_gpu {
+                unsafe { self.gl.finish() };
+            }
             prof_add(
                 &self.prof,
                 &format!("top:{}", n["id"].as_str().unwrap_or("?")),
@@ -837,14 +872,30 @@ impl<'a> HostRenderer<'a> {
             for n in &nodes {
                 let id = n["id"].as_str().unwrap_or("");
                 if n["on_demand"].as_bool() == Some(true) && needed.contains(id) {
+                    let ts = Instant::now();
                     self.cook_node(n);
+                    if self.profile_gpu {
+                        unsafe { self.gl.finish() };
+                    }
+                    prof_add(&self.prof, &format!("top:{id}"), ts.elapsed().as_secs_f64());
                 }
             }
             let req = self.readback_req.clone();
             for p in req {
                 if let Some(tex) = self.out.get(&p).and_then(|v| v.first()).copied() {
-                    let data = self.read_tex_f32(tex);
-                    self.readback_data.push((p, tex.w, tex.h, data));
+                    if self.async_readback {
+                        self.start_readback(p, tex);
+                    } else {
+                        let data = self.read_tex_f32(tex);
+                        self.readback_data.push((p, tex.w, tex.h, data));
+                    }
+                }
+            }
+            if !self.pending_reads.is_empty() {
+                unsafe {
+                    self.pending_fence =
+                        self.gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0).ok();
+                    self.gl.flush();
                 }
             }
             prof_add(&self.prof, "host:readback", tr.elapsed().as_secs_f64());
@@ -880,6 +931,76 @@ impl<'a> HostRenderer<'a> {
             }
         }
         need
+    }
+
+    /// Queue a float RGBA read of `t` into a pixel-pack buffer (no CPU wait).
+    fn start_readback(&mut self, path: String, t: Tex) {
+        let need = t.w * t.h * 16;
+        let gl = self.gl;
+        unsafe {
+            let (pbo, cap) = match self.pbo_pool.iter().position(|&(_, c)| c >= need) {
+                Some(i) => self.pbo_pool.swap_remove(i),
+                None => (gl.create_buffer().unwrap(), 0),
+            };
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pbo));
+            let cap = if cap < need {
+                gl.buffer_data_size(glow::PIXEL_PACK_BUFFER, need, glow::STREAM_READ);
+                need
+            } else {
+                cap
+            };
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.scratch_fbo));
+            gl.framebuffer_texture_2d(
+                glow::FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(t.tex),
+                0,
+            );
+            gl.read_buffer(glow::COLOR_ATTACHMENT0);
+            gl.read_pixels(
+                0,
+                0,
+                t.w,
+                t.h,
+                glow::RGBA,
+                glow::FLOAT,
+                glow::PixelPackData::BufferOffset(0),
+            );
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            self.pending_reads.push(PendingRead {
+                path,
+                w: t.w,
+                h: t.h,
+                pbo,
+                cap,
+            });
+        }
+    }
+
+    /// Wait for the queued reads and hand their pixels to the next host frame.
+    fn finish_readbacks(&mut self) {
+        let gl = self.gl;
+        unsafe {
+            if let Some(f) = self.pending_fence.take() {
+                // flush + wait up to 1 s; the frame's GPU work is normally long done
+                gl.client_wait_sync(f, glow::SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000);
+                gl.delete_sync(f);
+            }
+            for r in std::mem::take(&mut self.pending_reads) {
+                let n = (r.w * r.h * 16) as usize;
+                gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(r.pbo));
+                let ptr =
+                    gl.map_buffer_range(glow::PIXEL_PACK_BUFFER, 0, n as i32, glow::MAP_READ_BIT);
+                if !ptr.is_null() {
+                    let data = std::slice::from_raw_parts(ptr as *const u8, n).to_vec();
+                    gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
+                    self.readback_data.push((r.path, r.w, r.h, data));
+                }
+                gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+                self.pbo_pool.push((r.pbo, r.cap));
+            }
+        }
     }
 
     fn read_tex_f32(&self, t: Tex) -> Vec<u8> {

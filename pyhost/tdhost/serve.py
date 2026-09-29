@@ -12,6 +12,10 @@ Commands (header["cmd"]):
 
 The project's own print()/debug() output goes to stderr (the runtime's log);
 stdout carries only protocol frames.
+
+TOXC_HOST_PROFILE=<seconds> profiles the per-frame Python (cProfile over the
+frame + frame_end callbacks and the reply packing) and logs the hottest
+functions every <seconds> — where host:frame's time goes on a device.
 """
 
 from __future__ import annotations
@@ -20,9 +24,10 @@ import json
 import os
 import struct
 import sys
+import time
 import traceback
 
-import numpy as np
+import numpy as np  # BLAS threads: see tdhost/__init__.py
 
 
 def _out_stream():
@@ -31,6 +36,12 @@ def _out_stream():
     os.dup2(2, 1)
     sys.stdout = sys.stderr
     return os.fdopen(fd, "wb", buffering=0)
+
+
+def _bytes_view(b):
+    if isinstance(b, np.ndarray):
+        return memoryview(np.ascontiguousarray(b).reshape(-1).view(np.uint8))
+    return memoryview(b).cast("B")
 
 
 class Wire:
@@ -54,11 +65,78 @@ class Wire:
         return head, blobs
 
     def write(self, head, blobs=()):
-        blobs = [b if isinstance(b, (bytes, bytearray, memoryview)) else bytes(b) for b in blobs]
-        head["blobs"] = [len(b) for b in blobs]
+        blobs = [_bytes_view(b) for b in blobs]
+        head["blobs"] = [b.nbytes for b in blobs]
         hb = json.dumps(head).encode()
-        parts = [struct.pack("<I", len(hb)), hb, *blobs]
-        self.out.write(b"".join(bytes(p) for p in parts))
+        # header + small blobs in one write; big blobs (camera frames, ~MBs)
+        # straight from their buffers rather than copied into one joined bytes
+        small = [struct.pack("<I", len(hb)), hb]
+        big = []
+        for b in blobs:
+            (big if big or b.nbytes > 65536 else small).append(b)
+        self._write_all(memoryview(b"".join(small)))
+        for b in big:
+            self._write_all(b)
+
+    def _write_all(self, mv):
+        while mv.nbytes:
+            n = self.out.write(mv)
+            mv = mv[n:]
+
+
+class _Profile:
+    """cProfile the per-frame work; print a summary every `every` seconds."""
+
+    def __init__(self, every):
+        import cProfile
+
+        self.every = max(1.0, every)
+        self.prof = cProfile.Profile()
+        self._reset()
+
+    def _reset(self):
+        self.prof.clear()
+        self.t0, self.frames = time.monotonic(), 0
+        self.spent = {"frame": 0.0, "pack": 0.0, "frame_end": 0.0}
+
+    def run(self, part, fn, *args):
+        t = time.perf_counter()
+        self.prof.enable()
+        try:
+            return fn(*args)
+        finally:
+            self.prof.disable()
+            self.spent[part] += time.perf_counter() - t
+
+    def tick(self):
+        self.frames += 1
+        now = time.monotonic()
+        if now - self.t0 < self.every:
+            return
+        import io
+        import pstats
+
+        n = max(self.frames, 1)
+        parts = " ".join(f"{k}={1000 * v / n:.1f}ms" for k, v in self.spent.items())
+        out = io.StringIO()
+        st = pstats.Stats(self.prof, stream=out)
+        st.sort_stats("tottime").print_stats(25)
+        st.sort_stats("cumulative").print_stats(25)
+        print(
+            f"[host-profile] {n} frames in {now - self.t0:.1f}s | per frame: {parts}\n"
+            + out.getvalue(),
+            file=sys.stderr,
+            flush=True,
+        )
+        self._reset()
+
+
+class _NoProfile:
+    def run(self, part, fn, *args):
+        return fn(*args)
+
+    def tick(self):
+        pass
 
 
 def main(argv):
@@ -75,6 +153,8 @@ def main(argv):
     path_map = {src: project for src in hc.get("path_map", {})}
     wire = Wire()
     host = None
+    spec = os.environ.get("TOXC_HOST_PROFILE", "")
+    prof = _Profile(float(spec)) if spec else _NoProfile()
     while True:
         try:
             head, blobs = wire.read()
@@ -111,12 +191,15 @@ def main(argv):
                 for spec, blob in zip(head.get("readbacks", []), blobs):
                     a = np.frombuffer(blob, np.float32).reshape(int(spec["h"]), int(spec["w"]), 4)
                     rb[spec["path"]] = a
-                out = host.frame(float(head["t"]), rb, int(head.get("frame", 0)) or None)
-                reply, oblobs = _pack(out)
+                out = prof.run(
+                    "frame", host.frame, float(head["t"]), rb, int(head.get("frame", 0)) or None
+                )
+                reply, oblobs = prof.run("pack", _pack, out)
                 reply["quit"] = bool(host.quit_requested)
                 wire.write(reply, oblobs)
             elif cmd == "frame_end":
-                wire.write({"readback": host.frame_end()})
+                wire.write({"readback": prof.run("frame_end", host.frame_end)})
+                prof.tick()
             elif cmd == "exit":
                 if host is not None:
                     host.exit()
@@ -165,7 +248,7 @@ def _pack(out):
     blobs = []
 
     def add(arr):
-        blobs.append(np.ascontiguousarray(arr).tobytes())
+        blobs.append(np.ascontiguousarray(arr))  # sent from its buffer, no copy
         return len(blobs) - 1
 
     reply = {

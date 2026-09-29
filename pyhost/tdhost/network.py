@@ -872,7 +872,8 @@ class COMP(OP):
         self._host.set_local_matrix(self, m)
 
     def preTransform(self):
-        return _tdu.Matrix(self._host._pre_matrix(self))
+        pre = self._host._pre_matrix(self)
+        return _tdu.Matrix(pre if pre is not None else np.eye(4))
 
     def relativeTransform(self, target):
         return _tdu.Matrix(

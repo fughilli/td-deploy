@@ -216,6 +216,21 @@ class HostTest(unittest.TestCase):
         self.assertAlmostEqual(float(g.par.sx), 2.0)
         self.assertAlmostEqual(float(g.par.rz), 90.0)
 
+    def test_snapshot_matrices_match_uncached_and_track_changes(self):
+        h = self.host
+        paths = ["/project1/geo1", "/project1/geo1/child", "/project1/nullB"]
+        h.bind({"mats": paths})
+        h.start()
+        got = h.frame(0.0)["mats"].reshape(-1, 4, 4).transpose(0, 2, 1)
+        want = [h.world_matrix(h.ops[p]) for p in paths]  # after onFrameStart moved geo1
+        np.testing.assert_allclose(got, want, atol=1e-12)
+        self.assertIsNone(h._xf_cache)  # the cache lives only inside a snapshot
+        # a parent moved between frames: the child follows (nothing stale)
+        h.ops["/project1/geo1"].par.ty = 7
+        got = h.frame(1 / 60)["mats"].reshape(-1, 4, 4).transpose(0, 2, 1)
+        np.testing.assert_allclose(got[1], h.world_matrix(h.ops["/project1/geo1/child"]))
+        self.assertAlmostEqual(got[0][1, 3], 7.0)
+
     def test_matches_touchdesigner_bone_transforms(self):
         # Bone local matrices exactly as TouchDesigner 2025.33070 reported them for
         # these parameter values (srt order, rotate xyz; captured from the FBX

@@ -49,6 +49,7 @@ class Host:
         log=None,
     ):
         self._id = 0
+        self._xf_cache = None  # per-snapshot local/world matrix cache (_snapshot)
         self.log = log or (lambda msg: print(f"[tdhost] {msg}", flush=True))
         self.absTime = N._AbsTime()
         start = net.get("start", {})
@@ -508,33 +509,53 @@ class Host:
 
     @staticmethod
     def _compose(t, r, s, piv, xord, rord) -> np.ndarray:
+        R = _tdu.euler3(r[0], r[1], r[2], rord)
+        if xord == "srt" and not (piv[0] or piv[1] or piv[2]):
+            # the common case, without the pivot/order bookkeeping: T @ R @ S
+            m = np.empty((4, 4))
+            m[:3, :3] = R * np.asarray(s, float)  # scales R's columns
+            m[:3, 3] = t
+            m[3] = (0.0, 0.0, 0.0, 1.0)
+            return m
         T = np.eye(4)
         T[:3, 3] = t
-        R = _tdu.euler_matrix(r[0], r[1], r[2], rord)
+        Rm = np.eye(4)
+        Rm[:3, :3] = R
         S = np.diag([s[0], s[1], s[2], 1.0])
         P = np.eye(4)
         P[:3, 3] = piv
         Pi = np.eye(4)
-        Pi[:3, 3] = -piv
-        mats = {"t": T, "r": P @ R @ Pi, "s": P @ S @ Pi}
+        Pi[:3, 3] = -np.asarray(piv, float)
+        mats = {"t": T, "r": P @ Rm @ Pi, "s": P @ S @ Pi}
         m = np.eye(4)
         for k in xord:  # applied in order: first letter first
             m = mats[k] @ m
         return m
 
-    def _pre_matrix(self, o) -> np.ndarray:
+    _PRE_PARS = ("ptx", "pty", "ptz", "prx", "pry", "prz", "psx", "psy", "psz", "pscale")
+
+    def _pre_matrix(self, o):
+        """The Pre-Transform page's matrix, or None when the op has none."""
         pars = object.__getattribute__(o.par, "_pars")
-        if not any(
-            k in pars
-            for k in ("ptx", "pty", "ptz", "prx", "pry", "prz", "psx", "psy", "psz", "pscale")
-        ):
-            return np.eye(4)
+        if not any(k in pars for k in self._PRE_PARS):
+            return None
         t, r, s, piv, xord, rord = self._xform(o, prefix="p")
         return self._compose(t, r, s, piv, xord, rord)
 
     def local_matrix(self, o) -> np.ndarray:
+        cache = self._xf_cache
+        if cache is not None:
+            m = cache.get(("l", o.path))
+            if m is not None:
+                return m
         t, r, s, piv, xord, rord = self._xform(o)
-        return self._compose(t, r, s, piv, xord, rord) @ self._pre_matrix(o)
+        m = self._compose(t, r, s, piv, xord, rord)
+        pre = self._pre_matrix(o)
+        if pre is not None:
+            m = m @ pre
+        if cache is not None:
+            cache[("l", o.path)] = m
+        return m
 
     def _object_parent(self, o):
         """Object parent: an object COMP wired into input 0, else the containing
@@ -549,13 +570,35 @@ class Host:
         return None
 
     def world_matrix(self, o) -> np.ndarray:
-        m = self.local_matrix(o)
+        cache = self._xf_cache
+        if cache is not None:
+            m = cache.get(("w", o.path))
+            if m is not None:
+                return m
         p = self._object_parent(o)
-        guard = 0
-        while p is not None and guard < 256:
-            m = self.local_matrix(p) @ m
-            p = self._object_parent(p)
-            guard += 1
+        m = self.local_matrix(o)
+        if p is not None:
+            # parent's world first: with the snapshot cache a chain of N objects
+            # costs N local matrices, not N^2/2
+            m = self._world_upto(p, 255) @ m
+        if cache is not None:
+            cache[("w", o.path)] = m
+        return m
+
+    def _world_upto(self, o, depth):
+        if depth <= 0:
+            return self.local_matrix(o)
+        cache = self._xf_cache
+        if cache is not None:
+            m = cache.get(("w", o.path))
+            if m is not None:
+                return m
+        p = self._object_parent(o)
+        m = self.local_matrix(o)
+        if p is not None:
+            m = self._world_upto(p, depth - 1) @ m
+        if cache is not None:
+            cache[("w", o.path)] = m
         return m
 
     def set_local_matrix(self, o, m: np.ndarray):
@@ -563,7 +606,7 @@ class Host:
         (pivot 0, the op's own xord/rord; the uniform scale is folded to 1)."""
         rord = str(o.par.rord.eval())
         pre = self._pre_matrix(o)
-        if not np.allclose(pre, np.eye(4)):
+        if pre is not None and not np.allclose(pre, np.eye(4)):
             m = m @ np.linalg.inv(pre)
         s, r, t = _tdu.decompose(m, rord)
         pars = object.__getattribute__(o.par, "_pars")
@@ -648,10 +691,16 @@ class Host:
         for j, (o, flag) in enumerate(b["flags"]):
             floats[k + j] = 1.0 if (o is not None and self.flag(o, flag)) else 0.0
         mats = np.zeros((len(b["mats"]), 16), np.float64)
-        for i, o in enumerate(b["mats"]):
-            if o is not None:
-                # column-major, ready for glUniformMatrix4fv(transpose=false)
-                mats[i] = self.world_matrix(o).T.reshape(-1)
+        # parameters can't change while the matrices are gathered: share the
+        # local/world matrices of common ancestors across the bound objects
+        self._xf_cache = {}
+        try:
+            for i, o in enumerate(b["mats"]):
+                if o is not None:
+                    # column-major, ready for glUniformMatrix4fv(transpose=false)
+                    mats[i] = self.world_matrix(o).T.reshape(-1)
+        finally:
+            self._xf_cache = None
         for o in b["sops"]:
             if o is not None:
                 self._cook_script_sop(o)
