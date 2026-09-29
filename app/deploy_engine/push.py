@@ -10,6 +10,7 @@ in as root, so no on-device sudo is needed.
 from __future__ import annotations
 
 import os
+import posixpath
 import shlex
 import shutil
 import subprocess
@@ -21,6 +22,18 @@ from .progress import Progress
 
 REMOTE_BASE = "/var/lib/tdplayer"
 DEFAULT_SERVICE = "sbc-tdplayer"
+
+
+def prune_cmd(staging: str, keep: int) -> str:
+    """Shell to delete all but the newest `keep` staging dirs — never the one
+    just made live. Newest by NAME (staging-YYYYMMDD-HHMMSS sorts by time): rsync -a
+    gives the new dir the local artifact's mtime, which can be older than the
+    previous deploys', so `ls -t` once pruned the live artifact itself."""
+    base = posixpath.dirname(staging)
+    return (
+        f"ls -1d {base}/staging-* 2>/dev/null | sort -r | tail -n +{keep + 1} "
+        f"| grep -vxF {shlex.quote(staging)} | xargs -r rm -rf"
+    )
 
 
 def default_key() -> str:
@@ -115,7 +128,7 @@ def push(
         f"{prep}"
         f"ln -sfn {staging} {REMOTE_BASE}/current && "
         f"systemctl restart {service} && "
-        f"ls -1dt {REMOTE_BASE}/staging-* 2>/dev/null | tail -n +{keep + 1} | xargs -r rm -rf"
+        f"{prune_cmd(staging, keep)}"
     )
     subprocess.run(ssh + [target, remote], check=True, stdout=sys.stderr)
     progress.phase("restart", 1.0, "live")
