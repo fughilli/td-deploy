@@ -42,4 +42,35 @@
 
   # USB webcams (UVC) for camera-driven pieces; the runtime user is in `video`.
   environment.systemPackages = [ pkgs.v4l-utils ];
+
+  # Optional, per box: AMD APU power limits. Laptop-class APUs in mini PCs ship
+  # with conservative limits (a Ryzen 5 3500U box idled its Vega GPU at ~300 MHz
+  # and its cores at ~1.6 GHz under a camera piece's load); raising them trades
+  # heat for clocks. Nothing is changed unless /var/lib/tdplayer/power-limits
+  # exists — it holds ryzenadj arguments, e.g.
+  #   --stapm-limit=25000 --fast-limit=30000 --slow-limit=25000 --tctl-temp=90
+  # (milliwatts / °C). Keep to the power limits: raising the VRM current limits
+  # (--vrm-current / --vrmmax-current) hung that box. The SMU forgets the
+  # settings at every boot (and some firmware resets them), so they are applied
+  # at boot and re-applied every 10 minutes.
+  systemd.services.td-power-limits = {
+    description = "Apply per-box AMD APU power limits (ryzenadj)";
+    wantedBy = [ "multi-user.target" ];
+    unitConfig.ConditionPathExists = "/var/lib/tdplayer/power-limits";
+    serviceConfig.Type = "oneshot";
+    path = [ pkgs.gnugrep pkgs.coreutils ];
+    script = ''
+      grep -q AuthenticAMD /proc/cpuinfo || exit 0
+      # shellcheck disable=SC2046
+      ${pkgs.ryzenadj}/bin/ryzenadj $(grep -v '^#' /var/lib/tdplayer/power-limits) 2>&1 \
+        | grep -iv 'pm_table\|/dev/mem\|memory access\|ryzen_smu\|monitoring' || true
+    '';
+  };
+  systemd.timers.td-power-limits = {
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnUnitActiveSec = "10min";
+      OnBootSec = "2min";
+    };
+  };
 }
