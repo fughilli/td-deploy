@@ -80,6 +80,14 @@ What the x86 image adds (`deploy/nix/x86.nix`, `python-host.nix`):
   (`flash-config.nix`). Reflash the stick and boot the box with it plugged in to
   change them.
 
+- **A virtual camera for testing** (`virtual-camera.nix`): `/dev/video10`
+  (v4l2loopback) looks like an ordinary webcam to anything on the box. Stream this
+  laptop's camera, a recorded clip or a URL into it with
+  `app/toxc_camstream.py <player> [--source 0|clip.mp4|rtsp://…]`. The stream
+  travels as MJPEG over an SSH tunnel (the deploy key) to a feeder listening only on
+  the box's loopback, so no port is exposed on either machine. A project reads it as
+  camera index 10.
+
 The runtime is cross-built for x86_64 (`//runtime_rs/cross:toxc_runtime_linux_x86_64`,
 linked by nixpkgs' `pkgsCross.gnu64` clang) and runs at 60 fps. On macOS,
 sbc-deploy manages an x86_64 builder VM the same way it does the aarch64 one.

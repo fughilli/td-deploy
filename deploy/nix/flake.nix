@@ -68,9 +68,11 @@
       #   python-host.nix — Python for Python-host artifacts: the interpreter, the
       #                     venv `tdplayer-prepare` step a deploy runs, and the
       #                     libraries manylinux wheels expect.
+      #   virtual-camera.nix — /dev/video10, a v4l2loopback camera fed from a laptop
+      #                     (app/toxc_camstream.py) for testing without a webcam.
       systemModules = [ ./lean-extra.nix ./tailscale.nix ./flash-config.nix ./attic-substituter.nix ]
         ++ (if isX86
-      then [ ./x86.nix ./python-host.nix ]
+      then [ ./x86.nix ./python-host.nix ./virtual-camera.nix ]
       else [ ./image.nix ./mesa-lean.nix ]);
     };
 }

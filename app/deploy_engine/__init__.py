@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import tempfile
 
-from . import players
+from . import camstream, players
 from .compile import compile_toe
 from .detect import PREPARE, Target, probe, resolve_target
 from .finish import finish
@@ -23,6 +23,7 @@ from .toolchain import BundledToolchain, NixToolchain, Toolchain, default_toolch
 
 __all__ = [
     "deploy",
+    "camstream",
     "probe",
     "players",
     "compile_toe",
