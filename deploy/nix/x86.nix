@@ -24,8 +24,13 @@
     extraPackages = with pkgs; [ intel-compute-runtime intel-media-driver ];
   };
 
-  # The iGPU's firmware (i915 DMC/GuC/HuC, amdgpu) comes from linux-firmware,
-  # which sbc-base keeps on x86 (its leanFirmware trim is aarch64-only).
+  # The iGPU's firmware (amdgpu, i915 DMC/GuC/HuC) and the NIC/Wi-Fi blobs
+  # (r8169, rtw88, ...) come from linux-firmware. NixOS leaves it out unless
+  # enableRedistributableFirmware is on (default false; only nixos-generate-config
+  # and the installer ISO turn it on), and sbc-base doesn't set it for x86 — so
+  # without this amdgpu fails ("Failed to get gpu_info firmware
+  # picasso_gpu_info.bin") and the runtime falls back to llvmpipe on simpledrm.
+  hardware.enableRedistributableFirmware = true;
 
   # A show box never sleeps.
   systemd.targets.sleep.enable = false;

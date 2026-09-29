@@ -90,6 +90,30 @@ class PrepareTest(unittest.TestCase):
             os.path.realpath(os.path.join(st2, "project", ".venv")), os.path.realpath(link)
         )
 
+    def test_project_goes_to_the_player_user(self):
+        import pwd
+
+        me = pwd.getpwuid(os.getuid())
+        st = _staging(self.root)
+        env = dict(self.env, TDPLAYER_USER=me.pw_name)
+        r = subprocess.run(
+            [sys.executable, SCRIPT, st], env=env, capture_output=True, text=True, timeout=300
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        proj = os.path.join(st, "project")
+        self.assertEqual(os.stat(proj).st_uid, me.pw_uid)
+        # an unknown user is skipped, not fatal
+        env = dict(self.env, TDPLAYER_USER="no-such-player-user")
+        r = subprocess.run(
+            [sys.executable, SCRIPT, _staging(self.root)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("leaving", r.stderr)
+
     def test_failed_install_leaves_nothing_behind(self):
         st = _staging(self.root, reqs="doesnotexist==9.9\n")
         r = self.run_prepare(st)

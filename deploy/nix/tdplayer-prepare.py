@@ -4,7 +4,9 @@ Run as root over ssh by the desktop app (deploy_engine.push pre_restart) on the
 new staging dir, before the `current` symlink swap. For a Python-host artifact
 (schedule.json "format": "toxc-host/1" with host.python.requirements) it builds
 the project's venv and links it as <project>/.venv, where the runtime's host
-co-process looks first. Anything else: nothing to do.
+co-process looks first, and hands the project folder to the player's service
+user (the project writes there, as it does next to its .toe). Anything else:
+nothing to do.
 
 Venvs live in /var/lib/tdplayer/venvs/<hash of python + requirements>, built in a
 temp dir and renamed into place, so a failed install never leaves a half venv a
@@ -23,6 +25,7 @@ import sys
 import tempfile
 
 ROOT = os.environ.get("TDPLAYER_ROOT", "/var/lib/tdplayer")
+PLAYER_USER = os.environ.get("TDPLAYER_USER", "tdplayer")  # services.sbcApps.tdplayer.user
 KEEP = 3
 
 
@@ -96,7 +99,23 @@ def main(argv):
     os.symlink(venv, link)
     os.utime(venv)
     _prune(venvs, keep=venv)
+    _give_project_to_player(project)
     return 0
+
+
+def _give_project_to_player(project):
+    """The project folder is the project's working directory on the player, as
+    it is in TouchDesigner: its Python writes logs/, caches, recordings there. The
+    push lands it root-owned, so hand it to the runtime's service user. (-R doesn't
+    follow symlinks: the shared, root-owned venv behind .venv stays untouched.)"""
+    import pwd
+
+    try:
+        pw = pwd.getpwnam(PLAYER_USER)
+    except KeyError:
+        log(f"no {PLAYER_USER!r} user; leaving {project} root-owned")
+        return
+    subprocess.run(["chown", "-R", "-h", f"{pw.pw_uid}:{pw.pw_gid}", project], check=True)
 
 
 def _prune(venvs, keep):
