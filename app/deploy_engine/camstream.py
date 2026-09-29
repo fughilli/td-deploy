@@ -120,27 +120,40 @@ def run(
 
     key = key or default_key()
     lport = _free_port()
-    tunnel = subprocess.Popen(
-        _ssh_base(key)
-        + ["-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=10"]
-        + ["-L", f"127.0.0.1:{lport}:127.0.0.1:{FEEDER_PORT}", f"{user}@{host}"],
-        stdin=subprocess.DEVNULL,
-    )
+
+    def open_tunnel():
+        return subprocess.Popen(
+            _ssh_base(key)
+            + ["-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=5"]
+            + ["-o", "ServerAliveCountMax=2"]
+            + ["-L", f"127.0.0.1:{lport}:127.0.0.1:{FEEDER_PORT}", f"{user}@{host}"],
+            stdin=subprocess.DEVNULL,
+        )
+
+    tunnel = open_tunnel()
     try:
 
         def connect():
-            for _ in range(100):  # the tunnel / a restarting feeder takes a moment
+            # Keeps trying until the player is back: the tunnel is reopened when it
+            # drops (player rebooting / off the network), the feeder waits for us
+            # when it restarts. Stop with Ctrl-C.
+            nonlocal tunnel
+            waited = 0
+            while True:
                 if tunnel.poll() is not None:
-                    raise RuntimeError(
-                        f"ssh tunnel to {user}@{host} failed (exit {tunnel.returncode})"
-                    )
+                    if waited == 0:
+                        progress.log(f"ssh tunnel to {user}@{host} closed; retrying")
+                    time.sleep(2)
+                    tunnel = open_tunnel()
                 try:
                     c = socket.create_connection(("127.0.0.1", lport), timeout=2)
                     c.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    if waited:
+                        progress.log("reconnected")
                     return c
                 except OSError:
-                    time.sleep(0.1)
-            raise RuntimeError("could not reach the player's camera feeder through the tunnel")
+                    waited += 1
+                    time.sleep(0.2)
 
         sock = connect()
         enc = av.CodecContext.create("mjpeg", "w")
