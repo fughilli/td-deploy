@@ -218,15 +218,16 @@ mod linux {
     }
 
     impl Scanout {
-        /// Open card0, pick the connected HDMI mode, and create a gbm scanout
+        /// Open the display's DRM card (drmcard::pick), pick the connected HDMI mode, and create a gbm scanout
         /// surface. None (=> fall back to the dumb-buffer sink / MJPEG) on any
         /// failure (headless, no perms, no libgbm).
         pub fn open() -> Option<Scanout> {
-            eprintln!("[scanout] probing /dev/dri/card0 for GBM scanout");
-            let file = match OpenOptions::new().read(true).write(true).open("/dev/dri/card0") {
+            let path = crate::drmcard::pick();
+            eprintln!("[scanout] probing {} for GBM scanout", path.display());
+            let file = match OpenOptions::new().read(true).write(true).open(&path) {
                 Ok(f) => f,
                 Err(e) => {
-                    eprintln!("[scanout] open card0 failed: {e}");
+                    eprintln!("[scanout] open {} failed: {e}", path.display());
                     return None;
                 }
             };
@@ -254,7 +255,7 @@ mod linux {
                     "[scanout] no HDMI display yet — headless GBM {dw}x{dh}, will scan out on hotplug"
                 );
             }
-            eprintln!("[scanout] card0 ok {dw}x{dh}; loading libgbm");
+            eprintln!("[scanout] {} ok {dw}x{dh}; loading libgbm", path.display());
 
             let gbm = match unsafe { Gbm::load() } {
                 Some(g) => g,

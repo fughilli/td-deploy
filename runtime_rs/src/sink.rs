@@ -70,7 +70,7 @@ impl DrmSink {
     /// Open the display and set a mode on the connected HDMI connector. Returns
     /// None (headless / no perms) instead of failing the whole runtime.
     pub fn open() -> Option<DrmSink> {
-        let file = OpenOptions::new().read(true).write(true).open("/dev/dri/card0").ok()?;
+        let file = OpenOptions::new().read(true).write(true).open(crate::drmcard::pick()).ok()?;
         let card = Card(file);
         // Be the modesetting master (needed for set_crtc / page_flip).
         let _ = card.acquire_master_lock();
