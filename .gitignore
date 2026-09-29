@@ -18,6 +18,10 @@ secrets/
 # ...but the deploy-key GENERATOR source + its test are code, not secrets.
 !app/deploy_engine/deploy_keys.py
 !tests/deploy_keys_test.py
+# real WiFi creds live in deploy/secrets/wifi.yaml (above); guard the top-level
+# path too so a plaintext PSK can never be committed there. wifi.yaml.example is
+# the checked-in template.
+deploy/wifi.yaml
 
 # sbc-deploy build scratch (builder VM logs, gc roots)
 .sbc-build/
@@ -50,3 +54,13 @@ credentials/
 
 # claude-container session-local settings
 .claude/
+
+# macOS cruft
+.DS_Store
+
+# scratch assets / experiment inputs (not build inputs)
+Banana.png
+Banana.tif
+*_texture_obj.zip
+screenshot.png
+mesh/
