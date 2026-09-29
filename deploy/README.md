@@ -87,6 +87,12 @@ What the x86 image adds (`deploy/nix/x86.nix`, `python-host.nix`):
   travels as MJPEG over an SSH tunnel (the deploy key) to a feeder listening only on
   the box's loopback, so no port is exposed on either machine. A project reads it as
   camera index 10.
+- **Optional APU power limits** (`td-power-limits`, x86.nix): ryzenadj arguments
+  in `/var/lib/tdplayer/power-limits` (e.g. `--stapm-limit=25000
+--fast-limit=30000 --slow-limit=25000 --tctl-temp=90`) are applied at boot and
+  every 10 minutes. Mini-PC APUs ship with conservative limits; nothing changes
+  without the file. Raise power limits only — raising VRM current limits hung a
+  3500U box.
 
 The runtime is cross-built for x86_64 (`//runtime_rs/cross:toxc_runtime_linux_x86_64`,
 linked by nixpkgs' `pkgsCross.gnu64` clang) and runs at 60 fps. On macOS,

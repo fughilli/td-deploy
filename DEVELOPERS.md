@@ -154,6 +154,23 @@ reinstalls. Wheels come from PyPI, or offline from a `wheels/` folder you list i
 `files`. `TOXC_SET="/project1/rig:Mode=in"` pins parameters at startup (the unit's
 environment) — handy for tests and on-site overrides.
 
+Performance knobs and diagnostics (the unit's environment, e.g.
+`systemctl set-environment TOXC_HOST_PROFILE=10 && systemctl restart sbc-tdplayer`):
+
+| Variable                | Effect                                                                                   |
+| ----------------------- | ---------------------------------------------------------------------------------------- |
+| `TOXC_HOST_PROFILE=<s>` | cProfile the per-frame Python; log the hottest functions every `<s>` seconds             |
+| `TOXC_PROFILE=1`        | glFinish after every node so `top:<node>` in `/stats` includes its GPU time (serializes) |
+| `TOXC_PIPELINE=0`       | don't overlap the next frame's CPU work with this frame's GPU work on HDMI               |
+| `TOXC_SYNC_READBACK=1`  | `numpyArray(delayed=True)` via a blocking glReadPixels instead of pixel-pack buffers     |
+
+The frame loop on HDMI is pipelined: the CPU runs frame N+1's Python while the GPU
+renders frame N, so `/stats` shows `host:frame` (Python), `present:flip_wait`
+(waiting for the previous frame to reach the screen) rather than a `gpu` split. The
+host runs numpy's BLAS single-threaded (4x4 matrices; a thread pool per call costs
+milliseconds on a busy box), keeps constant transforms' matrices between frames, and
+doesn't re-send a Script TOP array that hasn't changed.
+
 ## The host bridge
 
 Run on the Mac where TouchDesigner is installed; exposes `toeexpand`/`toecollapse` (and
