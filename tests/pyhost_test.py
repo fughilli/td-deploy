@@ -231,6 +231,47 @@ class HostTest(unittest.TestCase):
         np.testing.assert_allclose(got[1], h.world_matrix(h.ops["/project1/geo1/child"]))
         self.assertAlmostEqual(got[0][1, 3], 7.0)
 
+    def test_expressions_are_kept_until_what_they_read_changes(self):
+        h = self.host
+        top = h.ops["/project1/top1"]
+        rig = h.ops["/project1/rig"]
+        px = top.par.vec0valuex  # op('/project1/rig').par.Gain * 2 + me.par.resolutionw
+        rig.par.Gain = 3
+        self.assertEqual(px.eval(), 70.0)
+        memo = px._memo
+        self.assertTrue(memo)
+        self.assertEqual(px.eval(), 70.0)
+        self.assertIs(px._memo, memo)  # kept: nothing it read changed
+        rig.par.Gain = 4  # a parameter it read
+        self.assertEqual(px.eval(), 72.0)
+        top.par.resolutionw = 10  # its own op's parameter
+        self.assertEqual(px.eval(), 18.0)
+        # storage: per key (another key changing doesn't re-evaluate)
+        py = top.par.vec0valuey  # op('/project1/rig').fetch('n', -1)
+        self.assertEqual(py.eval(), -1)
+        rig.store("n", 5)
+        self.assertEqual(py.eval(), 5)
+        m = py._memo
+        rig.store("other", 1)
+        self.assertEqual(py.eval(), 5)
+        self.assertIs(py._memo, m)
+        rig.storage["n"] = 6  # direct writes count too
+        self.assertEqual(py.eval(), 6)
+        rig.unstore("n")
+        self.assertEqual(py.eval(), -1)
+        # time-dependent expressions are never kept
+        sp = rig.par.Speed  # absTime.seconds * 2
+        h.absTime.seconds = 1.0
+        self.assertEqual(sp.eval(), 2.0)
+        self.assertIs(sp._memo, False)
+        h.absTime.seconds = 2.0
+        self.assertEqual(sp.eval(), 4.0)
+        # ... nor what reads them
+        top.par.vec0valuez.expr = "op('/project1/rig').par.Speed + 1"
+        self.assertEqual(top.par.vec0valuez.eval(), 5.0)
+        h.absTime.seconds = 3.0
+        self.assertEqual(top.par.vec0valuez.eval(), 7.0)
+
     def test_unchanged_script_top_array_is_not_resent(self):
         h = self.host
         o = h.ops["/project1/top1"]

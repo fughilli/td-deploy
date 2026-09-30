@@ -172,6 +172,7 @@ def main(argv):
                     project_name=hc.get("project_name", "project"),
                     monitors=init.get("monitors"),
                     path_map=path_map,
+                    jit=(hc.get("python") or {}).get("jit"),
                 )
                 _rewrite_paths(host, path_map)
                 host.bind(sched["bindings"])

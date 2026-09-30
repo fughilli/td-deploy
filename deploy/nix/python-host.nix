@@ -57,6 +57,10 @@ in
       OCL_ICD_VENDORS = "/run/opengl-driver/etc/OpenCL/vendors";
       HOME = "/var/lib/tdplayer";
       PYTHONUNBUFFERED = "1";
+      # Native kernels (pyhost/tdhost/jit.py): Numba's compiled-code cache, kept
+      # across restarts and redeploys of unchanged code.
+      NUMBA_CACHE_DIR = "/var/lib/tdplayer/numba-cache";
     };
   };
+  systemd.tmpfiles.rules = [ "d /var/lib/tdplayer/numba-cache 0755 tdplayer tdplayer -" ];
 }

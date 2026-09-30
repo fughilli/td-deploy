@@ -213,6 +213,8 @@ class Par:
         "isCustom",
         "tuplet",
         "enableExpr",
+        "_memo",
+        "_ver",
     )
 
     def __init__(self, owner, name, val, expr=None, mode=0, style=None, **kw):
@@ -234,6 +236,8 @@ class Par:
         self.tuplet = None
         self._code = None
         self._evaluating = False
+        self._memo = None  # expression value + what it read (see eval)
+        self._ver = 0  # bumped on every write (incremental evaluation)
 
     # -- value access ---------------------------------------------------------
     @property
@@ -243,6 +247,8 @@ class Par:
     @mode.setter
     def mode(self, m):
         self._mode = ParMode.EXPRESSION if m in (ParMode.EXPRESSION, 1) else ParMode.CONSTANT
+        self._memo = None
+        self._ver += 1
         self.owner._pver = getattr(self.owner, "_pver", 0) + 1
 
     @property
@@ -253,6 +259,8 @@ class Par:
     def expr(self, text):
         self._expr = text
         self._code = None
+        self._memo = None
+        self._ver += 1
         self._mode = ParMode.EXPRESSION if text else ParMode.CONSTANT
         self.owner._host._par_changed(self)
 
@@ -265,6 +273,7 @@ class Par:
         prev = self.eval()
         self._val = self._normalize(v)
         self._mode = ParMode.CONSTANT
+        self._ver += 1
         self.owner._host._par_changed(self, prev)
 
     def _normalize(self, v):
@@ -284,13 +293,35 @@ class Par:
 
     def eval(self):
         if self._mode == ParMode.EXPRESSION and self._expr:
+            host = self.owner._host
+            memo = self._memo
+            if memo:
+                # Incremental evaluation: an expression that only reads parameters and
+                # storage (op('x').par.Y, me.par.Z, op('x').fetch(...), math) keeps its
+                # value until something it read changes (per-op versions).
+                deps, v = memo
+                for o, kind, ver in deps:
+                    if (o._ver if kind is None else o._kv.get(kind, 0)) != ver:
+                        break
+                else:
+                    rec = host._rec
+                    if rec is not None:
+                        rec.extend(deps)
+                    host._note_dep(self, v)
+                    return v
             if self._evaluating:
                 return self._val
-            host = self.owner._host
             self._evaluating = True
+            if self._code is None:
+                self._code = host._compile(self._expr, f"{self.owner.path}:{self.name}")
+                self._memo = None if _memoable(self._expr) else False
+            outer = host._rec
+            track = self._memo is not False
+            if track:
+                host._rec = []
+            elif outer is not None:
+                outer.append(_VOLATILE)  # whatever reads this can't be kept either
             try:
-                if self._code is None:
-                    self._code = host._compile(self._expr, f"{self.owner.path}:{self.name}")
                 v = eval(self._code, host._expr_globals, host._expr_locals(self.owner))
                 if isinstance(v, Par):
                     v = v.eval()
@@ -304,14 +335,36 @@ class Par:
                 ):
                     v = v.path
                 v = self._normalize(v)
+                failed = False
             except Exception as e:  # noqa: BLE001 — TD shows the error and keeps going
                 host._expr_error(self, e)
                 v = self._val
+                failed = True
             finally:
                 self._evaluating = False
+                if track:
+                    deps = host._rec
+                    host._rec = outer
+            if track:
+                if failed or _VOLATILE in deps:
+                    self._memo = None
+                    if outer is not None:
+                        outer.append(_VOLATILE)
+                else:
+                    seen = {}
+                    for d in deps:
+                        seen.setdefault((id(d[0]), d[1]), d)
+                    deps = tuple(seen.values())
+                    self._memo = (deps, v)
+                    if outer is not None:
+                        outer.extend(deps)
             host._note_dep(self, v)
             return v
-        self.owner._host._note_dep(self, self._val)
+        host = self.owner._host
+        rec = host._rec
+        if rec is not None:
+            rec.append((self, None, self._ver))
+        host._note_dep(self, self._val)
         return self._val
 
     def pulse(self, *a, **k):
@@ -436,6 +489,149 @@ class Par:
         return x in self.eval()
 
 
+_VOLATILE = (None, "\0volatile", None)  # recorded by a read that can't be tracked
+_MEMO_OK: dict = {}
+_PURE_NAMES = {
+    "op",
+    "me",
+    "parent",
+    "math",
+    "True",
+    "False",
+    "None",
+    "abs",
+    "min",
+    "max",
+    "round",
+    "int",
+    "float",
+    "str",
+    "bool",
+    "len",
+    "tuple",
+}
+_OP_ATTRS = {"par", "fetch", "name", "path", "digits", "base", "parent", "eval", "get"}
+
+
+def _memoable(src: str) -> bool:
+    """Can an expression's value be kept until what it read changes? Only when all
+    it can read is tracked: parameters, storage (fetch), constants and pure
+    functions. Time (absTime, me.time), CHOP samples, sizes, modules, random, run(),
+    ... re-evaluate every time."""
+    ok = _MEMO_OK.get(src)
+    if ok is None:
+        import ast
+
+        try:
+            tree = ast.parse(src.strip(), mode="eval")
+        except SyntaxError:
+            _MEMO_OK[src] = False
+            return False
+        ok = True
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Name):
+                if n.id not in _PURE_NAMES:
+                    ok = False
+            elif isinstance(n, ast.Attribute):
+                v = n.value
+                if isinstance(v, ast.Name) and v.id == "math":
+                    if n.attr in ("random",):
+                        ok = False
+                elif isinstance(v, ast.Attribute) and v.attr == "par":
+                    pass  # <op>.par.Name
+                elif n.attr not in _OP_ATTRS:
+                    ok = False
+            elif not isinstance(
+                n,
+                (
+                    ast.Expression,
+                    ast.Call,
+                    ast.Constant,
+                    ast.BinOp,
+                    ast.UnaryOp,
+                    ast.BoolOp,
+                    ast.Compare,
+                    ast.IfExp,
+                    ast.Subscript,
+                    ast.Tuple,
+                    ast.List,
+                    ast.Load,
+                    ast.operator,
+                    ast.unaryop,
+                    ast.boolop,
+                    ast.cmpop,
+                    ast.keyword,
+                    ast.Slice,
+                    ast.Dict,
+                ),
+            ):
+                ok = False
+            if not ok:
+                break
+        _MEMO_OK[src] = ok
+    return ok
+
+
+class _Storage(dict):
+    """op.storage with a version per key, bumped when a key's value changes, so a
+    kept expression that fetched it re-evaluates (and one that fetched another key
+    doesn't). Storing an equal number/string/tuple again is not a change."""
+
+    __slots__ = ("_kv",)
+
+    def __init__(self, owner=None):
+        super().__init__()
+        self._kv = {}
+
+    def _bump(self, k):
+        kv = self._kv
+        kv[k] = kv.get(k, 0) + 1
+
+    def __setitem__(self, k, v):
+        if k in self:
+            old = dict.__getitem__(self, k)
+            if old is v:
+                return
+            if type(old) is type(v) and type(v) in (int, float, str, bool, tuple):
+                try:
+                    if old == v:
+                        return
+                except Exception:  # noqa: BLE001 - e.g. tuples holding arrays
+                    pass
+        dict.__setitem__(self, k, v)
+        self._bump(k)
+
+    def __delitem__(self, k):
+        dict.__delitem__(self, k)
+        self._bump(k)
+
+    def update(self, *a, **k):
+        for key, v in dict(*a, **k).items():
+            self[key] = v
+
+    def pop(self, k, *a):
+        present = k in self
+        v = dict.pop(self, k, *a)
+        if present:
+            self._bump(k)
+        return v
+
+    def popitem(self):
+        k, v = dict.popitem(self)
+        self._bump(k)
+        return k, v
+
+    def clear(self):
+        for k in list(self):
+            self._bump(k)
+        dict.clear(self)
+
+    def setdefault(self, k, d=None):
+        if k not in self:
+            self[k] = d
+        return dict.__getitem__(self, k)
+
+
 class ParCollection:
     """`op.par` — attribute access by parameter name."""
 
@@ -543,8 +739,9 @@ class OP:
         raw_type = rec.get("type", "")
         self.type = TYPE_ALIASES.get((rec.get("family", self.family), raw_type), raw_type)
         self._rec = rec
+        self._pver = 0  # bumped by any parameter write (cached local matrices)
         self.par = ParCollection(self)
-        self.storage = {}
+        self.storage = _Storage()
         self._flags = rec.get("flags", {})
         self._input_paths = list(rec.get("inputs", []))
         self.id = host._next_id()
@@ -699,7 +896,14 @@ class OP:
 
     def fetch(self, key, *args, search=True, storeDefault=False):
         o = self
+        rec = self._host._rec
         while o is not None:
+            if rec is not None:
+                st = o.storage
+                if isinstance(st, _Storage):
+                    rec.append((st, key, st._kv.get(key, 0)))
+                else:  # replaced by a plain dict: untracked
+                    rec.append(_VOLATILE)
             if key in o.storage:
                 return o.storage[key]
             if not search:

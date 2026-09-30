@@ -47,14 +47,18 @@ class Host:
         monitors: list[dict] | None = None,
         path_map: dict[str, str] | None = None,
         log=None,
+        jit=None,
     ):
         self._id = 0
+        self.log = log or (lambda msg: print(f"[tdhost] {msg}", flush=True))
+        self._jit = _make_jit(self.log, jit)
         self._xf_cache = None  # per-snapshot local/world matrix cache (_snapshot)
         self._resolve_cache: dict = {}  # (path, context) -> normalized path
+        self._rec = None  # while evaluating a keepable expression: what it reads
         self._lm_cache: dict = {}  # op path -> (_pver, local matrix), constant xforms
         self._script_top_src: dict = {}  # Script TOP -> (array given, copy of it sent)
         self._xf_dynamic = False
-        self.log = log or (lambda msg: print(f"[tdhost] {msg}", flush=True))
+        self._parexec_list = None
         self.absTime = N._AbsTime()
         start = net.get("start", {})
         self.absTime.rate = float(start.get("cookrate", 60.0))
@@ -261,11 +265,21 @@ class Host:
         g = mod.__dict__
         g.update({k: v for k, v in self._expr_globals.items() if k != "__builtins__"})
         g.update(self._context_names(dat))
+        text = dat.text
+        # numeric functions get compiled to native code (tdhost/jit.py); that needs
+        # the module's code to come from a real file
+        fn = self._jit.source_file(dat.path, text) if self._jit is not None else None
         try:
-            code = compile(dat.text, dat.path, "exec")
+            code = compile(text, fn or dat.path, "exec")
             exec(code, g)
         except Exception:  # noqa: BLE001
             self.log(f"error loading module {dat.path}:\n{traceback.format_exc()}")
+            return mod
+        if fn:
+            try:
+                self._jit.wrap_module(dat.path, text, g, fn)
+            except Exception:  # noqa: BLE001 - never let the compiler break the project
+                self.log(f"jit: {dat.path}: {traceback.format_exc()}")
         return mod
 
     # ------------------------------------------------------------------ run() queue
@@ -360,6 +374,8 @@ class Host:
     def exit(self):
         for o in self._executes("exit"):
             self._call(o, "onExit")
+        if self._jit is not None:
+            self._jit.exit()
 
     def _window_autostart(self):
         for o in self.ops.values():
@@ -380,21 +396,28 @@ class Host:
         if o.family == "COMP" and o.type == "window":
             return
         # Parameter Execute DATs watching this op
-        for pe in self.ops.values():
-            if pe.family == "DAT" and pe.type == "parameterexecute":
-                if self._parexec_watches(pe, par):
-                    self._call(pe, "onPulse", par)
+        for pe in self._parexecs():
+            if self._parexec_watches(pe, par):
+                self._call(pe, "onPulse", par)
+
+    def _parexecs(self):
+        """The Parameter Execute DATs (the op table only changes by _destroy)."""
+        pes = self._parexec_list
+        if pes is None:
+            pes = self._parexec_list = [
+                o for o in self.ops.values() if o.family == "DAT" and o.type == "parameterexecute"
+            ]
+        return pes
 
     def _par_changed(self, par, prev=None):
         o = par.owner
         o._pver = getattr(o, "_pver", 0) + 1  # invalidates its cached local matrix
-        for pe in self.ops.values():
-            if pe.family == "DAT" and pe.type == "parameterexecute":
-                if self._parexec_watches(pe, par):
-                    p = object.__getattribute__(pe.par, "_pars")
-                    if "valuechange" in p and not bool(p["valuechange"].eval()):
-                        continue
-                    self._call(pe, "onValueChange", par, prev)
+        for pe in self._parexecs():
+            if self._parexec_watches(pe, par):
+                p = object.__getattribute__(pe.par, "_pars")
+                if "valuechange" in p and not bool(p["valuechange"].eval()):
+                    continue
+                self._call(pe, "onValueChange", par, prev)
 
     def _parexec_watches(self, pe, par) -> bool:
         import fnmatch
@@ -453,7 +476,7 @@ class Host:
             and prev[0] is arr
             and prev[1].shape == a.shape
             and prev[1].dtype == a.dtype
-            and np.array_equal(prev[1], a)
+            and _same_bytes(prev[1], a)
         ):
             return
         self._script_top_src[o.path] = (arr, a.copy() if np.shares_memory(a, arr) else a)
@@ -536,7 +559,9 @@ class Host:
         def f(n):
             # Par.eval() without the attribute machinery: constants (almost all
             # transform parameters) are just their value
-            par = pars.get(prefix + n) or p._get(prefix + n)
+            par = pars.get(prefix + n)
+            if par is None:  # (not `or`: a Par's truth value evaluates it)
+                par = p._get(prefix + n)
             if par is None:
                 raise AttributeError(prefix + n)
             if tracking or par._mode == expr:
@@ -670,13 +695,17 @@ class Host:
         s, r, t = _tdu.decompose(m, rord)
         pars = object.__getattribute__(o.par, "_pars")
         for nm, v in zip(("tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz"), (*t, *r, *s)):
-            p = pars.get(nm) or o.par._get(nm)
+            p = pars.get(nm)
+            if p is None:
+                p = o.par._get(nm)
             p._val = float(v)
             p._mode = N.ParMode.CONSTANT
+            p._ver += 1
         for nm, v in (("px", 0.0), ("py", 0.0), ("pz", 0.0), ("scale", 1.0)):
             if nm in pars:
                 pars[nm]._val = v
                 pars[nm]._mode = N.ParMode.CONSTANT
+                pars[nm]._ver += 1
         o._pver = getattr(o, "_pver", 0) + 1
 
     # ------------------------------------------------------------------ create/copy
@@ -688,6 +717,7 @@ class Host:
 
     def _destroy(self, o):
         self.ops.pop(o.path, None)
+        self._parexec_list = None
 
     # ------------------------------------------------------------------ renderer API
     def bind(self, spec: dict):
@@ -720,6 +750,8 @@ class Host:
         if readbacks:
             for path, arr in readbacks.items():
                 self._readbacks[path] = arr
+        if self._jit is not None:
+            self._jit.tick()
         self._run_due()
         for o in self._executes("framestart"):
             self._call(o, "onFrameStart", at.frame)
@@ -827,6 +859,39 @@ class _Shortcuts:
                     return c.par if self._pars else c
             o = o.parent()
         raise AttributeError(name)
+
+
+def _make_jit(log, cfg):
+    """The native-kernel compiler (tdhost/jit.py) when this is a player (NUMBA_CACHE_DIR
+    set by the image, or TOXC_JIT=1) with Numba installed and the project didn't
+    opt out ({"python": {"jit": false}} in td-deploy.json)."""
+    if cfg is False or (isinstance(cfg, dict) and cfg.get("enabled") is False):
+        return None
+    flag = os.environ.get("TOXC_JIT", "")
+    if flag in ("0", "off", "false") or (not flag and not os.environ.get("NUMBA_CACHE_DIR")):
+        return None
+    from . import jit as _jit_mod
+
+    if not _jit_mod.numba_available():
+        return None
+    cache = os.environ.get("NUMBA_CACHE_DIR")
+    if not cache:
+        import tempfile
+
+        cache = os.environ["NUMBA_CACHE_DIR"] = os.path.join(tempfile.gettempdir(), "tdhost-numba")
+    workdir = os.environ.get("TOXC_JIT_DIR") or os.path.join(cache, "tdhost")
+    os.makedirs(workdir, exist_ok=True)
+    exclude = cfg.get("exclude", ()) if isinstance(cfg, dict) else ()
+    return _jit_mod.Jit(log, workdir, exclude=exclude)
+
+
+def _same_bytes(a, b) -> bool:
+    """Equal contents, compared as machine words (8x fewer elements than bytes)."""
+    if a.nbytes != b.nbytes:
+        return False
+    if a.nbytes % 8 == 0:
+        return bool(np.array_equal(a.reshape(-1).view(np.uint64), b.reshape(-1).view(np.uint64)))
+    return bool(np.array_equal(a, b))
 
 
 def _to_float(v) -> float:

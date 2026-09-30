@@ -55,6 +55,15 @@ def main(argv):
         return 1
     with open(req, "rb") as fh:
         body = fh.read()
+    extra = jit_requirements(host.get("python") or {}, body)
+    wheels_dir = os.path.join(project, "wheels")
+    if extra and os.path.isdir(wheels_dir):  # offline: only what the wheelhouse has
+        have = [f.lower() for f in os.listdir(wheels_dir)]
+        extra = [p for p in extra if any(f.startswith(p + "-") for f in have)]
+    if extra:
+        body += (
+            "\n# td-deploy: native kernels (tdhost/jit.py)\n" + "\n".join(extra) + "\n"
+        ).encode()
     key = hashlib.sha256(sys.version.encode() + b"\0" + body).hexdigest()[:16]
     venvs = os.path.join(ROOT, "venvs")
     venv = os.path.join(venvs, key)
@@ -77,6 +86,11 @@ def main(argv):
             else:
                 pip += ["--only-binary=:all:", "--cache-dir", os.path.join(ROOT, "pip-cache")]
             subprocess.run(pip + ["-r", req], check=True, stdout=sys.stderr)
+            if extra:
+                # best effort: without them the project runs as plain Python
+                r = subprocess.run(pip + extra, stdout=sys.stderr)
+                if r.returncode:
+                    log(f"couldn't install {' '.join(extra)}; native kernels off")
             open(os.path.join(tmp, ".complete"), "w").close()
             # The venv records its own path in bin/ scripts; rebuild those at the
             # final location by recreating the (already populated) venv there.
@@ -101,6 +115,25 @@ def main(argv):
     _prune(venvs, keep=venv)
     _give_project_to_player(project)
     return 0
+
+
+JIT_PACKAGES = ("numba", "scipy")  # scipy: Numba's np.linalg / BLAS matmul
+
+
+def jit_requirements(python: dict, body: bytes) -> list:
+    """Packages the host's native-kernel compiler needs, unless the project opted
+    out ({"python": {"jit": false}}) or already lists them."""
+    cfg = python.get("jit", True)
+    if cfg is False or (isinstance(cfg, dict) and cfg.get("enabled") is False):
+        return []
+    import re
+
+    listed = {
+        re.split(r"[\s<>=!~;\[]", line.strip(), maxsplit=1)[0].lower()
+        for line in body.decode(errors="replace").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+    return [p for p in JIT_PACKAGES if p not in listed]
 
 
 def _give_project_to_player(project):

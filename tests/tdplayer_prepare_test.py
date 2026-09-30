@@ -131,5 +131,22 @@ class PrepareTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.root, "venvs")))
 
 
+class JitRequirementsTest(unittest.TestCase):
+    def setUp(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("tdplayer_prepare", SCRIPT)
+        self.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.m)
+
+    def test_adds_numba_unless_listed_or_opted_out(self):
+        jr = self.m.jit_requirements
+        self.assertEqual(jr({}, b"numpy<2\n"), ["numba", "scipy"])
+        self.assertEqual(jr({}, b"numpy<2\nNumba==0.61.0\n# scipy\n"), ["scipy"])
+        self.assertEqual(jr({"jit": False}, b"numpy\n"), [])
+        self.assertEqual(jr({"jit": {"enabled": False}}, b"numpy\n"), [])
+        self.assertEqual(jr({"jit": {"exclude": ["m.f"]}}, b"scipy>=1\n"), ["numba"])
+
+
 if __name__ == "__main__":
     unittest.main()
