@@ -90,12 +90,17 @@ def frames(source: str, width: int, height: int, fps: int, loop: bool = True):
         stream = container.streams.video[0]
         stream.thread_type = "AUTO"
         rate = float(stream.average_rate or fps) or fps
+        # a file plays in real time, at most `fps` frames a second (a 60 fps clip
+        # feeding a 30 fps camera test drops every other frame)
+        step = max(1, round(rate / fps)) if not live else 1
         t0, n = time.time(), 0
-        for frame in _decoded(container, stream):
+        for i, frame in enumerate(_decoded(container, stream)):
+            if i % step:
+                continue
             yield frame.reformat(width=width, height=height, format="yuvj420p")
             n += 1
             if not live:
-                delay = t0 + n / rate - time.time()
+                delay = t0 + n * step / rate - time.time()
                 if delay > 0:
                     time.sleep(delay)
         container.close()

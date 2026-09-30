@@ -15,11 +15,11 @@ av = pytest.importorskip("av")
 from deploy_engine import camstream  # noqa: E402
 
 
-def _clip(path, n=6, size=(64, 48)):
+def _clip(path, n=6, size=(64, 48), rate=30):
     import numpy as np
 
     with av.open(path, "w") as out:
-        s = out.add_stream("mpeg4", rate=30)
+        s = out.add_stream("mpeg4", rate=rate)
         s.width, s.height, s.pix_fmt = size[0], size[1], "yuv420p"
         for i in range(n):
             img = np.full((size[1], size[0], 3), i * 30 % 255, np.uint8)
@@ -73,3 +73,13 @@ def test_decoded_rides_out_eagain():
     c = _EagainContainer(["a", "b", "c"])
     assert list(camstream._decoded(c, None)) == ["a", "b", "c"]
     assert c.calls > 1  # it demuxed again after EAGAIN
+
+
+def test_fast_clip_is_decimated_to_fps():
+    pytest.importorskip("numpy")
+    path = os.path.join(tempfile.mkdtemp(), "clip60.mp4")
+    _clip(path, n=12, rate=60)
+    t0 = __import__("time").time()
+    got = list(itertools.islice(camstream.frames(path, 32, 24, 30, loop=False), 100))
+    assert len(got) == 6  # every other frame of 12
+    assert __import__("time").time() - t0 >= 0.15  # still real time (12 frames @ 60)
