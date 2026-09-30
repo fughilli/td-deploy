@@ -264,6 +264,15 @@ class HostTest(unittest.TestCase):
         for p, w in zip(paths, got):
             np.testing.assert_allclose(w, h.world_matrix(h.ops[p]), atol=1e-12)
 
+    def test_bound_constants_skip_eval_until_written(self):
+        h = self.host
+        h.bind({"pars": [["/project1/geo1", "ty"], ["/project1/top1", "vec0valuey"]]})
+        out = h.frame(0.0)
+        self.assertEqual(out["floats"][0], 2.0)
+        h.ops["/project1/geo1"].par.ty = 5
+        self.assertEqual(h.frame(1 / 60)["floats"][0], 5.0)
+        self.assertEqual(h.frame(2 / 60)["floats"][0], 5.0)
+
     def test_expressions_are_kept_until_what_they_read_changes(self):
         h = self.host
         top = h.ops["/project1/top1"]
@@ -320,6 +329,13 @@ class HostTest(unittest.TestCase):
         h._script_top_dirty.clear()
         h._script_top_data(o, img.copy())  # a new array: sent
         self.assertIn(o.path, h._script_top_dirty)
+        ro = img.copy()
+        ro.flags.writeable = False  # read-only: kept by reference (no copy)
+        h._script_top_data(o, ro)
+        self.assertIs(h._script_top_src[o.path][1], ro)
+        h._script_top_dirty.clear()
+        h._script_top_data(o, ro)
+        self.assertNotIn(o.path, h._script_top_dirty)
 
     def test_local_matrix_kept_until_a_parameter_changes(self):
         h = self.host

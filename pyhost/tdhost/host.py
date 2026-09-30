@@ -56,6 +56,8 @@ class Host:
         self._resolve_cache: dict = {}  # (path, context) -> normalized path
         self._rec = None  # while evaluating a keepable expression: what it reads
         self.native_xf = False  # the renderer composes world matrices (init caps)
+        self._bound_vers: list = []
+        self._bound_floats = None
         self._xf = {"nodes": [], "mat_nodes": [], "sent": [], "tree": True}
         self._lm_cache: dict = {}  # op path -> (_pver, local matrix), constant xforms
         self._script_top_src: dict = {}  # Script TOP -> (array given, copy of it sent)
@@ -481,7 +483,12 @@ class Host:
             and _same_bytes(prev[1], a)
         ):
             return
-        self._script_top_src[o.path] = (arr, a.copy() if np.shares_memory(a, arr) else a)
+        # keep what was sent, to tell an in-place change from the same pixels next
+        # time: a copy, unless the caller's array is read-only (can't change)
+        keep = a
+        if isinstance(arr, np.ndarray) and arr.flags.writeable and np.shares_memory(a, arr):
+            keep = a.copy()
+        self._script_top_src[o.path] = (arr, keep)
         self._script_top_arrays[o.path] = a
         self._script_top_dirty.add(o.path)
         self._top_sizes[o.path] = (a.shape[1], a.shape[0])
@@ -796,11 +803,23 @@ class Host:
             "flags": [],
         }
         floats = np.zeros(len(b["pars"]) + len(b["flags"]), np.float64)
+        # a constant parameter that hasn't been written since last frame keeps its
+        # value (no eval); expressions check their kept value (Par.eval)
+        seen = self._bound_vers
+        if len(seen) != len(b["pars"]):
+            seen = self._bound_vers = [None] * len(b["pars"])
+        prev = self._bound_floats
+        expr = N.ParMode.EXPRESSION
         for i, p in enumerate(b["pars"]):
             if p is None:
                 continue
+            if p._mode != expr and prev is not None and seen[i] == p._ver:
+                floats[i] = prev[i]
+                continue
             v = p.eval()
             floats[i] = _to_float(v)
+            seen[i] = p._ver if p._mode != expr else None
+        self._bound_floats = floats
         k = len(b["pars"])
         for j, (o, flag) in enumerate(b["flags"]):
             floats[k + j] = 1.0 if (o is not None and self.flag(o, flag)) else 0.0
