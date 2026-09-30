@@ -163,13 +163,56 @@ Performance knobs and diagnostics (the unit's environment, e.g.
 | `TOXC_PROFILE=1`        | glFinish after every node so `top:<node>` in `/stats` includes its GPU time (serializes) |
 | `TOXC_PIPELINE=0`       | don't overlap the next frame's CPU work with this frame's GPU work on HDMI               |
 | `TOXC_SYNC_READBACK=1`  | `numpyArray(delayed=True)` via a blocking glReadPixels instead of pixel-pack buffers     |
+| `TOXC_JIT=0`            | no native kernels (below)                                                                |
+| `TOXC_JIT_VERBOSE=1`    | log why each function of a project module stays Python                                   |
+| `TOXC_JIT_CHECK=1`      | run each native kernel's Python original too and log any result that differs             |
 
 The frame loop on HDMI is pipelined: the CPU runs frame N+1's Python while the GPU
 renders frame N, so `/stats` shows `host:frame` (Python), `present:flip_wait`
 (waiting for the previous frame to reach the screen) rather than a `gpu` split. The
 host runs numpy's BLAS single-threaded (4x4 matrices; a thread pool per call costs
 milliseconds on a busy box), keeps constant transforms' matrices between frames, and
-doesn't re-send a Script TOP array that hasn't changed.
+doesn't re-send a Script TOP array that hasn't changed. Bound world matrices are
+composed in the runtime: the host sends only the local matrices that changed.
+Expressions that only read parameters, storage (`fetch`), constants and `math` keep
+their value until something they read changes (per-parameter and per-storage-key
+versions); time-dependent ones (`absTime`, CHOP samples, ...) re-evaluate every frame.
+
+### Native kernels
+
+On the player, the host compiles a project's numeric Python to native code with
+[Numba](https://numba.pydata.org) (`pyhost/tdhost/jit.py`) — no annotations, and
+nothing changes when the project runs in TouchDesigner. When a DAT module loads, the
+host picks the top-level functions that only do numeric work: no TouchDesigner API
+(`op`, `me`, `absTime`, ...), no module state that changes (a global that is rebound,
+declared `global`, or modified in place), only `math`/numpy, constants and other such
+functions. For the first seconds it records the argument types they're called with,
+compiles them in a separate low-priority process (Numba's compiler holds the GIL) into
+`/var/lib/tdplayer/numba-cache`, then switches them over between frames; the next start
+loads them straight from the cache. Anything that doesn't compile, or a call with
+argument types that weren't compiled, runs as Python. `tdplayer-prepare` installs
+`numba` and `scipy` into the project's venv. Opt out per project with
+`{"python": {"jit": false}}` in `td-deploy.json`, or per function with
+`{"python": {"jit": {"exclude": ["module.function"]}}}`.
+
+What compiles well — pure functions of arrays and numbers, the math inside a solver:
+
+```python
+def arm_ik(Pw, LA, LF, target, pole):      # arrays in, arrays out
+    WA = Pw @ LA
+    ...
+    return np.linalg.inv(Pw) @ WA2
+
+def update():                               # glue: stays Python
+    la = arm_ik(S['W'], S['rest'], ..., target, pole)
+    op('char/LeftArm').setTransform(tdu.Matrix(la.T.flatten().tolist()))
+```
+
+Keep the TouchDesigner calls and dict/state bookkeeping in the glue, and the math in
+kernels that take and return arrays. Numba doesn't take dicts, lists of mixed types,
+`None` for an array, `np.linalg.norm(..., axis=...)`, or `np.array` of a nested list
+mixing ints and floats; a kernel written that way just stays Python
+(`TOXC_JIT_VERBOSE=1` says why).
 
 ## The host bridge
 
