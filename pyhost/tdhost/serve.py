@@ -174,6 +174,7 @@ def main(argv):
                     path_map=path_map,
                     jit=(hc.get("python") or {}).get("jit"),
                 )
+                host.native_xf = "xf" in (init.get("caps") or [])
                 _rewrite_paths(host, path_map)
                 host.bind(sched["bindings"])
                 host.set_top_sizes(init.get("sizes", {}))
@@ -259,6 +260,12 @@ def _pack(out):
         "chops": {},
         "sops": {},
     }
+    xf = out.get("xf")
+    if xf is not None:
+        reply["xf"] = {"idx": add(xf["idx"]), "m": add(xf["m"])}
+        for k in ("parent", "mat_nodes"):
+            if k in xf:
+                reply["xf"][k] = xf[k]
     for path, a in out["tops"].items():
         dt = "u8" if a.dtype == np.uint8 else "f32"
         if dt == "f32" and a.dtype != np.float32:

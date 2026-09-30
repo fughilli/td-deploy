@@ -231,6 +231,39 @@ class HostTest(unittest.TestCase):
         np.testing.assert_allclose(got[1], h.world_matrix(h.ops["/project1/geo1/child"]))
         self.assertAlmostEqual(got[0][1, 3], 7.0)
 
+    def test_native_xf_sends_changed_locals_only(self):
+        h = self.host
+        h.native_xf = True
+        paths = ["/project1/geo1/child", "/project1/nullB", "/project1/geo1"]
+        h.bind({"mats": paths})
+        h.start()
+        locals_ = {}
+
+        def apply(xf):  # what the renderer does (runtime_rs compose_xf)
+            if "parent" in xf:
+                apply.parent, apply.nodes = xf["parent"], xf["mat_nodes"]
+            m = np.asarray(xf["m"]).reshape(-1, 16)
+            for k, i in enumerate(xf["idx"]):
+                locals_[int(i)] = m[k].reshape(4, 4).T  # column-major -> rows
+            world = []
+            for i, p in enumerate(apply.parent):
+                world.append(locals_[i] if p < 0 else world[p] @ locals_[i])
+            return [world[n] for n in apply.nodes]
+
+        out = h.frame(0.0)
+        self.assertEqual(len(out["mats"]), 0)
+        got = apply(out["xf"])
+        for p, w in zip(paths, got):
+            np.testing.assert_allclose(w, h.world_matrix(h.ops[p]), atol=1e-12)
+        # next frame: onFrameStart moved geo1 (tx) only; its child's local is unchanged
+        out = h.frame(1 / 60)
+        self.assertNotIn("parent", out["xf"])
+        sent = {apply.parent and h._xf["nodes"][int(i)][0].path for i in out["xf"]["idx"]}
+        self.assertEqual(sent, {"/project1/geo1"})
+        got = apply(out["xf"])
+        for p, w in zip(paths, got):
+            np.testing.assert_allclose(w, h.world_matrix(h.ops[p]), atol=1e-12)
+
     def test_expressions_are_kept_until_what_they_read_changes(self):
         h = self.host
         top = h.ops["/project1/top1"]

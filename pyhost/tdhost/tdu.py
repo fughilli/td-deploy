@@ -264,13 +264,41 @@ def euler_from3(r: np.ndarray, order: str = "xyz") -> tuple[float, float, float]
 
 
 def decompose(m: np.ndarray, order="xyz"):
-    """4x4 (T @ R @ S, no shear) -> (scale xyz, rotate xyz degrees, translate xyz)."""
-    t = m[:3, 3].copy()
-    a = m[:3, :3]
-    s = np.linalg.norm(a, axis=0)
-    s = np.where(s < 1e-12, 1.0, s)
-    r = a / s
-    if np.linalg.det(r) < 0:
-        s[0] = -s[0]
-        r[:, 0] = -r[:, 0]
-    return s, euler_from3(r, order), t
+    """4x4 (T @ R @ S, no shear) -> (scale xyz, rotate xyz degrees, translate xyz).
+    Plain floats (setTransform runs it a dozen times a frame on 4x4s)."""
+    (a00, a01, a02, t0), (a10, a11, a12, t1), (a20, a21, a22, t2) = np.asarray(m, dtype=float)[
+        :3
+    ].tolist()
+    s0 = math.sqrt(a00 * a00 + a10 * a10 + a20 * a20)
+    s1 = math.sqrt(a01 * a01 + a11 * a11 + a21 * a21)
+    s2 = math.sqrt(a02 * a02 + a12 * a12 + a22 * a22)
+    s0 = 1.0 if s0 < 1e-12 else s0
+    s1 = 1.0 if s1 < 1e-12 else s1
+    s2 = 1.0 if s2 < 1e-12 else s2
+    r = [
+        [a00 / s0, a01 / s1, a02 / s2],
+        [a10 / s0, a11 / s1, a12 / s2],
+        [a20 / s0, a21 / s1, a22 / s2],
+    ]
+    det = (
+        r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
+        - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+        + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0])
+    )
+    if det < 0:
+        s0 = -s0
+        for row in r:
+            row[0] = -row[0]
+    return np.array([s0, s1, s2]), euler_from3(_Rows(r), order), np.array([t0, t1, t2])
+
+
+class _Rows:
+    """r[i, j] indexing over nested lists (euler_from3 takes numpy arrays too)."""
+
+    __slots__ = ("r",)
+
+    def __init__(self, r):
+        self.r = r
+
+    def __getitem__(self, ij):
+        return self.r[ij[0]][ij[1]]

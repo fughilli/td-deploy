@@ -55,6 +55,8 @@ class Host:
         self._xf_cache = None  # per-snapshot local/world matrix cache (_snapshot)
         self._resolve_cache: dict = {}  # (path, context) -> normalized path
         self._rec = None  # while evaluating a keepable expression: what it reads
+        self.native_xf = False  # the renderer composes world matrices (init caps)
+        self._xf = {"nodes": [], "mat_nodes": [], "sent": [], "tree": True}
         self._lm_cache: dict = {}  # op path -> (_pver, local matrix), constant xforms
         self._script_top_src: dict = {}  # Script TOP -> (array given, copy of it sent)
         self._xf_dynamic = False
@@ -732,6 +734,26 @@ class Host:
         flags = []
         for opath, flag in spec.get("flags", []):
             flags.append((self.ops.get(opath), flag))
+        # the transform hierarchy behind the bound matrices, parents first, for a
+        # renderer that composes world matrices itself (caps "xf")
+        nodes, index = [], {}
+
+        def node(o, depth=0):
+            if o.path in index:
+                return index[o.path]
+            p = self._object_parent(o) if depth < 255 else None
+            pi = node(p, depth + 1) if p is not None else -1
+            index[o.path] = len(nodes)
+            nodes.append((o, pi))
+            return index[o.path]
+
+        mat_nodes = [node(o) if o is not None else -1 for o in mats]
+        self._xf = {
+            "nodes": nodes,
+            "mat_nodes": mat_nodes,
+            "sent": [None] * len(nodes),
+            "tree": True,
+        }
         self._bindings = {
             "pars": pars,
             "mats": mats,
@@ -782,15 +804,37 @@ class Host:
         k = len(b["pars"])
         for j, (o, flag) in enumerate(b["flags"]):
             floats[k + j] = 1.0 if (o is not None and self.flag(o, flag)) else 0.0
-        mats = np.zeros((len(b["mats"]), 16), np.float64)
+        xf = None
         # parameters can't change while the matrices are gathered: share the
         # local/world matrices of common ancestors across the bound objects
         self._xf_cache = {}
         try:
-            for i, o in enumerate(b["mats"]):
-                if o is not None:
-                    # column-major, ready for glUniformMatrix4fv(transpose=false)
-                    mats[i] = self.world_matrix(o).T.reshape(-1)
+            if self.native_xf and self._bindings is not None:
+                # the renderer composes world matrices: send the local matrices that
+                # changed (a kept constant transform is the same array object)
+                xs = self._xf
+                sent, idx, locs = xs["sent"], [], []
+                for i, (o, _) in enumerate(xs["nodes"]):
+                    m = self.local_matrix(o)
+                    if m is not sent[i]:
+                        sent[i] = m
+                        idx.append(i)
+                        locs.append(m.T.reshape(-1))  # column-major
+                xf = {
+                    "idx": np.asarray(idx, np.int32),
+                    "m": np.asarray(locs, np.float64).reshape(-1),
+                }
+                if xs["tree"]:
+                    xs["tree"] = False
+                    xf["parent"] = [pi for _, pi in xs["nodes"]]
+                    xf["mat_nodes"] = xs["mat_nodes"]
+                mats = np.zeros((0, 16), np.float64)
+            else:
+                mats = np.zeros((len(b["mats"]), 16), np.float64)
+                for i, o in enumerate(b["mats"]):
+                    if o is not None:
+                        # column-major, ready for glUniformMatrix4fv(transpose=false)
+                        mats[i] = self.world_matrix(o).T.reshape(-1)
         finally:
             self._xf_cache = None
         for o in b["sops"]:
@@ -825,6 +869,7 @@ class Host:
         return {
             "floats": floats,
             "mats": mats.reshape(-1),
+            "xf": xf,
             "tops": tops,
             "chops": chops,
             "sops": sops,

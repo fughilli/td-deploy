@@ -94,6 +94,31 @@ pub fn m4_inv(m: &M4) -> M4 {
     o
 }
 
+/// World matrices of a transform hierarchy listed parents-first (parent index <
+/// child index, -1 = root), flattened for the bound nodes, column-major.
+pub fn compose_xf(parent: &[i64], local: &[M4], mat_nodes: &[i64]) -> Vec<f64> {
+    let n = local.len();
+    let mut world: Vec<M4> = Vec::with_capacity(n);
+    for i in 0..n {
+        let p = parent.get(i).copied().unwrap_or(-1);
+        let w = if p >= 0 && (p as usize) < i {
+            m4_mul(&world[p as usize], &local[i])
+        } else {
+            local[i]
+        };
+        world.push(w);
+    }
+    let mut out = Vec::with_capacity(mat_nodes.len() * 16);
+    for &node in mat_nodes {
+        if node >= 0 && (node as usize) < n {
+            out.extend_from_slice(&world[node as usize]);
+        } else {
+            out.extend_from_slice(&m4_ident());
+        }
+    }
+    out
+}
+
 fn m4_f32(m: &M4) -> [f32; 16] {
     let mut o = [0f32; 16];
     for i in 0..16 {
@@ -271,6 +296,13 @@ pub struct HostRenderer<'a> {
     host: Host,
     floats: Vec<f64>,
     mats: Vec<f64>,
+    // Native world matrices (host caps "xf"): the transform hierarchy behind the
+    // bound matrices (parents first), each node's latest local matrix
+    // (column-major; the host sends only the ones that changed), and which node
+    // each bound matrix is.
+    xf_parent: Vec<i64>,
+    xf_local: Vec<M4>,
+    xf_mat_nodes: Vec<i64>,
     assets: HashMap<String, Tex>,
     out: HashMap<String, Vec<Tex>>,
     targets: HashMap<String, Target>,
@@ -324,7 +356,8 @@ impl<'a> HostRenderer<'a> {
         .expect("parse schedule.json");
         let nodes = sched["nodes"].as_array().cloned().unwrap_or_default();
         let output = sched["output"].as_str().unwrap_or("").to_string();
-        let host = Host::spawn(dir, json!({"monitors": monitors})).expect("start the Python host");
+        let host = Host::spawn(dir, json!({"monitors": monitors, "caps": ["xf"]}))
+            .expect("start the Python host");
         let (empty_vao, scratch_fbo, blit, msaa_samples) = unsafe {
             let v = gl.create_vertex_array().unwrap();
             let f = gl.create_framebuffer().unwrap();
@@ -341,6 +374,9 @@ impl<'a> HostRenderer<'a> {
             host,
             floats: vec![],
             mats: vec![],
+            xf_parent: vec![],
+            xf_local: vec![],
+            xf_mat_nodes: vec![],
             assets: HashMap::new(),
             out: HashMap::new(),
             targets: HashMap::new(),
@@ -501,6 +537,34 @@ impl<'a> HostRenderer<'a> {
             }
             _ => 0.0,
         }
+    }
+
+    /// Local-matrix updates from the host -> the bound world matrices.
+    fn apply_xf(&mut self, msg: &crate::host::Msg) {
+        let xf = &msg.head["xf"];
+        if let Some(p) = xf["parent"].as_array() {
+            self.xf_parent = p.iter().map(|v| v.as_i64().unwrap_or(-1)).collect();
+            self.xf_local = vec![m4_ident(); self.xf_parent.len()];
+        }
+        if let Some(mn) = xf["mat_nodes"].as_array() {
+            self.xf_mat_nodes = mn.iter().map(|v| v.as_i64().unwrap_or(-1)).collect();
+        }
+        let idx: Vec<i32> = msg
+            .blob(&xf["idx"])
+            .map(|b| {
+                b.chunks_exact(4)
+                    .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let m = msg.f64s(&xf["m"]);
+        for (k, &i) in idx.iter().enumerate() {
+            let i = i as usize;
+            if i < self.xf_local.len() && (k + 1) * 16 <= m.len() {
+                self.xf_local[i].copy_from_slice(&m[k * 16..k * 16 + 16]);
+            }
+        }
+        self.mats = compose_xf(&self.xf_parent, &self.xf_local, &self.xf_mat_nodes);
     }
 
     fn mat(&self, i: &Value) -> M4 {
@@ -747,7 +811,11 @@ impl<'a> HostRenderer<'a> {
             eprintln!("[host] frame error: {err}");
         }
         self.floats = msg.f64s(&msg.head["floats"]);
-        self.mats = msg.f64s(&msg.head["mats"]);
+        if msg.head.get("xf").map_or(false, |v| v.is_object()) {
+            self.apply_xf(&msg);
+        } else {
+            self.mats = msg.f64s(&msg.head["mats"]);
+        }
         if msg.head["quit"].as_bool() == Some(true) {
             self.quit = true;
         }
@@ -1959,6 +2027,29 @@ mod tests {
         m[13] = y;
         m[14] = z;
         m
+    }
+
+    #[test]
+    fn compose_xf_chains_parents() {
+        // root T(1,0,0) -> child Rz90 -> grandchild T(0,2,0); bound: grandchild, root,
+        // and a missing node
+        let parent = [-1, 0, 1];
+        let local = [
+            translate(1.0, 0.0, 0.0),
+            euler_xyz(0.0, 0.0, 90.0),
+            translate(0.0, 2.0, 0.0),
+        ];
+        let out = compose_xf(&parent, &local, &[2, 0, -1]);
+        assert_eq!(out.len(), 48);
+        let g: M4 = out[0..16].try_into().unwrap();
+        let want = m4_mul(&m4_mul(&local[0], &local[1]), &local[2]);
+        assert!(close(&g, &want));
+        // (0,2,0) rotated by rz90 -> (-2,0,0), then + (1,0,0)
+        assert!((g[12] + 1.0).abs() < 1e-12 && g[13].abs() < 1e-12);
+        let r: M4 = out[16..32].try_into().unwrap();
+        assert!(close(&r, &local[0]));
+        let id: M4 = out[32..48].try_into().unwrap();
+        assert!(close(&id, &m4_ident()));
     }
 
     #[test]
